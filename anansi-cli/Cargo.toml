@@ -1,0 +1,16 @@
+[package]
+name = "ananc"
+version = "0.1.0"
+edition = "2021"
+authors = ["sarutora"]
+license = "MIT"
+description = "Anansi's project manager."
+homepage = "https://saru-tora.github.io/anansi"
+repository = "https://github.com/saru-tora/anansi"
+readme = "README.md"
+categories = ["web-programming", "command-line-utilities"]
+keywords = ["http", "web", "framework"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]

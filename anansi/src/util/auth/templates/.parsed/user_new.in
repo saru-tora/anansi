@@ -1,0 +1,39 @@
+{let _content = |_c: &mut String| -> Result<()> {_c.push_str("<div class=\"lower\">
+	");_c.push_str(&format!("<a href=\"{}\">", anansi::url!(req,  Self::index )));_c.push_str("Home");_c.push_str("</a>
+</div>
+<div class=\"site\">
+	<div class=\"sub\">
+		");_c.push_str(&anansi::web::html_escape(&format!("{}", title)));_c.push_str("
+	</div>
+	<div>
+		");_c.push_str(&form.tag()); if let Some(token_tag) = form.token_tag() { _c.push_str(&token_tag) } {_c.push_str("
+		");for field in form.fields() {_c.push_str("
+		");_c.push_str(&format!("{}", field.label_tag()));_c.push_str("
+		<div class=\"namebox\">
+			");_c.push_str(&format!("{}", field));_c.push_str("
+			");_c.push_str(&format!("{}", field.errors()));_c.push_str("
+		</div>
+		");}_c.push_str("
+		");_c.push_str(&format!("{}", form.submit("Create")));_c.push_str("
+		</form>");}_c.push_str("
+	</div>
+</div>");Ok(())};let _title = |_c: &mut String| -> Result<()> {_c.push_str("");_c.push_str(&anansi::web::html_escape(&format!("{}", title)));_c.push_str("");Ok(())};let mut _c = String::new();_c.push_str("<!DOCTYPE html>
+<html lang=\"en\">
+	<head>
+		<meta charset=\"utf-8\">
+		<title>");_title(&mut _c)?;_c.push_str(" | Anansi site admin</title>
+		<link rel=\"stylesheet\" href=\"/static/admin/style.css\">
+	</head>
+	<body>
+		<div class=\"bar\">
+			<div>
+				Anansi administration
+			</div>
+			 <div class=\"right\">
+				 Welcome, ");_c.push_str(&anansi::web::html_escape(&format!("{}", req.user().username)));_c.push_str(". <a href=\"/\">View site</a> / <a href=\"");_c.push_str(&anansi::web::html_escape(&format!("{}", anansi::url!(req, Self::logout))));_c.push_str("\">Log out</a>
+			</div>
+		</div>
+		");_content(&mut _c)?;_c.push_str("
+	</body>
+</html>
+");Ok(Response::new("HTTP/1.1 200 OK", _c.into_bytes()))}

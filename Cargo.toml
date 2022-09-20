@@ -1,0 +1,8 @@
+[workspace]
+
+members = [
+    "anansi-macros",
+    "anansi-core",
+    "anansi-cli",
+    "anansi",
+]

@@ -1,0 +1,21 @@
+@extend "base"
+
+@block title {
+@title
+}
+
+@block content {
+<div class="lower">
+	@link req, Self::index {Home}
+</div>
+<div class="site">
+	<div class="sub">
+		@title
+	</div>
+	<div>
+		@for user in users {
+		<p>@user.username</p>
+		}
+	</div>
+</div>
+}

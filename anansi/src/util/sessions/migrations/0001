@@ -1,0 +1,10 @@
+BEGIN;
+
+CREATE TABLE "sessions_session" (
+	"id" NOT NULL PRIMARY KEY,
+	"data" text NOT NULL,
+	"secret" varchar(32) NOT NULL,
+	"expires" datetime NOT NULL
+);
+
+COMMIT;

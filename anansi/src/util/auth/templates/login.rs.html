@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<title>Log in | Anansi site admin</title>
+		<style>
+			body {
+				background-color: ghostwhite;
+			}
+			.bar {
+				background-color: seagreen;
+				padding: 10px;
+				color: white;
+				font-size: 28px;
+			}
+			.login {
+				background-color: white;
+				position: absolute;
+				left: 50%;
+				top: 30%;
+				transform: translate(-50%, -30%);
+				padding-bottom: 10px;
+			}
+			.cred {
+				padding-left: 10px;
+			}
+			.box {
+				padding: 3px 0px;
+			}
+			.subbox {
+				padding-top: 7px;
+			}
+			label {
+				line-height: 1.5;
+			}
+			input[type=text], [type=password] {
+				padding: 3px;
+				width: 93%;
+			}
+			input[type=submit] {
+				display: block;
+				text-align: center;
+				background-color: mediumseagreen;
+				border: none;
+				color: white;
+				padding: 8px 16px;
+				text-decoration: none;
+				width: 25%;
+				margin: auto;
+				cursor: pointer;
+			}
+			input[type=submit]:hover {
+				background-color: seagreen;
+			}
+			.form-errors {
+				padding: 0;
+				list-style: none;
+				color: red;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="login">
+			<div class="bar">
+				Anansi administration
+			</div>
+			@build form {
+			@unescape form.errors()
+			@for field in form.fields() {
+				<div class="box">
+					@unescape field.label_tag()
+					@unescape field
+				</div>
+			}
+				<div class="subbox">
+					<input type="submit" value="Log in">
+				</div>
+			}
+		</div>
+	</body>
+</html>

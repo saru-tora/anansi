@@ -1,0 +1,21 @@
+[package]
+name = "anansi"
+version = "0.1.0"
+edition = "2021"
+authors = ["sarutora"]
+license = "MIT"
+description = "A simple MVC web framework for Rust."
+homepage = "https://saru-tora.github.io/anansi"
+repository = "https://github.com/saru-tora/anansi"
+readme = "README.md"
+categories = ["web-programming", "asynchronous"]
+keywords = ["http", "web", "framework", "async"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anansi-core = "0.1.0"
+async-trait = "0.1.57"
+serde_json = "1.0"
+pbkdf2 = "0.10"
+rpassword = "7.0"

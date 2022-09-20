@@ -1,0 +1,20 @@
+[package]
+name = "anansi-macros"
+version = "0.1.0"
+edition = "2021"
+authors = ["sarutora"]
+license = "MIT"
+description = "Anansi's proc macros."
+homepage = "https://saru-tora.github.io/anansi"
+repository = "https://github.com/saru-tora/anansi"
+categories = ["web-programming", "asynchronous"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+syn = { version = "1.0", features = [ "full", "fold" ]}
+quote = "1.0"

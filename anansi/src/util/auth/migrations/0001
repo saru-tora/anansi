@@ -1,0 +1,26 @@
+BEGIN;
+
+CREATE TABLE "auth_user" (
+	"id" NOT NULL PRIMARY KEY,
+	"username" varchar(150) NOT NULL UNIQUE,
+	"password" varchar(150) NOT NULL,
+	"is_admin" boolean NOT NULL
+);
+
+CREATE TABLE "auth_user_group" (
+	"user_id" bigint NOT NULL,
+	"group_id" bigint NOT NULL,
+	FOREIGN KEY ("user_id")
+	REFERENCES "auth_user" ("id")
+	ON DELETE CASCADE,
+	FOREIGN KEY ("group_id")
+	REFERENCES "auth_group" ("id")
+	ON DELETE CASCADE
+);
+
+CREATE TABLE "auth_group" (
+	"id" NOT NULL PRIMARY KEY,
+	"name" varchar(150) NOT NULL
+);
+
+COMMIT;

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<title>@block title | Anansi site admin</title>
+		<link rel="stylesheet" href="/static/admin/style.css">
+	</head>
+	<body>
+		<div class="bar">
+			<div>
+				Anansi administration
+			</div>
+			 <div class="right">
+				 Welcome, @(req.user().username). <a href="/">View site</a> / <a href="@url!(req, Self::logout)">Log out</a>
+			</div>
+		</div>
+		@block content
+	</body>
+</html>

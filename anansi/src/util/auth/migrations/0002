@@ -1,0 +1,6 @@
+BEGIN;
+
+INSERT INTO auth_user (id, username, password, is_admin)
+VALUES (0, "guest", "", 0);
+
+COMMIT;

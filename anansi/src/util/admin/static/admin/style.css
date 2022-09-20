@@ -1,0 +1,78 @@
+body {
+	background-color: ghostwhite;
+	margin: 0;
+}
+.bar {
+	background-color: darkgreen;
+	padding: 10px;
+	padding-left: 40px;
+	color: orange;
+	font-size: 28px;
+}
+.site {
+	padding-top: 20px;
+	padding-left: 40px;
+}
+.auth {
+	background-color: mediumseagreen;
+	width: 600px;
+	padding: 5px;
+	font-size: 18px;
+	color: white;
+}
+.lower {
+	background-color: mediumseagreen;
+	padding: 5px;
+	padding-left: 40px;
+	font-size: 18px;
+	color: white;
+}
+.right {
+	color: white;
+	position: absolute;
+	font-size: 14px;
+	top: 20px;
+	right: 16px;
+}
+div.right a {
+	color: white;
+}
+.top {
+	color: white;
+}
+.sub {
+	font-size: 24px;
+	padding-bottom: 20px;
+}
+.box {
+	padding: 5px;
+	width: 600px;
+	border-bottom-width: 1px;
+	border-bottom-style: solid;
+	border-bottom-color: gainsboro;
+}
+.namebox {
+	padding-bottom: 20px;
+	width: 290px;
+}
+div.namebox input {
+	width: 270px;
+}
+.add {
+	float: right;
+	text-decoration: none;
+}
+.link {
+	font-weight: bold;
+	text-decoration: none;
+}
+.form-errors {
+	padding: 0;
+	list-style: none;
+}
+.field-errors {
+	font-size: 75%;
+	padding: 0;
+	list-style: none;
+	color: red;
+}

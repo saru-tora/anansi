@@ -1,0 +1,13 @@
+{let mut _c = String::new();_c.push_str("<!DOCTYPE html>
+<html lang=\"en\">
+	<head>
+		<meta charset=\"utf-8\">
+		<title>It works</title>
+	</head>
+	<body>
+		<h1>It works</h1>
+		<p>The installation was successful.</p>
+		<p><small>Anansi ");_c.push_str(&anansi::web::html_escape(&format!("{}", VERSION)));_c.push_str(" (Debug)</small></p>
+	</body>
+</html>
+");Ok(Response::new("HTTP/1.1 200 OK", _c.into_bytes()))}

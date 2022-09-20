@@ -1,0 +1,28 @@
+@extend "base"
+
+@block title {
+@title
+}
+
+@block content {
+<div class="lower">
+	@link req, Self::index {Home}
+</div>
+<div class="site">
+	<div class="sub">
+		@title
+	</div>
+	<div>
+		@build form {
+		@for field in form.fields() {
+		@unescape field.label_tag()
+		<div class="namebox">
+			@unescape field
+			@unescape field.errors()
+		</div>
+		}
+		@unescape form.submit("Create")
+		}
+	</div>
+</div>
+}
