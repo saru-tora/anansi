@@ -23,7 +23,7 @@ title: Anansi
 description: >- # this means to ignore newlines until "baseurl:"
   Anansi is a simple MVC web framework for Rust.
 domain: saru-tora.github.io
-baseurl: "" # the subpath of your site, e.g. /blog
+baseurl: /anansi/ # the subpath of your site, e.g. /blog
 url: https://saru-tora.github.io # the base hostname & protocol for your site, e.g. http://example.com
   #twitter_username: jekyllrb
 github_username:  saru-tora
