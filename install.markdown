@@ -11,4 +11,4 @@ To install Anansi, run the following:
 $ cargo install ananc
 ```
 
-Now, you're ready to create a [simple site](/tutorial)!
+Now, you're ready to create a [simple site](/anansi/tutorial)!
