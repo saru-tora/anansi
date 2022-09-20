@@ -6,7 +6,7 @@ layout: page
 title: Overview
 ---
 
-Anansi is a simple MVC web framework for Rust. [Get started](/start).
+Anansi is a simple MVC web framework for Rust. [Get started](/anansi/start).
 
 🛡️ Safety first
 ---------------
