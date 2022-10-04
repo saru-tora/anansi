@@ -142,7 +142,7 @@ use super::super::models::{Topic, topic::date};
 #[viewer]
 impl<R: Request> TopicView<R> {
     #[view(if_guest)]
-    async fn index(req: R) -> Result<Response> {
+    pub async fn index(req: R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
             .limit(25).query(&req).await?;
@@ -155,7 +155,7 @@ impl<R: Request> TopicView<R> {
 To use these variables, add `forum/topic/templates/index.rs.html`:
 
 ```html
-@extend "base"
+@extend base
 
 @block title {@title}
 
@@ -287,7 +287,7 @@ use anansi::humanize::ago;
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(if_guest)]
-    async fn show(req: R) -> Result<Response> {
+    pub async fn show(req: R) -> Result<Response> {
         let topic = get_or_404!(Topic, req);
         let title = &topic.title;
         let comments = topic.recent_comments().limit(25).query(&req).await?;
@@ -301,7 +301,7 @@ In `show`, `get_or_404!` retrieves a specific topic by `topic_id` or returns a 4
 Now let's add the template for this view in `forum/topic/templates/show.rs.html`:
 
 ```html
-@extend "base"
+@extend base
 
 @block title {@title}
 
@@ -349,7 +349,7 @@ use anansi::util::auth::forms::UserLogin;
 impl<R: Request> TopicView {
     // --snip--
     #[view(if_guest)]
-    async fn login(mut req: R) -> Result<Response> {
+    pub async fn login(mut req: R) -> Result<Response> {
         let title = "Log in";
         let button = "Log in";
         let form = handle!(UserLogin, ToModel<R>, req, user, {
@@ -363,7 +363,7 @@ impl<R: Request> TopicView {
 `handle!` creates a new form if the request method is GET. Otherwise, it tries to do something with the submitted form (in this case, log in the user), and if that fails, gives back the form. The form can be used in `forum/topic/templates/login.rs.html`:
 
 ```html
-@extend "base"
+@extend base
 
 @block title {@title}
 
@@ -465,7 +465,7 @@ checker!(if_auth<R: Request>, |req| req.check_auth(),
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(if_auth)]
-    async fn new(mut req: R) -> Result<Response> {
+    pub async fn new(mut req: R) -> Result<Response> {
         let title = "New Topic";
         let button = "Create";
         let form = handle!(TopicForm, ToModel<R>, req, |topic| {
@@ -524,20 +524,19 @@ impl Topic {
 Then add some traits to `forum/forms.rs`:
 
 ```rust
+use anansi::web::FormMap;
 use anansi::forms::{GetData, ToEdit};
 
 #[async_trait]
 impl<R: Request> GetData<R> for TopicForm {
-    async fn get_data(req: &R) -> Result<TopicFormData> {
-        let (title, content) = if let Ok(form_map) = req.to_form_map() {
-            let title = form_map.get("title")?.parse()?;
-            let content = form_map.get("content")?.parse()?;
-            (title, content)
-        } else {
-            let (topic, comment) = Topic::first_post(req).await?;
-            (topic.title, comment.content)
-        };
+    fn from_map(form_map: FormMap) -> Result<TopicFormData> {
+        let title = form_map.get("title")?.parse()?;
+        let content = form_map.get("content")?.parse()?;
         Ok(TopicFormData::new(title, content))
+    }
+    async fn from_request(req: &R) -> Result<TopicFormData> {
+        let (topic, comment) = Topic::first_post(req).await?;
+        Ok(TopicFormData::new(topic.title, comment.content))
     }
 }
 
@@ -565,7 +564,7 @@ use anansi::forms::ToEdit;
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(if_auth)]
-    async fn edit(mut req: R) -> Result<Response> {
+    pub async fn edit(mut req: R) -> Result<Response> {
         let title = "Update Topic";
         let button = "Update";
         let form = handle_or_404!(TopicForm, ToEdit<R>, req, |topic| {
@@ -615,7 +614,7 @@ To delete topics, edit `forum/topic/views.rs`:
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(if_auth)]
-    async fn destroy(mut req: R) -> Result<Response> {
+    pub async fn destroy(mut req: R) -> Result<Response> {
         let title = "Delete topic";
         let topic = get_or_404!(Topic, req);
         let form = handle!(req, R, {
