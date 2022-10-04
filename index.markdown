@@ -65,7 +65,7 @@ routes! {
 impl<R: Request> TopicView<R> {
     // A view of the last 25 topics.
     #[view(if_guest)]
-    async fn index(req: R) -> Result<Response> {
+    pub async fn index(req: R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
     	    .limit(25).query(&req).await?;
@@ -79,7 +79,7 @@ Templates
 Templates allow you to mix Rust with HTML for formatting.
 
 ```html
-@extend "base"
+@extend base
 
 @block title {@title}
 
