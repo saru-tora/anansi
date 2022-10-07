@@ -667,9 +667,9 @@ app_admins! {
 }
 ```
 
-![Image](admin.png)
-
 `Topic` should show up on the admin page now.
+
+![Image](admin.png)
 
 <br>
 
