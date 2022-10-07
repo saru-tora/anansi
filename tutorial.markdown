@@ -16,13 +16,13 @@ $ ananc --version
 Creating a basic site
 ---------------------
 
-Let's create a simple forum. In a terminal, go to the directory where you want to create the project, and run:
+Let's create a simple forum. The full  In a terminal, go to the directory where you want to create the project, and run:
 
 ```shell
-$ ananc new my-site
+$ ananc new mini-forum
 ```
 
-This will create the following a crate called `my-site` with the following files:
+This will create the following a crate called `mini-forum` with the following files:
 
 - **http_errors/**: Includes http error pages.
 - **main.rs**: Has a list of apps.
@@ -34,19 +34,19 @@ This will create the following a crate called `my-site` with the following files
 Starting the server
 ===================
 
-To start the web server, go to `my-site/` directory and execute:
+To start the web server, go to `mini-forum/` directory and execute:
 ```shell
 $ ananc run
 ```
 
-Visit [http://127.0.0.1:9090/](http://127.0.0.1:9090/). If everything went well, you should see the default page.
+Visit [http://127.0.0.1:9090/](http://127.0.0.1:9090/). If everything went well, you should see the default page. You can find the full code for this project [here](https://github.com/saru-tora/mini-forum).
 
 <br>
 
 Creating an app
 ===============
 
-To create an app, go to `mysite/src` and run:
+To create an app, go to `mini-forum/src` and run:
 
 ```shell
 $ ananc app forum
@@ -117,7 +117,41 @@ To prepare the migration files (which are used to keep track of the database), r
 $ ananc make-migrations forum/
 ```
 
-Then to apply the migrations, run:
+If you want to view the SQL for this migration, you can run:
+
+```shell
+$ ananc sql-migrate forum 0001
+```
+
+You should see somthing like:
+
+```sql
+BEGIN;
+
+CREATE TABLE "forum_topic" (
+	"id" bigint NOT NULL PRIMARY KEY,
+	"title" varchar(200) NOT NULL,
+	"date" datetime NOT NULL
+);
+
+CREATE TABLE "forum_comment" (
+	"id" bigint NOT NULL PRIMARY KEY,
+	"topic" bigint NOT NULL,
+	"user" bigint NOT NULL,
+	"content" varchar(40000) NOT NULL,
+	"created" datetime NOT NULL,
+	FOREIGN KEY ("topic")
+	REFERENCES "forum_topic" ("id")
+	ON DELETE CASCADE,
+	FOREIGN KEY ("user")
+	REFERENCES "auth_user" ("id")
+	ON DELETE CASCADE
+);
+
+COMMIT;
+```
+
+To apply the migrations, run:
 
 ```shell
 $ ananc migrate
@@ -142,7 +176,7 @@ use super::super::models::{Topic, topic::date};
 #[viewer]
 impl<R: Request> TopicView<R> {
     #[view(if_guest)]
-    async fn index(req: R) -> Result<Response> {
+    pub async fn index(req: R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
             .limit(25).query(&req).await?;
@@ -152,10 +186,10 @@ impl<R: Request> TopicView<R> {
 
 `if_guest` will check if the visitor is at least a guest, which is always true. Then, it will put `"Latest Topics"` into the `title` variable. The last 25 topics are put into the `topics` variable.
 
-To use these variables, add `forum/topic/templates/index.rs.html`:
+To use these variables, edit `forum/topic/templates/index.rs.html`:
 
 ```html
-@extend "base"
+@extend base
 
 @block title {@title}
 
@@ -287,7 +321,7 @@ use anansi::humanize::ago;
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(if_guest)]
-    async fn show(req: R) -> Result<Response> {
+    pub async fn show(req: R) -> Result<Response> {
         let topic = get_or_404!(Topic, req);
         let title = &topic.title;
         let comments = topic.recent_comments().limit(25).query(&req).await?;
@@ -301,7 +335,7 @@ In `show`, `get_or_404!` retrieves a specific topic by `topic_id` or returns a 4
 Now let's add the template for this view in `forum/topic/templates/show.rs.html`:
 
 ```html
-@extend "base"
+@extend base
 
 @block title {@title}
 
@@ -338,7 +372,7 @@ We can also go back to `forum/topic/templates/index.rs` and link each topic to i
 Logging in
 ----------
 
-To log in, we can reuse the admin page's user login form in `forum/topic/views.rs` (of course, you can write your own):
+To log in, we can reuse the admin page's user login form in `forum/topic/views.rs` (of course, you can write your own if you want to):
 
 ```rust
 use anansi::handle;
@@ -349,7 +383,7 @@ use anansi::util::auth::forms::UserLogin;
 impl<R: Request> TopicView {
     // --snip--
     #[view(if_guest)]
-    async fn login(mut req: R) -> Result<Response> {
+    pub async fn login(mut req: R) -> Result<Response> {
         let title = "Log in";
         let button = "Log in";
         let form = handle!(UserLogin, ToModel<R>, req, user, {
@@ -363,7 +397,7 @@ impl<R: Request> TopicView {
 `handle!` creates a new form if the request method is GET. Otherwise, it tries to do something with the submitted form (in this case, log in the user), and if that fails, gives back the form. The form can be used in `forum/topic/templates/login.rs.html`:
 
 ```html
-@extend "base"
+@extend base
 
 @block title {@title}
 
@@ -465,7 +499,7 @@ checker!(if_auth<R: Request>, |req| req.check_auth(),
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(if_auth)]
-    async fn new(mut req: R) -> Result<Response> {
+    pub async fn new(mut req: R) -> Result<Response> {
         let title = "New Topic";
         let button = "Create";
         let form = handle!(TopicForm, ToModel<R>, req, |topic| {
@@ -500,7 +534,7 @@ routes! {
 }
 ```
 
-Well, that was a lot, but now you can finally create a topic!
+Well, that was a lot of code, but now you can finally create a topic!
 
 Updating
 --------
@@ -509,7 +543,7 @@ To edit topics, we can first add another method to `forum/models.rs`:
 
 ```rust
 use anansi::web::Result;
-use crate::settings::Request;
+use crate::project::Request;
 
 impl Topic {
     // --snip--
@@ -524,20 +558,19 @@ impl Topic {
 Then add some traits to `forum/forms.rs`:
 
 ```rust
+use anansi::web::FormMap;
 use anansi::forms::{GetData, ToEdit};
 
 #[async_trait]
 impl<R: Request> GetData<R> for TopicForm {
-    async fn get_data(req: &R) -> Result<TopicFormData> {
-        let (title, content) = if let Ok(form_map) = req.to_form_map() {
-            let title = form_map.get("title")?.parse()?;
-            let content = form_map.get("content")?.parse()?;
-            (title, content)
-        } else {
-            let (topic, comment) = Topic::first_post(req).await?;
-            (topic.title, comment.content)
-        };
+    fn from_map(form_map: FormMap) -> Result<TopicFormData> {
+        let title = form_map.get("title")?.parse()?;
+        let content = form_map.get("content")?.parse()?;
         Ok(TopicFormData::new(title, content))
+    }
+    async fn from_model(topic: Topic, req: &R) -> Result<TopicFormData> {
+        let comment = topic.recent_comments().get(req).await?;
+        Ok(TopicFormData::new(topic.title, comment.content))
     }
 }
 
@@ -565,7 +598,7 @@ use anansi::forms::ToEdit;
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(if_auth)]
-    async fn edit(mut req: R) -> Result<Response> {
+    pub async fn edit(mut req: R) -> Result<Response> {
         let title = "Update Topic";
         let button = "Update";
         let form = handle_or_404!(TopicForm, ToEdit<R>, req, |topic| {
@@ -575,7 +608,7 @@ impl<R: Request> TopicView<R> {
 }
 ```
 
-`handle_or_404!` is like `handle!`, but returns a 404 error if the model can't be found. Like before, for the template, you can just copy `login.rs.html`. You can also have the link for it added in `show.rs.html` if the first post is the user's:
+`handle_or_404!` is like `handle!`, but returns a 404 error if the model can't be found. Like before, for `edit.rs.html`, you can just copy `login.rs.html`. You can also have the link for it added in `show.rs.html` if the first post is the user's:
 
 ```html
 @block content {
@@ -603,6 +636,41 @@ routes! {
 }
 ```
 
+Admin
+-----
+
+At this point, you can add the `Topic` model to the admin page. First, create `forum/admin.rs`:
+
+```rust
+use anansi::{init_admin, register, model_admin};
+use super::models::Topic;
+
+init_admin! {
+    register!(Topic),
+}
+
+model_admin!(Topic {});
+```
+
+Add it to `forum/mod.rs`:
+
+```rust
+pub mod admin;
+```
+
+Finally, add the app to `main.rs`:
+
+```rust
+app_admins! {
+    auth,
+    forum,
+}
+```
+
+![Image](admin.png)
+
+`Topic` should show up on the admin page now.
+
 <br>
 
 Deleting
@@ -615,7 +683,7 @@ To delete topics, edit `forum/topic/views.rs`:
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(if_auth)]
-    async fn destroy(mut req: R) -> Result<Response> {
+    pub async fn destroy(mut req: R) -> Result<Response> {
         let title = "Delete topic";
         let topic = get_or_404!(Topic, req);
         let form = handle!(req, R, {
@@ -629,7 +697,7 @@ impl<R: Request> TopicView<R> {
 `forum/topic/templates/destroy.rs.html` is relatively simple:
 
 ```html
-@extend "base"
+@extend base
 
 @block title {@title}
 
@@ -637,7 +705,7 @@ impl<R: Request> TopicView<R> {
     <h1>@title</h1>
     Are you sure you want to delete the topic "@topic.title"?
     @build form {
-	@unescape form.submit("Confirm")
+        @unescape form.submit("Confirm")
     }
 }
 ```
