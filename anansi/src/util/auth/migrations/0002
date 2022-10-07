@@ -1,6 +1,3 @@
-BEGIN;
-
-INSERT INTO auth_user (id, username, password, is_admin)
-VALUES (0, "guest", "", 0);
-
-COMMIT;
+anansi::operations! {
+    migrations::RunSql::new("INSERT INTO auth_user (id, username, password, is_admin) VALUES (0, \"guest\", \"\", 0);"),
+}

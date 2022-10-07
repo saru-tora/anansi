@@ -21,9 +21,12 @@ thread_local! {
 pub fn encode(bi: BigInt) -> String {
     let mut n = bi.into();
     let mut v = vec![];
-    while n > 0 {
+    loop {
         v.push(ENCODE[(n%64) as usize]);
         n /= 64;
+        if n == 0 {
+            break;
+        }
     }
     v.reverse();
     String::from_utf8(v).unwrap()
@@ -89,4 +92,9 @@ fn plural(n: i32, unit: &str) -> String {
     } else {
         format!("{} {}s ago", n, unit)
     }
+}
+
+pub fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().unwrap().to_uppercase().collect::<String>() + c.as_str()
 }

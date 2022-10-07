@@ -27,6 +27,7 @@ async fn _admin(pool: DbPool) -> Result<()> {
             Ok(name) => break name,
             Err(feedback) => {
                 eprintln!("{}", feedback.warning());
+                eprintln!("{}\n", feedback.suggestion());
                 input.clear();
             },
         }

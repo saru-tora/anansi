@@ -1,7 +1,8 @@
-use anansi::project::prelude::*;
+use anansi::*;
+use anansi::util::{auth, sessions, admin};
 
 mod urls;
-mod settings;
+mod project;
 mod http_errors;
 
 apps! {
@@ -13,7 +14,7 @@ app_statics! {
     admin,
 }
 
-pages! {
+app_admins! {
     auth,
 }
 

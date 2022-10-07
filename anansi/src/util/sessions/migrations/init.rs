@@ -1,5 +1,5 @@
-use anansi::migrations;
+use anansi::{migrations, models};
 
-migrations! {
+anansi::local_migrations! {
     "0001",
 }

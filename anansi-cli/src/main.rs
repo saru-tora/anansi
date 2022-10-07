@@ -7,6 +7,8 @@ use std::env;
 use std::collections::HashMap;
 use std::process::Command;
 
+use which::which;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn main() {
@@ -44,6 +46,9 @@ pub fn main() {
             "make-view" => {
                 make_view(&mut args);
             },
+            "sql-migrate" => {
+                cargo_run(&mut args);
+            }
             "make-migrations" => {
                 cargo_run(&mut args);
             },
@@ -71,6 +76,11 @@ macro_rules! cp_as {
     };
 }
 
+fn uppercase(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().unwrap().to_uppercase().collect::<String>() + c.as_str()
+}
+
 fn make_view(args: &Vec<String>) {
     for arg in &args[2..] {
         let mview = format!("{}", arg);
@@ -79,26 +89,27 @@ fn make_view(args: &Vec<String>) {
         fs::create_dir(&temp).expect("Failed to create path");
         let parsed = format!("{}/templates/.parsed", arg);
         fs::create_dir(&parsed).expect("Failed to create path");
-        let mut c = arg.chars();
-        let upper = c.next().unwrap().to_uppercase().collect::<String>() + c.as_str();
-        make_file(arg, "views", ".rs", format!("use crate::prelude::*;\nuse super::super::models::{{{}}};\n\n#[viewer]\nimpl<R: Request> {0}View<R> {{\n    #[view(if_guest)]\n    async fn index(req: R) -> Result<Response> {{\n        let title = \"Title\";\n    }}\n}}", upper));
+        let upper = uppercase(arg);
+        make_file(arg, "views", ".rs", format!("use crate::prelude::*;\nuse super::super::models::{{{}}};\n\n#[base_view]\nfn base<R: Request>(_req: R) -> Result<Response> {{}}\n\n#[viewer]\nimpl<R: Request> {0}View<R> {{\n    #[view(if_guest)]\n    pub async fn index(req: R) -> Result<Response> {{\n        let title = \"Title\";\n    }}\n}}", upper));
         make_file(arg, "mod", ".rs", "pub mod views;".to_string());
         cp_as!(format!("{}/index.rs.html", temp), "templates/index.rs.html");
+        cp_as!(format!("{}/base.rs.html", temp), "templates/base.rs.html");
         append(".", "mod.rs", &format!("pub mod {};\n", arg).into_bytes());
         println!("Created view \"{}\"", arg);
     }
 }
 
 fn usage() {
-    eprintln!("Anansi's project manager\n\nUSAGE:\n    ananc [OPTIONS] [SUBCOMMAND]\n\nOPTIONS:\n    --version\tPrint version info and exit\n\nIn addition to Cargo's commands, some others are:\n    app\t\t\tCreate an app\n    make-migrations\tCreate migration files for the project\n    migrate\t\tApply migrations");
+    eprintln!("Anansi's project manager\n\nUSAGE:\n    ananc [OPTIONS] [SUBCOMMAND]\n\nOPTIONS:\n    --version\tPrint version info and exit\n\nIn addition to Cargo's commands, some others are:\n    app\t\t\tCreate an app\n    sql-migrate\t\tView SQL for migration files\n    make-migrations\tCreate migration files for the project\n    migrate\t\tApply migrations");
 }
 
 fn new(args: &Vec<String>) {
     let name = &args[2];
     let src = &format!("{}/src/", args[2]);
-    cp!(src, "settings.rs", "urls.rs", "main.rs");
-    append(name, ".gitignore", b"/secret\n/database.db*");
-    append(name, "Cargo.toml", b"anansi = \"0.1.0\"\nasync-trait = \"0.1.57\"");
+    cp!(args[2], "settings.toml");
+    cp!(src, "project.rs", "urls.rs", "main.rs");
+    append(name, ".gitignore", b"/settings.toml\n/database.db*");
+    append(name, "Cargo.toml", &format!("anansi = \"{}\"\nasync-trait = \"0.1.57\"", VERSION).into_bytes());
     fs::create_dir(format!("{}/src/http_errors", name)).unwrap();
     cp!(src, "http_errors/500.html");
     cp!(src, "http_errors/views.rs");
@@ -126,8 +137,7 @@ fn app(args: &Vec<String>) {
     make(name, "mod", "pub mod init;\npub mod urls;\npub mod models;\npub mod migrations;\n".to_string());
     make(name, "urls", "use anansi::web::prelude::*;\n\nroutes! {}".to_string());
     make(name, "migrations/mod", "pub mod init;".to_string());
-    make(name, "migrations/init", "anansi::migrations! {}".to_string());
-    cp!(name, "base.rs.html");
+    make(name, "migrations/init", "use anansi::migrations::prelude::*;\n\nlocal_migrations! {}".to_string());
     cp!(name, "models.rs");
     println!("Created app \"{name}\"");
 }
@@ -141,7 +151,11 @@ fn make(dir: &str, name: &str, content: String) {
 }
 
 fn template(args: &Vec<String>, mut force: bool, extra: &str) {
-    let date = fs::metadata(&args[0]).unwrap().modified().unwrap();
+    let path = match fs::canonicalize(&args[0]) {
+        Ok(o) => o,
+        Err(_) => which(&args[0]).unwrap(),
+    };
+    let date = fs::metadata(path).unwrap().modified().unwrap();
     let cwd = env::current_dir().unwrap();
     let cs = cwd.clone().into_os_string().into_string().unwrap() + extra;
     let dir = match cs.rfind("/src") {
@@ -195,7 +209,7 @@ fn check_template(f: std::fs::DirEntry, parent: &String, name: String, date: std
     let (n, _) = n.split_once('.').unwrap();
     let p = format!("{}/.parsed/{}.in", parent, n);
     let prs = format!("{}/.parsed", parent);
-    let parser = Parser {};
+    let mut parser = Parser::new();
     if std::path::Path::new(&prs).exists() {
         let parsed = fs::metadata(p);
         if parsed.is_err() {
@@ -227,27 +241,51 @@ fn cargo(args: &Vec<String>) {
     child.wait().expect("failed to wait on child");
 }
 
-struct Parser {}
+struct Parser {
+    blocks: Vec<String>,
+}
 
 impl Parser {
-    fn parse(&self, name: &str) {
+    fn new() -> Self {
+        Self {blocks: vec![]}
+    }
+    fn parse(&mut self, name: &str) {
         let content = fs::read_to_string(name).unwrap();
         let mut chrs = content.chars();
         let e = collect(&mut chrs, ' ');
         let (dir, temp) = name.rsplit_once('/').unwrap();
-        let mut view = if e == "@extend" {
-            self.extend(dir, &mut chrs)
+        let mut base = false;
+        let view = if e == "@extend" {
+            self.extend(&mut chrs)
+        } else if e == "@base_extend" {
+            base = true;
+            self.extend(&mut chrs)
         } else {
             let mut view = String::from("{let mut _c = String::new();");
             view.push_str(&self.process(content));
+            view.push_str("Ok(Response::new(\"HTTP/1.1 200 OK\", _c.into_bytes()))}");
             view
         };
-        view.push_str("Ok(Response::new(\"HTTP/1.1 200 OK\", _c.into_bytes()))}");
         let out = &temp[..temp.find('.').unwrap()];
+
+        if !self.blocks.is_empty() || base {
+            let bname = match name.rsplit_once('/') {
+                Some((_, n)) => n.split_once('.').unwrap().0,
+                None => name,
+            };
+            let mut s = format!("pub struct {}Args {{", uppercase(bname));
+            for block in &self.blocks {
+                s.push_str(&format!("pub _{}: String,", block));
+            }
+            s.push_str("}");
+            let mut f = fs::File::create(format!("{}/.parsed/{}_args.in", dir, out)).unwrap();
+            write!(f, "{}", s).unwrap();
+        }
+
         let mut f = fs::File::create(format!("{}/.parsed/{}.in", dir, out)).unwrap();
         write!(f, "{}", view).unwrap();
     }
-    fn process(&self, content: String) -> String {
+    fn process(&mut self, content: String) -> String {
         let mut view = String::from("_c.push_str(\"");
         let mut chars = content.chars();
         while let Some(c) = chars.next() {
@@ -269,9 +307,8 @@ impl Parser {
         view.push_str("\");");
         view
     }
-    fn extend(&self, dir: &str, chars: &mut Chars) -> String {
-        skip(chars, '"');
-        let filename = collect(chars, '"');
+    fn extend(&mut self, chars: &mut Chars) -> String {
+        let basename = collect(chars, '\n').trim().to_string();
         let mut blocks = HashMap::new();
         loop {
             skip(chars, '@');
@@ -287,23 +324,21 @@ impl Parser {
                 }
                 get_block(chars, &mut block);
                 let block = self.process(block);
+                let block = format!("{{let mut _c = String::new();{} _c}}", block);
                 blocks.insert(name, block);
             } else {
                 break;
             }
         }
-        let cname = format!("{}/../../{}.rs.html", dir, filename);
-        let content = fs::read_to_string(&cname).expect(&format!("{} not found", cname));
-        let content = self.process(content);
-        self.replace(content, blocks)
-    }
-    fn replace(&self, mut content: String, blocks: HashMap<String, String>) -> String {
+        let args = format!("{}Args", uppercase(&basename));
+        let mut ext = format!("{}(req, {}{{", basename, args);
         let mut s = String::from("{");
         for (name, src) in blocks {
-            s.push_str(&format!("let _{} = |_c: &mut String| -> Result<()> {{{}Ok(())}};", name, src));
+            s.push_str(&format!("let _{} = {{{}}};", name, src));
+            ext.push_str(&format!("_{}, ", name));
         }
-        s.push_str("let mut _c = String::new();");
-        s.push_str(&mut content);
+        s.push_str(&ext);
+        s.push_str("})}");
         s
     }
 }
@@ -432,7 +467,7 @@ fn get_block(chars: &mut Chars, block: &mut String) {
 }
 
 impl Parser {
-    fn at(&self, view: &mut String, chars: &mut Chars) {
+    fn at(&mut self, view: &mut String, chars: &mut Chars) {
         view.push_str("\");");
         let mut s = String::new();
         let mut extra = String::new();
@@ -477,7 +512,8 @@ impl Parser {
             "while" => {},
             "block" => {
                 let (name, ex) = collect_name(chars);
-                view.push_str(&format!("_{}(&mut _c)?;_c.push_str(\"{}", name, ex));
+                self.blocks.push(name.clone());
+                view.push_str(&format!("_c.push_str(&_base_args._{});_c.push_str(\"{}", name, ex));
                 return;
             }
             "build" => {
@@ -520,7 +556,17 @@ impl Parser {
                 return;
             },
             _ => {
-                variable(&extra, &mut s, chars, view);
+                let mut c = s.chars();
+                if c.next().unwrap() == '{' {
+                    let r: String = c.collect();
+                    let blk = collect(chars, '}');
+                    view.push_str(&r);
+                    view.push(' ');
+                    view.push_str(&blk);
+                    view.push_str("_c.push_str(\"");
+                } else {
+                    variable(&extra, &mut s, chars, view);
+                }
                 return;
             },
         }

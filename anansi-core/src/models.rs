@@ -61,6 +61,9 @@ impl Boolean {
             };
             Ok(Self{b})
     }
+    pub fn field() -> ModelField {
+        ModelField::new("boolean".to_string())
+    }
 }
 
 impl fmt::Display for Boolean {
@@ -108,6 +111,9 @@ impl BigInt {
     }
     pub fn into(self) -> i64 {
         self.n
+    }
+    pub fn field() -> ModelField {
+        ModelField::new("bigint".to_string())
     }
 }
 
@@ -157,6 +163,9 @@ impl Text {
     }
     pub fn from(s: String) -> Self {
         Self {s}
+    }
+    pub fn field() -> ModelField {
+        ModelField::new("text".to_string())
     }
 }
 
@@ -221,6 +230,9 @@ impl<const N: u16> VarChar<N> {
     }
     pub fn as_str(&self) -> &str {
         &self.s
+    }    
+    pub fn field() -> ModelField {
+        ModelField::new(format!("varchar({})", N))
     }
 }
 
@@ -447,6 +459,48 @@ mod private {
     impl Sealed for String {}
 }
 
+#[derive(Clone)]
+pub struct ModelField {
+    ty: String,
+    primary_key: bool,
+    unique: bool,
+    null: bool,
+    constraints: Vec<String>,
+}
+
+impl ModelField {
+    pub fn new(ty: String) -> Self {
+        Self {ty, primary_key: false, unique: false, null: false, constraints: vec![]}
+    }
+    pub fn primary_key(mut self) -> Self {
+        self.primary_key = true;
+        self
+    }
+    pub fn unique(mut self) -> Self {
+        self.unique = true;
+        self
+    }
+    pub fn foreign_key(mut self, app_name: &'static str, other_name: &'static str, pk_name: &'static str) -> Self {
+        self.constraints.push(format!("FOREIGN KEY (\"{}\")", other_name));
+        self.constraints.push(format!("REFERENCES \"{}_{}\" (\"{}\")", app_name, other_name, pk_name));
+        self.constraints.push("ON DELETE CASCADE".to_string());
+        self
+    }
+    pub fn to_syntax(&self) -> (String, Vec<String>) {
+        let mut s = format!("{}", self.ty);
+        if !self.null {
+            s.push_str(" NOT NULL");
+        }
+        if self.primary_key {
+            s.push_str(" PRIMARY KEY");
+        }
+        if self.unique {
+            s.push_str(" UNIQUE");
+        }
+        (s, self.constraints.clone())
+    }
+}
+
 pub trait DataType: Clone + private::Sealed {
     type T;
     fn from_val(t: Self::T) -> Result<Self> where Self: Sized;
@@ -465,12 +519,14 @@ pub trait ToUrl {
 #[async_trait]
 pub trait Model: Sized {
     type Pk: DataType;
+    const NAME: &'static str;
     const PK_NAME: &'static str;
     fn pk(&self) -> Self::Pk;
     fn find(data: Self::Pk) -> Whose<Self> where Self: Sized;
     fn find_in(keys: &Vec<Self::Pk>) -> Limit<Self> where Self: Sized;
     fn count() -> Count<Self>;
     fn whose(w: WhoseArg<Self>) -> Whose<Self> where Self: Sized;
+    fn limit(n: u32) -> Limit<Self> where Self: Sized;
     fn get(row: DbRow) -> Result<Self> where Self: Sized;
     fn from(rows: DbRowVec) -> Result<Objects<Self>> where Self: Sized;
     fn order_by(w: OrderByArg<Self>) -> OrderBy<Self> where Self: Sized;

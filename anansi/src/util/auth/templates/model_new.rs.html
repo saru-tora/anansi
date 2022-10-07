@@ -6,7 +6,7 @@
 
 @block content {
 <div class="lower">
-	@link req, Self::index {Home}
+	@link req, BasicAdminSite::index {Home}
 </div>
 <div class="site">
 	<div class="sub">
@@ -14,14 +14,16 @@
 	</div>
 	<div>
 		@build form {
-		@for field in form.fields() {
+		@{let mut n = 0;}
+		@while let Some(field) = form.field(n) {
+		@{n += 1;}
 		@unescape field.label_tag()
 		<div class="namebox">
 			@unescape field
 			@unescape field.errors()
 		</div>
 		}
-		@unescape form.submit("Create")
+		@unescape form.submit(button)
 		}
 	</div>
 </div>

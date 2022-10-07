@@ -5,7 +5,7 @@ use std::error::Error;
 
 use crate::db::{invalid, Db, DbTypeInfo};
 use crate::web::Result;
-use crate::models::DataType;
+use crate::models::{DataType, ModelField};
 use sqlx::{Type, Decode, Database, database::HasValueRef};
 
 #[derive(PartialEq, PartialOrd, Clone, Copy, Debug)]
@@ -188,6 +188,9 @@ impl DateTime {
         let minute = s/60;
         s -= minute*60;
         Self {date: Date {year, month, day: yday as u8 + 1}, time: Time {hour: hour as u8, minute: minute as u8, second: s as u8}}
+    }
+    pub fn field() -> ModelField {
+        ModelField::new("datetime".to_string())
     }
 }
 

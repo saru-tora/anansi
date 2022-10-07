@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use anansi::{form, form_error, err_box};
-use anansi::web::{BaseRequest, Result};
+use anansi::web::{BaseRequest, Result, FormMap};
 use anansi::db::invalid;
 use anansi::models::{Model, DataType, Boolean};
-use anansi::forms::{Form, Field, VarChar, FormError, ToModel};
+use anansi::forms::{Form, Field, VarChar, FormError, ToModel, GetData, ToEdit};
 use super::models::{User, user::username, Group, hash_password};
+use super::admin::Request;
 
 #[form(User)]
 pub struct UserLogin {
@@ -52,6 +53,7 @@ impl<B: BaseRequest> ToModel<B> for UserNew {
             Ok(username) => username,
             Err(feedback) => {
                 self.username.add_error(Box::new(FormError::new(feedback.warning())));
+                self.username.add_error(Box::new(FormError::new(feedback.suggestion())));
                 match feedback.into_username() {
                     Some(username) => username,
                     None => return Err(invalid()),
@@ -72,15 +74,60 @@ impl<B: BaseRequest> ToModel<B> for UserNew {
     }
 }
 
+#[form(User)]
+pub struct UserForm {
+    pub username: VarChar<150>,
+}
+
+#[async_trait]
+impl<R: Request> GetData<R> for UserForm {
+    fn from_map(form_map: FormMap) -> Result<UserFormData> {
+        Ok(UserFormData::new(form_map.get("username")?.parse()?))
+    }
+    async fn from_model(user: User, _req: &R) -> Result<UserFormData> {
+        Ok(UserFormData::new(user.username))
+    }
+}
+
+#[async_trait]
+impl<R: Request> ToEdit<R> for UserForm {
+    async fn on_post(&mut self, data: UserFormData, req: &R) -> Result<User> {
+        let mut user: User = req.to_model().await?;
+        user.username = data.username;
+        user.update(req).await?;
+        Ok(user)
+    }
+}
+
 #[form(Group)]
-pub struct GroupNew {
+pub struct GroupForm {
     pub name: VarChar<150>,
 }
 
 #[async_trait]
-impl<B: BaseRequest> ToModel<B> for GroupNew {
-    async fn on_post(&mut self, data: GroupNewData, req: &B) -> Result<Group> {
+impl<B: Request> ToModel<B> for GroupForm {
+    async fn on_post(&mut self, data: GroupFormData, req: &B) -> Result<Group> {
         Group::new(data.name).save(req).await
             .or(err_box!(FormError::new("Problem adding group.")))
+    }
+}
+
+#[async_trait]
+impl<R: Request> GetData<R> for GroupForm {
+    fn from_map(form_map: FormMap) -> Result<GroupFormData> {
+        Ok(GroupFormData::new(form_map.get("name")?.parse()?))
+    }
+    async fn from_model(group: Group, _req: &R) -> Result<GroupFormData> {
+        Ok(GroupFormData::new(group.name))
+    }
+}
+
+#[async_trait]
+impl<R: Request> ToEdit<R> for GroupForm {
+    async fn on_post(&mut self, data: GroupFormData, req: &R) -> Result<Group> {
+        let mut group: Group = req.to_model().await?;
+        group.name = data.name;
+        group.update(req).await?;
+        Ok(group)
     }
 }

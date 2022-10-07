@@ -1,0 +1,1 @@
+pub struct BaseArgs {pub _title: String,pub _content: String,}

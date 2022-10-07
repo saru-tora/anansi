@@ -1,10 +1,24 @@
-BEGIN;
-
-CREATE TABLE "sessions_session" (
-	"id" NOT NULL PRIMARY KEY,
-	"data" text NOT NULL,
-	"secret" varchar(32) NOT NULL,
-	"expires" datetime NOT NULL
-);
-
-COMMIT;
+anansi::operations! {
+    migrations::CreateModel {
+        prefix: "sessions",
+        name: "session",
+        fields: vec![
+            (
+                "id",
+                models::BigInt::field().primary_key()
+            ),
+            (
+                "data",
+                models::Text::field()
+            ),
+            (
+                "secret",
+                models::VarChar::<32>::field()
+            ),
+            (
+                "expires",
+                models::DateTime::field()
+            ),
+        ],
+    },
+}

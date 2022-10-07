@@ -1,7 +1,7 @@
 extern crate proc_macro2;
 use std::collections::HashMap;
 use proc_macro2::TokenStream;
-use syn::{parse_macro_input, DeriveInput, Data, Fields, Ident, ItemFn, Token, Attribute, Expr};
+use syn::{parse_macro_input, DeriveInput, Data, Fields, Ident, ItemFn, Token, Attribute, Expr, ExprStruct};
 use syn::{Type, GenericParam, ItemImpl};
 use syn::Type::Path;
 use syn::token::Comma;
@@ -78,6 +78,7 @@ pub fn model_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenSt
         };
         fv.push(q3);
     }
+    let name_string = name.to_string();
     let table = quote! {&format!("{}_{}", super::init::APP_NAME, #lowercase)};
     let model_fields = format_ident!("{}Fields", name);
     
@@ -86,6 +87,7 @@ pub fn model_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenSt
         #[async_trait::async_trait]
         impl anansi::models::Model for #name {
             type Pk = #pt;
+            const NAME: &'static str = #name_string;
             const PK_NAME: &'static str = #pk_name;
             fn pk(&self) -> #pt {
                 self.#pk_id.clone()
@@ -101,6 +103,9 @@ pub fn model_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenSt
             }
             fn whose(w: anansi::db::WhoseArg<Self>) -> anansi::db::Whose<Self> {
                 anansi::db::Whose::from(anansi::db::Builder::select(&[#(#members),*], #table).whose().append(w.builder()))
+            }
+            fn limit(n: u32) -> anansi::db::Limit<Self> {
+                anansi::db::Limit::from(anansi::db::Builder::select(&[#(#members),*], #table).limit(n))
             }
             fn get(row: anansi::db::DbRow) -> anansi::web::Result<Self> {
                 Ok(Self {#init})
@@ -223,7 +228,9 @@ pub fn form_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStr
     let mut members = Vec::new();
     let mut members2 = Vec::new();
     let mut member_names = Vec::new();
-    let init = form_init(&input.data, &mut data_members, &mut members, &mut members2, &mut member_names, &mut fv, &mut fv2);
+    let mut member_types = Vec::new();
+    let init = form_init(&input.data, &mut data_members, &mut members, &mut members2, &mut member_names, &mut member_types, &mut fv, &mut fv2);
+    let name_strings: Vec<String> = member_names.iter().map(|n| n.to_string()).collect();
     let model_data = format_ident!("{}Data", name);
     let model_fields = format_ident!("{}Fields", name);
     let expanded = quote! {
@@ -306,16 +313,33 @@ pub fn form_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStr
             fn add_error(&mut self, e: Box<dyn std::error::Error + Send + Sync>) {
                 self.errors.add_error(e);
             }
-        }
-        impl #name {
-            pub fn set_data(&mut self, data: Option<#model_data>) {
+            fn set_data(&mut self, data: Option<#model_data>) {
                 self.data = data
             }
+            fn field_names() -> &'static [&'static str] {
+                &[#(#name_strings),*]
+            }
+            fn field(&self, n: usize) -> Option<&dyn anansi::forms::Field> {
+                match n {
+                    #(#members)*
+                    _ => None,
+                }
+            }
+        }
+        impl<'a> IntoIterator for &'a #name {
+            type Item = &'a dyn anansi::forms::Field;
+            type IntoIter = #model_fields<'a>;
+
+            fn into_iter(self) -> #model_fields<'a> {
+                #model_fields {counter: 0, form: self}
+            }
+        }
+        impl #name {
             pub fn fields(&self) -> #model_fields {
-                #model_fields {counter: 0, form: &self}
+                #model_fields {counter: 0, form: self}
             }
             pub fn check_field_errors(&self) -> anansi::web::Result<()> {
-                for field in self.fields() {
+                for field in self {
                     if !field.errors().is_empty() {
                         return Err(anansi::db::invalid());
                     }
@@ -330,10 +354,8 @@ pub fn form_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStr
         impl<'a> Iterator for #model_fields<'a> {
             type Item = &'a dyn anansi::forms::Field;
             fn next(&mut self) -> Option<Self::Item> {
-                let field = match self.counter {
-                    #(#members)*
-                    _ => None,
-                };
+                use anansi::forms::Form;
+                let field = self.form.field(self.counter);
                 self.counter += 1;
                 field
             }
@@ -346,6 +368,7 @@ pub fn form_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStr
 pub fn form(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let args = parse_macro_input!(args as SchemaArgs);
     let input = parse_macro_input!(input as DeriveInput);
+    let attrs = &input.attrs;
     let name = input.ident;
     let mut v = Vec::new();
     let has_model = if !args.vars.is_empty() {
@@ -378,6 +401,7 @@ pub fn form(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> pr
     }
     let q = quote! {
         #[derive(anansi::Form)]
+        #(#attrs)*
         pub struct #name {
             #(#v),*
         }
@@ -404,7 +428,7 @@ fn get_attrs(attrs: &Vec<Attribute>) -> HashMap<String, String> {
     hm
 }
 
-fn form_init(data: &Data, data_members: &mut Vec<TokenStream>, members: &mut Vec<TokenStream>, members2: &mut Vec<TokenStream>, member_names: &mut Vec<Ident>, fv: &mut Vec<TokenStream>, fv2: &mut Vec<TokenStream>) -> TokenStream {
+fn form_init(data: &Data, data_members: &mut Vec<TokenStream>, members: &mut Vec<TokenStream>, members2: &mut Vec<TokenStream>, member_names: &mut Vec<Ident>, member_types: &mut Vec<TokenStream>, fv: &mut Vec<TokenStream>, fv2: &mut Vec<TokenStream>) -> TokenStream {
     match *data {
         Data::Struct(ref data) => {
             match data.fields {
@@ -455,7 +479,7 @@ fn form_init(data: &Data, data_members: &mut Vec<TokenStream>, members: &mut Vec
                             },
                         };
                         let q3 = quote! {
-                            #n => Some(&self.form.#name as &dyn anansi::forms::Field),
+                            #n => Some(&self.#name as &dyn anansi::forms::Field),
                         };
                         let q4 = quote! {
                             self.#name.mut_widget().mut_attrs().insert("value", &anansi::web::html_escape(&format!("{}", data.#name)));
@@ -467,6 +491,7 @@ fn form_init(data: &Data, data_members: &mut Vec<TokenStream>, members: &mut Vec
                         members.push(q3);
                         members2.push(q4);
                         member_names.push(name.clone().unwrap());
+                        member_types.push(quote!{#ty});
                         quote_spanned! {f.span() =>
                             pub #name: anansi::models::#ty,
                         }
@@ -639,6 +664,40 @@ fn model_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, members
     }
 }
 
+fn uppercase(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().unwrap().to_uppercase().collect::<String>() + c.as_str()
+}
+
+#[proc_macro_attribute]
+pub fn base_view(_args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as ItemFn);
+    let sig = &input.sig;
+    let generics = &sig.generics;
+    let fname = &sig.ident;
+    let fnargs = &sig.inputs;
+    let name = String::from("/.parsed/") + &sig.ident.to_string() + ".in";
+    let args_name = String::from("/.parsed/") + &sig.ident.to_string() + "_args.in";
+    let stmts = input.block.stmts;
+    let rty = match &input.sig.output {
+        syn::ReturnType::Type(_, ty) => match &**ty {
+            Type::Path(path) => {
+                &path.path.segments
+            },
+            _ => panic!("Could not get path"),
+        },
+        _ => panic!("Could not get return type"),
+    };
+    let base_args = format_ident!("{}Args", uppercase(&fname.to_string()));
+    quote! {
+        include!(concat!("templates", #args_name));
+        pub fn #fname #generics (#fnargs, _base_args: #base_args) -> #rty {
+            #(#stmts)*
+            include!(concat!("templates", #name))
+        }
+    }.into()
+}
+
 #[proc_macro_attribute]
 pub fn view(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as ItemFn);
@@ -662,7 +721,77 @@ pub fn view(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> pr
 #[proc_macro_attribute]
 pub fn check(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as ItemFn);
+    let args = parse_macro_input!(args as syn::ExprPath);
+    let generics = input.sig.generics;
+    let vis = input.vis;
+    let sig_ident = input.sig.ident;
+    let _sig_ident = format_ident!("_{}", sig_ident);
+    let (req, ty) = match &input.sig.inputs[0] {
+        Typed(pat) => {
+            let req = match &*pat.pat {
+                Pat::Ident(id) => id,
+                _ => panic!("Could not get request"),
+            };
+            let ty = match &*pat.ty {
+                Type::Path(path) => {
+                    &path.path.segments
+                },
+                _ => panic!("Could not get type"),
+            };
+            (req, ty)
+        },
+        _ => panic!("Not type"),
+    };
+    let rty = match &input.sig.output {
+        syn::ReturnType::Type(_, ty) => match &**ty {
+            Type::Path(path) => {
+                &path.path.segments
+            },
+            _ => panic!("Could not get path"),
+        },
+        _ => panic!("Could not get return type"),
+    };
+    let func = &args;
+    let stmts = input.block.stmts;
+    let mut generic_idents = quote!{};
+    let where_clause = &generics.where_clause;
+    let _sig_generic = if generics.lt_token.is_none() {
+        quote! {#_sig_ident}
+    } else {
+        let mut v = vec![];
+        for param in &generics.params {
+            match param {
+                GenericParam::Type(ty) => {
+                    let t = &ty.ident;
+                    v.push(quote!{#t});
+                },
+                GenericParam::Lifetime(lt) => {
+                    let l = &lt.lifetime;
+                    v.push(quote!{#l});
+                },
+                _ => unimplemented!(),
+            }
+        }
+        generic_idents = quote! {::<#(#v,)*>};
+        quote! {#_sig_ident::#generics}
+    };
+    let q = quote! {
+        async fn #_sig_ident #generics (#req: #ty) -> #rty #where_clause {
+            #(#stmts)*
+        }
+        #vis fn #sig_ident #generics (_raw: #ty) -> std::pin::Pin<Box<dyn std::future::Future<Output = #rty> + Send>> #where_clause {
+            Box::pin(#func(_raw, Self::#_sig_ident #generic_idents))
+        }
+    };
+    q.into()
+}
+
+#[proc_macro_attribute]
+pub fn check_fn(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as ItemFn);
     let args = parse_macro_input!(args as Args);
+    let generics = input.sig.generics;
+    let vis = input.vis;
     let sig_ident = input.sig.ident;
     let _sig_ident = format_ident!("_{}", sig_ident);
     let (req, ty) = match &input.sig.inputs[0] {
@@ -692,12 +821,26 @@ pub fn check(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> p
     };
     let func = &args.vars[0];
     let stmts = input.block.stmts;
+    let mut generic_idents = quote!{};
+    let _sig_generic = if generics.lt_token.is_none() {
+        quote! {#_sig_ident}
+    } else {
+        let mut v = vec![];
+        for param in &generics.params {
+            match param {
+                GenericParam::Type(ty) => v.push(ty.ident.clone()),
+                _ => unimplemented!(),
+            }
+        }
+        generic_idents = quote! {::<#(#v,)*>};
+        quote! {#_sig_ident::#generics}
+    };
     let q = quote! {
-        async fn #_sig_ident(#req: #ty) -> #rty {
+        async fn #_sig_ident #generics (#req: #ty) -> #rty {
             #(#stmts)*
         }
-        pub fn #sig_ident(_raw: #ty) -> std::pin::Pin<Box<dyn std::future::Future<Output = #rty> + Send>> {
-            Box::pin(#func(_raw, Self::#_sig_ident))
+        #vis fn #sig_ident #generics(_raw: #ty) -> std::pin::Pin<Box<dyn std::future::Future<Output = #rty> + Send>> {
+            Box::pin(#func(_raw, #_sig_ident #generic_idents))
         }
     };
     q.into()
@@ -766,6 +909,7 @@ impl Parse for ViewerArgs {
         })
     }
 }
+
 struct SchemaArgs {
     vars: Vec<Expr>,
 }
@@ -812,6 +956,148 @@ impl Parse for UrlArgs {
 }
 
 #[proc_macro]
+pub fn model_admin(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as ExprStruct);
+    let path = &input.path;
+    let ps = quote! {#path}.to_string();
+    let (cra, request) = if !ps.starts_with("auth ::") {
+        (quote! {anansi}, quote!{crate::project::Request})
+     } else {
+        (quote! {crate}, quote!{crate::util::auth::admin::Request})
+     };
+    let form_path: syn::Path = syn::parse_str(&format!("super::forms::{}Form", ps)).unwrap();
+    let mut admin_form = quote! {type AdminForm = #form_path;};
+    let mut add_form = quote! {type AddForm = #form_path;};
+    let mut fv = vec![];
+    let mut auto_fields = true;
+    for field in &input.fields {
+        if let syn::Member::Named(name) = &field.member {
+            match name.to_string().as_str() {
+                "form" => {
+                    let expr = &field.expr;
+                    admin_form = quote! {type AdminForm = #expr;};
+                },
+                "add_form" => {
+                    let expr = &field.expr;
+                    add_form = quote! {type AddForm = #expr;};
+                },
+                "fields" => {
+                    if let Expr::Array(arr) = &field.expr {
+                        auto_fields = false;
+                        let mut es = vec![];
+                        let mut elements = vec![];
+                        let elems = &arr.elems;
+                        for elem in elems {
+                            es.push(quote! {#elem}.to_string());
+                            elements.push(elem);
+                        }
+                        fv.push(quote! {
+                            fn field_names() -> &'static [&'static str] {
+                                &[#(#es)*]
+                            }
+                            async fn fields(self, _req: &R) -> Vec<String> {
+                                vec![#(self.#elements.to_string(),)*]
+                            }
+                        });
+                    } else {
+                        panic!("Expected array");
+                    }
+                },
+                _ => panic!("Unexpected field"),
+            }
+        } else {
+            panic!("Expected named member");
+        }
+    }
+    if auto_fields {
+        fv.push(quote! {
+            fn field_names() -> &'static [&'static str] {
+                use anansi::forms::Form;
+                Self::AdminForm::field_names()
+            }
+            async fn fields(self, req: &R) -> Vec<String> {
+                use anansi::forms::{Form, GetData};
+                let data = Self::AdminForm::from_model(self, req).await.unwrap();
+                let mut form = Self::AdminForm::from_data(data).await;
+                form.fill().unwrap();
+                let mut v = vec![];
+                for field in form.fields() {
+                    let s = field.widget().attrs().get("value").unwrap().clone();
+                    v.push(s);
+                }
+                v
+            }
+        });
+    }
+    let q = quote! {
+        #[async_trait::async_trait]
+        impl<R: #request> #cra::util::admin::site::ModelAdmin<R> for #path {
+            #admin_form
+            #add_form
+            #(#fv)*
+        }
+    };
+    q.into()
+}
+
+#[proc_macro]
+pub fn init_admin(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as SchemaArgs);
+    let vars = input.vars;
+    let q = quote! {
+        pub fn initialize_admin<R: anansi::util::auth::admin::Request + crate::project::Request>(site: anansi::util::admin::site::AdminRef<R>) {
+            let mut site = site.lock().unwrap();
+            #(#vars)*
+        }
+    };
+    q.into()
+}
+
+#[proc_macro]
+pub fn register(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as syn::Expr);
+    let ps = quote! {#input}.to_string();
+    let name = if let Some((_, n)) = ps.rsplit_once("::") {
+        n
+    } else {
+        &ps
+    };
+    let lower = name.to_lowercase();
+    let q = quote! {
+        {
+            use super::init::APP_NAME;
+            site.register(anansi::humanize::capitalize(APP_NAME), anansi::admin_site::ModelEntry {name: #name, index: crate::util::auth::admin::AuthAdminView::model_index::<#input>, new: crate::util::auth::admin::AuthAdminView::model_new::<#input>});
+            site.urls_mut().push((concat!("/admin/", #lower), crate::util::auth::admin::AuthAdminView::model_index::<#input>));
+            site.urls_mut().push((concat!("/admin/", #lower, "/new"), crate::util::auth::admin::AuthAdminView::model_new::<#input>));
+            site.urls_mut().push((concat!("/admin/", #lower, "/edit/{", #lower, "_id}"), crate::util::auth::admin::AuthAdminView::model_edit::<#input>));
+        }
+    };
+    q.into()
+}
+
+#[proc_macro]
+pub fn _register(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as syn::Path);
+    let ps = quote! {#input}.to_string();
+    let name = if let Some((_, n)) = ps.rsplit_once("::") {
+        n
+    } else {
+        &ps
+    };
+    let lower = name.to_lowercase();
+    let q = quote! {
+        {
+            use super::init::APP_NAME;
+            site.register(anansi::humanize::capitalize(APP_NAME), anansi::admin_site::ModelEntry {name: #name, index: crate::util::auth::admin::AuthAdminView::model_index::<#input>, new: crate::util::auth::admin::AuthAdminView::model_new::<#input>});
+            site.urls_mut().push((concat!("/admin/", #lower), crate::util::auth::admin::AuthAdminView::model_index::<#input>));
+            site.urls_mut().push((concat!("/admin/", #lower, "/new"), crate::util::auth::admin::AuthAdminView::model_new::<#input>));
+            site.urls_mut().push((concat!("/admin/", #lower, "/edit/{", #lower, "_id}"), crate::util::auth::admin::AuthAdminView::model_edit::<#input>));
+        }
+    };
+    q.into()
+}
+
+#[proc_macro]
 pub fn url(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as UrlArgs);
     let req = &input.req;
@@ -840,9 +1126,9 @@ pub fn routes(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as SchemaArgs);
     let vars = &input.vars;
     let q = quote! {
-        pub const ROUTES: &[anansi::web::Route<crate::settings::HttpRequest>] = &[#(#vars),*];
+        pub const ROUTES: &[anansi::web::Route<crate::project::HttpRequest>] = &[#(#vars),*];
         pub fn app_url(hm: &mut std::collections::HashMap<usize, Vec<String>>) {
-            use crate::settings::HttpRequest;
+            use crate::project::HttpRequest;
             let mut v = vec![];
             for route in ROUTES {
                 match route {

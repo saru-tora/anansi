@@ -11,7 +11,7 @@ use anansi::check;
 #[viewer]
 impl<B: BaseRequest + 'static> StartView<B> {
     #[check(if_guest)]
-    async fn start<B: BaseRequest + 'static>(_req: B) -> Result<Response> {
+    pub async fn start(_req: B) -> Result<Response> {
         render!("start")
     }
 }

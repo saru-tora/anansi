@@ -4,9 +4,9 @@ use std::fmt;
 use std::collections::HashMap;
 use std::error::Error;
 
-use crate::web::{Reverse, TokenRef, CsrfDefense, Result, View, BaseRequest};
+use crate::web::{Reverse, TokenRef, CsrfDefense, Result, View, FormMap, BaseRequest, ParamsToModel};
 use crate::db::invalid;
-use crate::models::Model;
+use crate::models::{Model, FromParams};
 pub use crate::empty::EmptyForm;
 
 #[macro_export]
@@ -148,12 +148,12 @@ macro_rules! form_error {
 }
 
 pub trait HasModel {
-    type Item: Model;
+    type Item: Model + Send + Sync;
 }
 
 #[async_trait]
 pub trait Form {
-    type Data;
+    type Data: Clone + Send;
     fn new() -> Self where Self: Sized; 
     fn attrs(&self) -> &Attributes;
     fn csrf_token(&self) -> Option<&String>;
@@ -165,6 +165,9 @@ pub trait Form {
     fn validate(&mut self) -> Result<Self::Data>;
     fn errors(&self) -> &FormErrors;
     fn add_error(&mut self, e: Box<dyn Error + Send + Sync>);
+    fn set_data(&mut self, data: Option<Self::Data>);
+    fn field_names() -> &'static [&'static str];
+    fn field(&self, n: usize) -> Option<&dyn Field>;
     fn token_tag(&self) -> Option<String> {
         if let Some(csrf_token) = self.csrf_token() {
             Some(format!("<input type=\"hidden\" name=\"csrf_token\" value=\"{}\">", csrf_token))
@@ -199,12 +202,20 @@ pub trait Form {
 }
 
 #[async_trait]
-pub trait GetData<B: BaseRequest>: Form {
-    async fn get_data(req: &B) -> Result<<Self as Form>::Data>;
+pub trait GetData<B: BaseRequest + ParamsToModel>: Form + HasModel where <Self as HasModel>::Item: FromParams {
+    fn from_map(form_map: FormMap) -> Result<<Self as Form>::Data>;
+    async fn from_model(model: <Self as HasModel>::Item, req: &B) -> Result<<Self as Form>::Data>;
+    async fn get_data(req: &B) -> Result<<Self as Form>::Data> {
+        if let Ok(form_map) = req.to_form_map() {
+            Self::from_map(form_map)
+        } else {
+            Self::from_model(req.to_model().await?, req).await
+        }
+    }
 }
 
 #[async_trait]
-pub trait ToEdit<B: BaseRequest>: Form + HasModel + GetData<B> {
+pub trait ToEdit<B: BaseRequest + ParamsToModel>: Form + GetData<B> where <Self as HasModel>::Item: FromParams {
     async fn on_get(req: &B) -> Result<Self> where <Self as Form>::Data: Send, Self: Sized {
         let mut form = Self::from_data(Self::get_data(req).await?).await;
         form.fill()?;
@@ -214,6 +225,7 @@ pub trait ToEdit<B: BaseRequest>: Form + HasModel + GetData<B> {
     async fn on_post(&mut self, data: <Self as Form>::Data, req: &B) -> Result<Self::Item>;
 }
 
+#[derive(Clone)]
 pub struct Attributes {
     attrs: HashMap<String, String>,
 }
@@ -292,6 +304,9 @@ macro_rules! widget {
             fn name(&self) -> &'static str {
                 self.name
             }
+            fn attrs(&self) -> &Attributes {
+                &self.attrs
+            }
             fn mut_attrs(&mut self) -> &mut Attributes {
                 &mut self.attrs
             }
@@ -319,9 +334,11 @@ field!(Boolean);
 
 pub trait Widget: fmt::Display {
     fn name(&self) -> &'static str;
+    fn attrs(&self) -> &Attributes;
     fn mut_attrs(&mut self) -> &mut Attributes;
 }
 
+#[derive(Clone)]
 pub struct Checkbox {
     pub name: &'static str,
     pub attrs: Attributes,
@@ -329,6 +346,7 @@ pub struct Checkbox {
 
 widget!(Checkbox);
 
+#[derive(Clone)]
 pub struct Text {
     pub name: &'static str,
     pub attrs: Attributes,
@@ -336,6 +354,7 @@ pub struct Text {
 
 widget!(Text);
 
+#[derive(Clone)]
 pub struct Password {
     pub name: &'static str,
     pub attrs: Attributes,
@@ -343,6 +362,7 @@ pub struct Password {
 
 widget!(Password);
 
+#[derive(Clone)]
 pub struct SelectMultiple {
     pub name: &'static str,
     pub attrs: Attributes,

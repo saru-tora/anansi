@@ -1,0 +1,24 @@
+{let _title = {{let mut _c = String::new();_c.push_str("");_c.push_str(&anansi::web::html_escape(&format!("{}", title)));_c.push_str(""); _c}};let _content = {{let mut _c = String::new();_c.push_str("<div class=\"lower\">
+	");_c.push_str(&format!("<a href=\"{}\">", anansi::url!(req,  BasicAdminSite::index )));_c.push_str("Home");_c.push_str("</a>
+</div>
+<div class=\"site\">
+	<div class=\"sub\">
+		");_c.push_str(&anansi::web::html_escape(&format!("{}", title)));_c.push_str("
+	</div>
+	<table>
+		<tr>
+			<th>");_c.push_str(&anansi::web::html_escape(&format!("{}", M::PK_NAME)));_c.push_str("</th>
+		");for name in field_names {_c.push_str("
+			<th>");_c.push_str(&anansi::web::html_escape(&format!("{}", name)));_c.push_str("</th>
+		");}_c.push_str("
+		</tr>
+		");for model in models {_c.push_str("
+		<tr>
+			<td>");_c.push_str(&format!("<a href=\"{}\"  class=\"link\" >", anansi::url!(req,  m_edit,  model)));_c.push_str("");_c.push_str(&anansi::web::html_escape(&format!("{}", model.to_url())));_c.push_str("");_c.push_str("</a></td>
+			");for field in model.fields(&req).await {_c.push_str("
+			<td>");_c.push_str(&anansi::web::html_escape(&format!("{}", field)));_c.push_str("</td>
+			");}_c.push_str("
+		</tr>
+		");}_c.push_str("
+	</table>
+</div>"); _c}};base(req, BaseArgs{_title, _content, })}

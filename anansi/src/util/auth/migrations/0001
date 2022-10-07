@@ -1,26 +1,52 @@
-BEGIN;
-
-CREATE TABLE "auth_user" (
-	"id" NOT NULL PRIMARY KEY,
-	"username" varchar(150) NOT NULL UNIQUE,
-	"password" varchar(150) NOT NULL,
-	"is_admin" boolean NOT NULL
-);
-
-CREATE TABLE "auth_user_group" (
-	"user_id" bigint NOT NULL,
-	"group_id" bigint NOT NULL,
-	FOREIGN KEY ("user_id")
-	REFERENCES "auth_user" ("id")
-	ON DELETE CASCADE,
-	FOREIGN KEY ("group_id")
-	REFERENCES "auth_group" ("id")
-	ON DELETE CASCADE
-);
-
-CREATE TABLE "auth_group" (
-	"id" NOT NULL PRIMARY KEY,
-	"name" varchar(150) NOT NULL
-);
-
-COMMIT;
+anansi::operations! {
+    migrations::CreateModel {
+        prefix: "auth",
+        name: "user",
+        fields: vec![
+            (
+                "id",
+                models::BigInt::field().primary_key()
+            ),
+            (
+                "username",
+                models::VarChar::<150>::field().unique()
+            ),
+            (
+                "password",
+                models::VarChar::<150>::field()
+            ),
+            (
+                "is_admin",
+                models::Boolean::field()
+            ),
+        ],
+    },
+    migrations::CreateModel {
+        prefix: "auth",
+        name: "user_group",
+        fields: vec![
+            (
+                "user",
+                models::BigInt::field().foreign_key("auth", "user", "id")
+            ),
+            (
+                "group",
+                models::BigInt::field().foreign_key("auth", "group", "id")
+            ),
+        ],
+    },
+    migrations::CreateModel {
+        prefix: "auth",
+        name: "group",
+        fields: vec![
+            (
+                "id",
+                models::BigInt::field().primary_key()
+            ),
+            (
+                "name",
+                models::VarChar::<150>::field()
+            ),
+        ],
+    },
+}

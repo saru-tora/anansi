@@ -11,10 +11,10 @@ use pbkdf2::{
 use anansi::web::{Result};
 use anansi::db::{DbPool, invalid};
 use anansi::models::{Model, BigInt, Boolean, DataType, VarChar, ManyToMany};
-use anansi::model;
+use anansi::{model, FromParams, ToUrl};
 
 #[model]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FromParams, ToUrl)]
 pub struct User {
     #[field(unique = "true")]
     pub username: VarChar<150>,
@@ -100,7 +100,7 @@ impl UsernameFeedback {
         "This username is invalid or already taken."
     }
     pub fn suggestion(&self) -> &'static str {
-        "Valid usernames cannot contain control characters."
+        "Valid usernames can only contain letters, numbers, dashes, and underscores."
     }
     pub fn into_username(self) -> Option<VarChar<150>> {
         self.username
@@ -117,8 +117,13 @@ impl User {
     }
     pub async fn validate_username(username: &str, pool: &DbPool) -> result::Result<VarChar<150>, UsernameFeedback> {
         let username = username.trim();
-        if username.is_empty() || username.contains(char::is_control) {
+        if username.is_empty() {
             return Err(UsernameFeedback::from(username.to_string()));
+        }
+        for c in username.chars() {
+            if !(c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                return Err(UsernameFeedback::from(username.to_string()));
+            }
         }
         if let Ok(username) = VarChar::from(username.to_string()) {
             if let Ok(n) = Self::count().whose(user::username().eq().data_ref(&username)).raw_get(pool).await {
@@ -175,7 +180,7 @@ impl User {
 }
 
 #[model]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FromParams, ToUrl)]
 pub struct Group {
     pub name: VarChar<150>,
 }

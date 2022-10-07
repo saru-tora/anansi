@@ -1,0 +1,22 @@
+{let _title = {{let mut _c = String::new();_c.push_str("");_c.push_str(&anansi::web::html_escape(&format!("{}", title)));_c.push_str(""); _c}};let _content = {{let mut _c = String::new();_c.push_str("<div class=\"lower\">
+	");_c.push_str(&format!("<a href=\"{}\">", anansi::url!(req,  BasicAdminSite::index )));_c.push_str("Home");_c.push_str("</a>
+</div>
+<div class=\"site\">
+	<div class=\"sub\">
+		");_c.push_str(&anansi::web::html_escape(&format!("{}", title)));_c.push_str("
+	</div>
+	<div>
+		");_c.push_str(&form.tag()); if let Some(token_tag) = form.token_tag() { _c.push_str(&token_tag) } {_c.push_str("
+		");let mut n = 0;_c.push_str("
+		");while let Some(field) = form.field(n) {_c.push_str("
+		");n += 1;_c.push_str("
+		");_c.push_str(&format!("{}", field.label_tag()));_c.push_str("
+		<div class=\"namebox\">
+			");_c.push_str(&format!("{}", field));_c.push_str("
+			");_c.push_str(&format!("{}", field.errors()));_c.push_str("
+		</div>
+		");}_c.push_str("
+		");_c.push_str(&format!("{}", form.submit(button)));_c.push_str("
+		</form>");}_c.push_str("
+	</div>
+</div>"); _c}};base(req, BaseArgs{_title, _content, })}

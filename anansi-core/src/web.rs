@@ -12,6 +12,7 @@ use std::future::Future;
 use crate::server::Rng;
 use crate::router::Routes;
 use crate::models::{FromParams, DateTime};
+use crate::admin_site::AdminRef;
 
 pub type Result<T> = result::Result<T, Box<dyn Error + Send + Sync>>;
 pub type View<B> = fn(B) -> Pin<Box<dyn Future<Output = Result<Response>> + Send>>;
@@ -71,6 +72,7 @@ macro_rules! middleware {
             raw: anansi::web::RawRequest,
             mid: Middleware,
             urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>,
+            admin: anansi::util::admin::site::AdminRef<Self>,
         }
         #[derive(Debug, Clone)]
         pub struct Middleware {
@@ -97,8 +99,13 @@ macro_rules! middleware {
         }
         impl anansi::web::BaseMiddleware for Middleware {}
         anansi::request_derive!();
-        pub trait Request: anansi::web::BaseRequest + anansi::util::sessions::middleware::Sessions + anansi::util::auth::middleware::Auth + anansi::web::CsrfDefense + anansi::web::ParamsToModel + anansi::web::Reverse + std::fmt::Debug + 'static {}
+        pub trait Request: anansi::web::BaseRequest + anansi::util::sessions::middleware::Sessions + anansi::util::auth::middleware::Auth + anansi::util::admin::site::HasAdmin + anansi::web::CsrfDefense + anansi::web::ParamsToModel + anansi::web::Reverse + std::fmt::Debug + 'static {}
         impl Request for HttpRequest {}
+        impl anansi::util::admin::site::HasAdmin for HttpRequest {
+            fn admin(&self) -> anansi::util::admin::site::AdminRef<Self> {
+                self.admin.clone()
+            }
+        }
         impl anansi::util::auth::admin::Request for HttpRequest {}
         #[async_trait::async_trait]
         impl anansi::util::auth::middleware::Auth for HttpRequest {
@@ -373,7 +380,7 @@ impl Response {
         headers.insert_str("content-type", "text/html");
         headers.insert_str("charset", "UTF-8");
         headers.insert_str("Server", "server");
-        headers.insert_str("content-security-policy", "frame-ancestors 'self'");
+        headers.insert_str("content-security-policy", "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests;");
         headers.insert_str("x-frame-options", "DENY");
         headers.insert("Content-length".to_string(), contents.len().to_string());
         let body = Some(Body {body: contents});
@@ -408,6 +415,7 @@ impl Response {
         if let Some(mut body) = self.body {
             bytes.append(&mut body.body);
         }
+        bytes.append(&mut b"0\r\n\r\n".to_vec());
         bytes
     }
 }
@@ -616,7 +624,7 @@ pub trait ParamsToModel: BaseRequest {
 pub trait BaseRequest: Send + Sync {
     type Mid: BaseMiddleware;
 
-    async fn new(buffer: &[u8], request_line: RequestLine, url: Arc<HashMap<usize, Vec<String>>>, pool: DbPool, rng: Rng) -> Result<Self> where Self: Sized;
+    async fn new(buffer: &[u8], request_line: RequestLine, url: Arc<HashMap<usize, Vec<String>>>, pool: DbPool, rng: Rng, admin: AdminRef<Self>) -> Result<Self> where Self: Sized;
     fn method(&self) -> &Method;
     fn url(&self) -> &String;
     fn headers(&self) -> &Headers;
@@ -627,7 +635,7 @@ pub trait BaseRequest: Send + Sync {
     fn raw(&self) -> &RawRequest;
     fn mid(&self) -> &Self::Mid;
     fn to_form_map(&self) -> Result<FormMap>;
-    fn from(raw: RawRequest, mid: Self::Mid, urls: Arc<HashMap<usize, Vec<String>>>) -> Self where Self: Sized;
+    fn from(raw: RawRequest, mid: Self::Mid, urls: Arc<HashMap<usize, Vec<String>>>, admin: AdminRef<Self>) -> Self where Self: Sized;
     fn to_raw(self) -> RawRequest;
     async fn handle_no_session(response: Response, pool: DbPool, std_rng: Rng) -> Result<Response> where Self: Sized;
 }
@@ -693,10 +701,10 @@ macro_rules! request_derive {
         impl anansi::web::BaseRequest for HttpRequest {
             type Mid = Middleware;
 
-            async fn new(buffer: &[u8], request_line: $crate::web::RequestLine, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: $crate::db::DbPool, std_rng: $crate::server::Rng) -> $crate::web::Result<Self> where Self: Sized {
+            async fn new(buffer: &[u8], request_line: $crate::web::RequestLine, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: $crate::db::DbPool, std_rng: $crate::server::Rng, admin: $crate::admin_site::AdminRef<Self>) -> $crate::web::Result<Self> where Self: Sized {
                 let mut raw = $crate::web::RawRequest::new(buffer, request_line, pool, std_rng).await?;
                 let mid = Middleware::new(&mut raw).await?;
-                Ok(Self {raw, mid, urls})
+                Ok(Self {raw, mid, urls, admin})
             }
             fn method(&self) -> &anansi::web::Method {
                 &self.raw.method
@@ -728,8 +736,8 @@ macro_rules! request_derive {
             fn to_form_map(&self) -> anansi::web::Result<anansi::web::FormMap> {
                 self.raw().to_form_map()
             }
-            fn from(raw: anansi::web::RawRequest, mid: Middleware, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>) -> Self {
-                Self{raw, mid, urls}
+            fn from(raw: anansi::web::RawRequest, mid: Middleware, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, admin: $crate::admin_site::AdminRef<Self>) -> Self {
+                Self{raw, mid, urls, admin}
             }
             fn to_raw(self) -> anansi::web::RawRequest {
                 self.raw
