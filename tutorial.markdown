@@ -16,7 +16,7 @@ $ ananc --version
 Creating a basic site
 ---------------------
 
-Let's create a simple forum. In a terminal, go to the directory where you want to create the project, and run:
+Let's create a simple forum. The full  In a terminal, go to the directory where you want to create the project, and run:
 
 ```shell
 $ ananc new mini-forum
@@ -39,7 +39,7 @@ To start the web server, go to `mini-forum/` directory and execute:
 $ ananc run
 ```
 
-Visit [http://127.0.0.1:9090/](http://127.0.0.1:9090/). If everything went well, you should see the default page.
+Visit [http://127.0.0.1:9090/](http://127.0.0.1:9090/). If everything went well, you should see the default page. You can find the full code for this project [here](https://github.com/saru-tora/mini-forum).
 
 <br>
 
