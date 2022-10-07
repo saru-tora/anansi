@@ -123,7 +123,7 @@ If you want to view the SQL for this migration, you can run:
 $ ananc sql-migrate forum 0001
 ```
 
-You should see somthing like:
+You should see something like:
 
 ```sql
 BEGIN;
