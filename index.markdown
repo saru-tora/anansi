@@ -67,7 +67,7 @@ routes! {
 #[checker]
 impl<R: Request> TopicView<R> {
     // A view of the last 25 topics.
-    #[check(if_guest)]
+    #[check(Group::is_visitor)]
     pub async fn index(req: R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
