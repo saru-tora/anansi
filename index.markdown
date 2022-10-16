@@ -46,7 +46,7 @@ pub struct Comment {
     pub topic: ForeignKey<Topic>,
     pub user: ForeignKey<auth::models::User>,
     pub content: VarChar<40000>,
-    pub created: DateTime,
+    pub date: DateTime,
 }
 ```
 
