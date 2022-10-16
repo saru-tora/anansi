@@ -133,8 +133,13 @@ BEGIN;
 
 CREATE TABLE "forum_topic" (
 	"id" bigint NOT NULL PRIMARY KEY,
+	"user" bigint NOT NULL,
 	"title" varchar(200) NOT NULL,
-	"date" datetime NOT NULL
+	"content" varchar(40000) NOT NULL,
+	"date" datetime NOT NULL,
+	FOREIGN KEY ("user")
+	REFERENCES "auth_user" ("id")
+	ON DELETE CASCADE
 );
 
 CREATE TABLE "forum_comment" (
@@ -142,7 +147,7 @@ CREATE TABLE "forum_comment" (
 	"topic" bigint NOT NULL,
 	"user" bigint NOT NULL,
 	"content" varchar(40000) NOT NULL,
-	"created" datetime NOT NULL,
+	"date" datetime NOT NULL,
 	FOREIGN KEY ("topic")
 	REFERENCES "forum_topic" ("id")
 	ON DELETE CASCADE,
@@ -150,6 +155,8 @@ CREATE TABLE "forum_comment" (
 	REFERENCES "auth_user" ("id")
 	ON DELETE CASCADE
 );
+
+--snip--
 
 COMMIT;
 ```
