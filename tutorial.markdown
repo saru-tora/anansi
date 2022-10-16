@@ -84,13 +84,14 @@ To generate models, edit `forum/models.rs`:
 
 ```rust
 use anansi::models::{VarChar, DateTime, ForeignKey};
-use anansi::util::auth;
+use anansi::util::auth::models::User;
 
 #[model]
 #[derive(Relate, FromParams)]
 pub struct Topic {
     pub title: VarChar<200>,
-    pub user: ForeignKey<auth::models::User>,
+    #[field(app = "auth")]
+    pub user: ForeignKey<User>,
     pub content: VarChar<40000>,
     pub date: DateTime,
 }
@@ -99,7 +100,8 @@ pub struct Topic {
 #[derive(Relate, FromParams)]
 pub struct Comment {
     pub topic: ForeignKey<Topic>,
-    pub user: ForeignKey<auth::models::User>,
+    #[field(app = "auth")]
+    pub user: ForeignKey<User>,
     pub content: VarChar<40000>,
     pub date: DateTime,
 }
@@ -107,7 +109,7 @@ pub struct Comment {
 
 `#[model]` adds an `id` field by default, and functions that reference the model's fields (like `topic::date`), which can be used with methods like `order_by` to query the database.
 
-`Comment` has `ForeignKey` fields, which means that it has many-to-one relationships with `Topic` and `User`. For `user`, the app name (auth) is specified since it is from another app. Not including the app name will result in an error later on.
+Both models have `ForeignKey` fields, which means that it has many-to-one relationships with `Topic` and `User`. For `user`, the app name (auth) is specified since it is from another app. Not including the app name will result in an error later on.
 
 <br>
 
@@ -296,7 +298,8 @@ use anansi::ToUrl;
 #[derive(Relate, FromParams, ToUrl)]
 pub struct Topic {
     pub title: VarChar<200>,
-    pub user: ForeignKey<auth::models::User>,
+    #[field(app = "auth")]
+    pub user: ForeignKey<User>,
     pub content: VarChar<40000>,
     pub date: DateTime,
 }
