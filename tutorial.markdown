@@ -388,7 +388,7 @@ use anansi::forms::ToModel;
 use anansi::util::auth::forms::UserLogin;
 
 #[checker]
-impl<R: Request> TopicView {
+impl<R: Request> TopicView<R> {
     // --snip--
     #[check(Group::is_visitor)]
     pub async fn login(mut req: R) -> Result<Response> {
@@ -473,8 +473,7 @@ impl<R: Request> ToModel<R> for TopicForm {
     async fn on_post(&mut self, data: TopicFormData, req: &R) -> Result<Topic> {
         let now = DateTime::now();
 	let user_fk = ForeignKey::from_data(req.user().pk())?;
-        Topic::new(data.title, user_fk, data.content, now)
-            .save(req).await
+        Topic::new(data.title, user_fk, data.content, now).save(req).await
             .or(form_error!("Problem adding topic"))
         })
     }
@@ -677,8 +676,7 @@ impl<R: Request> TopicView<R> {
     #[check(Topic::owner)]
     pub async fn destroy(mut req: R) -> Result<Response> {
         let title = "Delete topic";
-        let topic = get_or_404!(Topic, req);
-        let form = handle!(req, R, {
+        let topic = handle_or_404!(TopicForm, ToDestroy<R>, req, topic, {
             topic.delete(&req).await?;
             Ok(redirect!(req, Self::index))
         })?;
