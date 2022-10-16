@@ -90,14 +90,14 @@ Templates allow you to mix Rust with HTML for formatting.
 
 @block content {
     <h1>@title</h1>
+    @if req.user().is_auth() {
+        @link req, Self::new {New Topic}
+    }
     <ul>
         @for topic in topics {
     	    <li>@link req, Self::show, topic {@topic.title}</li>
         }
     </ul>
-    @if req.user().is_auth() {
-        @link req, Self::new {New Topic}
-    }
 }
 ```
 
