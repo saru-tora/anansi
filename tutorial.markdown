@@ -144,6 +144,8 @@ CREATE TABLE "forum_topic" (
 	ON DELETE CASCADE
 );
 
+--snip--
+
 CREATE TABLE "forum_comment" (
 	"id" bigint NOT NULL PRIMARY KEY,
 	"topic" bigint NOT NULL,
