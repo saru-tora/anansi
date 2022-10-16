@@ -34,7 +34,8 @@ Work with databases in Rust instead of SQL.
 #[derive(Relate, FromParams, ToUrl)]
 pub struct Topic {
     pub title: VarChar<200>,
-    pub user: ForeignKey<auth::models::User>,
+    #[field(app = "auth")]
+    pub user: ForeignKey<User>,
     pub content: VarChar<40000>,
     pub date: DateTime,
 }
@@ -44,7 +45,8 @@ pub struct Topic {
 #[derive(Relate, FromParams)]
 pub struct Comment {
     pub topic: ForeignKey<Topic>,
-    pub user: ForeignKey<auth::models::User>,
+    #[field(app = "auth")]
+    pub user: ForeignKey<User>,
     pub content: VarChar<40000>,
     pub date: DateTime,
 }
