@@ -31,14 +31,17 @@ Work with databases in Rust instead of SQL.
 ```rust
 // A topic in a forum.
 #[model]
-#[derive(ToUrl)]
+#[derive(Relate, FromParams, ToUrl)]
 pub struct Topic {
     pub title: VarChar<200>,
+    pub user: ForeignKey<auth::models::User>,
+    pub content: VarChar<40000>,
     pub date: DateTime,
 }
 
 // A comment in a topic.
 #[model]
+#[derive(Relate, FromParams)]
 pub struct Comment {
     pub topic: ForeignKey<Topic>,
     pub user: ForeignKey<auth::models::User>,
@@ -61,10 +64,10 @@ routes! {
 ```
 
 ```rust
-#[viewer]
+#[checker]
 impl<R: Request> TopicView<R> {
     // A view of the last 25 topics.
-    #[view(if_guest)]
+    #[check(if_guest)]
     pub async fn index(req: R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
