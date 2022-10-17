@@ -8,19 +8,29 @@ use pbkdf2::{
     Pbkdf2
 };
 
-use anansi::web::{Result};
-use anansi::db::{DbPool, invalid};
-use anansi::models::{Model, BigInt, Boolean, DataType, VarChar, ManyToMany};
-use anansi::{model, FromParams, ToUrl};
+use async_recursion::async_recursion;
+
+use anansi::web::{Result, BaseUser, BaseRequest, WebError, WebErrorKind};
+use anansi::db::{DbPool, DbRowVec, invalid};
+use anansi::models::{Model, BigInt, VarChar, DataType};
+use anansi::{model, FromParams, ToUrl, Relate};
 
 #[model]
-#[derive(Debug, Clone, FromParams, ToUrl)]
+#[derive(Debug, Clone, FromParams, ToUrl, Relate)]
 pub struct User {
     #[field(unique = "true")]
     pub username: VarChar<150>,
     pub password: VarChar<150>,
-    pub groups: ManyToMany<Group>,
-    pub is_admin: Boolean,
+}
+
+impl BaseUser for User {
+    type Name = VarChar<150>;
+    fn username(&self) -> &Self::Name {
+        &self.username
+    }
+    fn is_auth(&self) -> bool {
+        self.id != BigInt::new(0)
+    }
 }
 
 pub fn hash_password(password: &str) -> Result<VarChar<150>> {
@@ -107,14 +117,52 @@ impl UsernameFeedback {
     }
 }
 
+pub struct BaseRelation {
+    pub subject_namespace: String,
+    pub subject_key: i64,
+    pub subject_predicate: Option<String>,
+}
+
+impl BaseRelation {
+    pub fn from(rows: DbRowVec) -> Result<Vec<Self>> {
+        let mut v = vec![];
+        for row in rows {
+            let subject_namespace = row.try_get("subject_namespace")?;
+            let subject_key = row.try_get("subject_key")?;
+            let subject_predicate = row.try_get("subject_predicate")?;
+            v.push(Self {subject_namespace, subject_key, subject_predicate})
+        }
+        Ok(v)
+    }
+    pub fn search(object_namespace: &str, object_key: i64, object_predicate: &str) -> String {
+        use anansi::models::ToSql;
+        let q = format!("SELECT * FROM {} WHERE object_key = {} AND object_predicate = {};", format!("{}tuple", object_namespace).to_sql(), object_key, object_predicate.to_sql());
+        q
+    }
+    #[async_recursion]
+    pub async fn check<B: BaseRequest>(object_namespace: &str, object_key: i64, object_predicate: &str, req: &B) -> anansi::web::Result<()> {
+        let rels = Self::from(req.raw().pool().query(&Self::search(object_namespace, object_key, object_predicate)).await?)?;
+        for rel in rels {
+            match rel.subject_predicate {
+                None => {
+                    if rel.subject_namespace == "auth_user" && rel.subject_key == req.user().pk().as_i64() {
+                        return Ok(());
+                    }
+                },
+                Some(predicate) => {
+                    if Self::check(&rel.subject_namespace, rel.subject_key, &predicate, req).await.is_ok() {
+                        return Ok(());
+                    }
+                },
+            }
+        }
+        Err(anansi::db::invalid() as Box<dyn std::error::Error + Send + Sync + 'static>)
+    }
+}
+
 impl User {
     pub const KEY: &'static str = "_user_id";
-    pub fn is_admin(&self) -> bool {
-        self.is_admin == true
-    }
-    pub fn is_auth(&self) -> bool {
-        self.id != BigInt::new(0)
-    }
+    
     pub async fn validate_username(username: &str, pool: &DbPool) -> result::Result<VarChar<150>, UsernameFeedback> {
         let username = username.trim();
         if username.is_empty() {
@@ -126,7 +174,7 @@ impl User {
             }
         }
         if let Ok(username) = VarChar::from(username.to_string()) {
-            if let Ok(n) = Self::count().whose(user::username().eq().data_ref(&username)).raw_get(pool).await {
+            if let Ok(n) = Self::count().whose(user::username().eq(&username)).raw_get(pool).await {
                 if n == 0 {
                     return Ok(username);
                 }
@@ -162,8 +210,6 @@ impl User {
             id: BigInt::new(0),
             username: VarChar::from("guest".to_string()).unwrap(),
             password: VarChar::new(),
-            groups: ManyToMany::new(),
-            is_admin: Boolean::new(false),
         }
     }
     pub fn verify(&self, password: &VarChar<150>) -> Result<()> {
@@ -180,7 +226,23 @@ impl User {
 }
 
 #[model]
-#[derive(Debug, Clone, FromParams, ToUrl)]
+#[derive(Debug, Clone, Relate, FromParams, ToUrl)]
 pub struct Group {
-    pub name: VarChar<150>,
+    pub groupname: VarChar<150>,
+}
+
+impl Group {
+    pub async fn is_visitor<B: BaseRequest>(_req: &B) -> Result<()> {
+        Ok(())
+    }
+    pub async fn is_auth<B: BaseRequest>(req: &B) -> Result<()> {
+        if req.user().pk() != 0 {
+            Ok(())
+        } else {
+            Err(Box::new(WebError::from(WebErrorKind::Unauthenticated)))
+        }
+    }
+    pub async fn is_admin<B: BaseRequest>(req: &B) -> Result<()> {
+        BaseRelation::check("auth_group", 1, "member", req).await
+    }
 }

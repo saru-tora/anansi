@@ -90,7 +90,7 @@ fn make_view(args: &Vec<String>) {
         let parsed = format!("{}/templates/.parsed", arg);
         fs::create_dir(&parsed).expect("Failed to create path");
         let upper = uppercase(arg);
-        make_file(arg, "views", ".rs", format!("use crate::prelude::*;\nuse super::super::models::{{{}}};\n\n#[base_view]\nfn base<R: Request>(_req: R) -> Result<Response> {{}}\n\n#[viewer]\nimpl<R: Request> {0}View<R> {{\n    #[view(if_guest)]\n    pub async fn index(req: R) -> Result<Response> {{\n        let title = \"Title\";\n    }}\n}}", upper));
+        make_file(arg, "views", ".rs", format!("use crate::prelude::*;\nuse super::super::models::{{{}}};\n\n#[base_view]\nfn base<R: Request>(_req: R) -> Result<Response> {{}}\n\n#[checker]\nimpl<R: Request> {0}View<R> {{\n    #[check(Group::is_visitor)]\n    pub async fn index(req: R) -> Result<Response> {{\n        let title = \"Title\";\n    }}\n}}", upper));
         make_file(arg, "mod", ".rs", "pub mod views;".to_string());
         cp_as!(format!("{}/index.rs.html", temp), "templates/index.rs.html");
         cp_as!(format!("{}/base.rs.html", temp), "templates/base.rs.html");

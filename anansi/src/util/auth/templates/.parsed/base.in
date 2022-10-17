@@ -11,7 +11,7 @@
 				Anansi administration
 			</div>
 			 <div class=\"right\">
-				 Welcome, ");_c.push_str(&anansi::web::html_escape(&format!("{}", req.user().username)));_c.push_str(". <a href=\"/\">View site</a> / <a href=\"");_c.push_str(&anansi::web::html_escape(&format!("{}", anansi::url!(req, AuthAdminView::logout))));_c.push_str("\">Log out</a>
+				 Welcome, ");_c.push_str(&anansi::web::html_escape(&format!("{}", req.user().username())));_c.push_str(". <a href=\"/\">View site</a> / <a href=\"");_c.push_str(&anansi::web::html_escape(&format!("{}", anansi::url!(req, AuthAdminView::logout))));_c.push_str("\">Log out</a>
 			</div>
 		</div>
 		");_c.push_str(&_base_args._content);_c.push_str("

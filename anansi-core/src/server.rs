@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 
 use crate::db::DbPool;
 use crate::models::{VarChar, DateTime, DataType};
-use crate::web::{BASE_DIR, Result, Static, Route, BaseRequest, RawRequest, Response, Http404, HttpError, HttpErrorKind, View, route_request, path};
+use crate::web::{BASE_DIR, Result, Static, Route, BaseRequest, RawRequest, Response, Http404, WebError, WebErrorKind, View, route_request, path};
 use crate::router::{Router, get_capture, split_url};
 use crate::migrations::{migrate, sql_migrate, make_migrations, AppMigration};
 use crate::admin_site::AdminRef;
@@ -32,10 +32,11 @@ macro_rules! main {
         pub mod prelude {
             pub use async_trait::async_trait;
             pub use crate::project::Request;
-            pub use anansi::{form, import, viewer, base_view, view, redirect, transact, form_error};
-            pub use anansi::web::{if_guest, Result, Response};
+            pub use anansi::{form, import, checker, base_view, check, redirect, transact, form_error};
+            pub use anansi::web::{Result, Response, BaseUser};
             pub use anansi::forms::Form;
             pub use anansi::models::Model;
+            pub use anansi::util::auth::models::Group;
         }
         fn main() {
             use std::sync::{Arc, Mutex};
@@ -125,7 +126,8 @@ impl<B: BaseRequest + fmt::Debug + Clone> Server<B> {
                     url_map.insert(*view as View<B> as usize, get_capture(name).unwrap());
                     rv.push(path(name, *view));
                 }
-                let router = Arc::new(Router::new(rv, handle_404, internal_error, files).unwrap());
+                let login_url = settings.get("login_url").expect("Could not get login url").as_str().expect("Expected string for login url").to_string();
+                let router = Arc::new(Router::new(rv, handle_404, internal_error, login_url, files).unwrap());
                 let urls = Arc::new(url_map);
 
                 let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs().to_string();
@@ -136,7 +138,7 @@ impl<B: BaseRequest + fmt::Debug + Clone> Server<B> {
                     },
                     None => {
                         let rng = Rng::new(&seed);
-                        let s = format!("secret = \"{}\"", rng.secret_string());
+                        let s = format!("\nsecret = \"{}\"", rng.secret_string());
                         append(&dir, s.as_bytes()).await;
                         println!("Created new secret");
                         rng
@@ -242,7 +244,13 @@ pub async fn handle_connection<B: BaseRequest + 'static + fmt::Debug>(mut stream
                                 res
                             },
                             Err(error) => {
-                                if let Ok(http_404) = error.downcast::<Http404<B>>() {
+                                if let Some(web_error) = error.downcast_ref::<WebError>() {
+                                    if web_error.kind() == &WebErrorKind::Unauthenticated {
+                                        Response::redirect(&router.login_url)
+                                    } else {
+                                        router.internal_error.clone()
+                                    }
+                                } else if let Ok(http_404) = error.downcast::<Http404<B>>() {
                                     match (router.handle_404)(http_404.req()).await {
                                         Ok(r) => r,
                                         Err(_) => router.internal_error.clone(),
@@ -254,9 +262,9 @@ pub async fn handle_connection<B: BaseRequest + 'static + fmt::Debug>(mut stream
                         }
                     },
                     Err(error) => {
-                        if let Ok(http_error) = error.downcast::<HttpError>() {
-                            match http_error.kind() {
-                                HttpErrorKind::NoSession => {
+                        if let Ok(web_error) = error.downcast::<WebError>() {
+                            match web_error.kind() {
+                                WebErrorKind::NoSession => {
                                     match B::handle_no_session(Response::redirect(&url), pool, std_rng).await {
                                         Ok(r) => {
                                             r
@@ -266,6 +274,12 @@ pub async fn handle_connection<B: BaseRequest + 'static + fmt::Debug>(mut stream
                                         },
                                     }
                                 },
+                                WebErrorKind::Unauthenticated => {
+                                    Response::redirect(&router.login_url)
+                                }
+                                WebErrorKind::Invalid => {
+                                    router.internal_error.clone()
+                                }
                             }
                         } else {
                             router.internal_error.clone()

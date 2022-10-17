@@ -12,15 +12,18 @@ use sqlx::{Type, Decode, Database, database::HasValueRef};
 use rand::Rng;
 
 use crate::web::{BaseRequest, Parameters, Result};
-use crate::db::{Db, DbRow, DbRowVec, DbPool, DbTypeInfo, invalid, escape, Count, Whose, WhoseArg, OrderBy, OrderByArg, Limit};
+use crate::db::{Db, DbRow, DbRowVec, DbPool, DbTypeInfo, invalid, escape, Count, Whose, WhoseArg, DeleteWhose, OrderBy, OrderByArg, Limit};
+use crate::admin_site::AdminField;
 pub use crate::datetime::DateTime;
 
 #[macro_export]
 macro_rules! get_or_404 {
     ($model:path, $req:ident) => {
-        match $req.to_model::<$model>().await {
+        match $req.get_model::<$model>().await {
             Ok(m) => m,
-            Err(_) => return Err(Box::new(anansi::web::Http404::from($req))),
+            Err(_) => {
+                return Err(Box::new(anansi::web::Http404::from($req)))
+            },
         }
     }
 }
@@ -39,6 +42,12 @@ macro_rules! impl_decode {
                 Ok(Self::from_val(value).unwrap())
             }
         }
+    }
+}
+
+impl<const N: u16> AdminField for VarChar<N> {
+    fn admin_field(&self) -> String {
+        self.to_string()
     }
 }
 
@@ -84,6 +93,9 @@ impl DataType for Boolean {
     fn from_val(b: bool) -> Result<Self> {
         Ok(Self{b})
     }
+}
+
+impl ToSql for Boolean {
     fn to_sql(&self) -> String {
         format!("{}", self.b)
     }
@@ -125,9 +137,13 @@ impl fmt::Display for BigInt {
 
 impl DataType for BigInt {
     type T = i64;
+
     fn from_val(n: i64) -> Result<Self> {
         Ok(Self {n})
     }
+}
+
+impl ToSql for BigInt {
     fn to_sql(&self) -> String {
         format!("{}", self.n)
     }
@@ -144,6 +160,12 @@ where i64: Decode<'r, DB> {
     fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<BigInt, Box<dyn Error + 'static + Send + Sync>> {
         let value = <i64 as Decode<DB>>::decode(value)?;
         Ok(Self::from_val(value).unwrap())
+    }
+}
+
+impl PartialEq<i64> for BigInt {
+    fn eq(&self, other: &i64) -> bool {
+        self.n == *other
     }
 }
 
@@ -167,10 +189,19 @@ impl Text {
     pub fn field() -> ModelField {
         ModelField::new("text".to_string())
     }
+    pub fn as_str(&self) -> &str {
+        &self.s
+    }
 }
 
 impl PartialEq<&str> for Text {
     fn eq(&self, other: &&str) -> bool {
+        self.s == *other
+    }
+}
+
+impl PartialEq<String> for Text {
+    fn eq(&self, other: &String) -> bool {
         self.s == *other
     }
 }
@@ -181,7 +212,9 @@ impl DataType for Text {
     fn from_val(s: String) -> Result<Self> {
         Ok(Self {s})
     }
+}
 
+impl ToSql for Text {
     fn to_sql(&self) -> String {
         escape(&self.s)
     }
@@ -250,6 +283,12 @@ impl<const N: u16> PartialEq<&str> for VarChar<N> {
     }
 }
 
+impl<'a, const N: u16> PartialEq<String> for &'a VarChar<N> {
+    fn eq(&self, other: &String) -> bool {
+        self.s == *other
+    }
+}
+
 impl<const N: u16> DataType for VarChar<N> {
     type T = String;
 
@@ -260,7 +299,15 @@ impl<const N: u16> DataType for VarChar<N> {
             Ok(Self {s})
         }
     }
+}
 
+impl<const N: u16> ToSql for VarChar<N> {
+    fn to_sql(&self) -> String {
+        escape(&self.s)
+    }
+}
+
+impl<'a, const N: u16> ToSql for &'a VarChar<N> {
     fn to_sql(&self) -> String {
         escape(&self.s)
     }
@@ -314,6 +361,9 @@ impl<M: Model, O: OnDelete> ForeignKey<M, O> {
     pub fn new(m: &M) -> Self {
         Self {pk: m.pk().clone(), o: PhantomData}
     }
+    pub fn from_data(t: <M as Model>::Pk) -> Result<Self> {
+        Ok(Self {pk: t, o: PhantomData})
+    }
     pub fn pk(&self) -> M::Pk {
         self.pk.clone()
     }
@@ -334,9 +384,33 @@ impl<M: Model, O: OnDelete> DataType for ForeignKey<M, O> where M::Pk: std::fmt:
     fn from_val(t: <<M as Model>::Pk as DataType>::T) -> Result<Self> {
         Ok(Self {pk: M::Pk::from_val(t)?, o: PhantomData})
     }
+}
 
+impl<M: Model, O: OnDelete> ToSql for ForeignKey<M, O> where M::Pk: std::fmt::Display {
     fn to_sql(&self) -> String {
-        format!("{}", self.pk)
+        self.pk.to_sql()
+    }
+}
+
+impl<M: Model, O: OnDelete> DataType for Option<ForeignKey<M, O>> where M::Pk: std::fmt::Display {
+    type T = Option<<<M as Model>::Pk as DataType>::T>;
+
+    fn from_val(t: Option<<<M as Model>::Pk as DataType>::T>) -> Result<Self> {
+        if let Some(s) = t {
+            Ok(Some(ForeignKey::from_val(s)?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl<M: Model, O: OnDelete> ToSql for Option<ForeignKey<M, O>> where M::Pk: std::fmt::Display {
+    fn to_sql(&self) -> String {
+        if let Some(s) = self {
+            s.to_sql()
+        } else {
+            "NULL".to_string()
+        }
     }
 }
 
@@ -382,12 +456,15 @@ impl<M: Model> Objects<M> {
         }
         v
     }
-    pub fn parents<P: Model, O: OnDelete>(&self,  f: for<'a> fn(&'a M) -> &'a ForeignKey<P, O>) -> Limit<P> {
+    pub async fn parents<P: Model, O: OnDelete, B: BaseRequest>(&self, req: &B, f: for<'a> fn(&'a M) -> &'a ForeignKey<P, O>) -> Result<Objects<P>> {
+        if self.0.is_empty() {
+            return Ok(Objects::<P>::new());
+        }
         let mut v = vec![];
         for d in &self.0 {
             v.push(f(d).pk());
         }
-        P::find_in(&v)
+        P::find_in(&v).query(req).await
     }
 }
 
@@ -453,10 +530,15 @@ mod private {
     impl Sealed for Text {}
     impl Sealed for DateTime {}
     impl<const N: u16> Sealed for VarChar<N> {}
+    impl<'a, const N: u16> Sealed for &'a VarChar<N> {}
     impl<M: Model, O: OnDelete> Sealed for ForeignKey<M, O> {}
     impl Sealed for i64 {}
     impl Sealed for bool {}
     impl Sealed for String {}
+    impl<'a> Sealed for &'a str {}
+    impl<const N: u16> Sealed for Option<VarChar<N>> {}
+    impl Sealed for Option<Text> {}
+    impl<M: Model, O: OnDelete> Sealed for Option<ForeignKey<M, O>> {}
 }
 
 #[derive(Clone)]
@@ -480,6 +562,10 @@ impl ModelField {
         self.unique = true;
         self
     }
+    pub fn null(mut self) -> Self {
+        self.null = true;
+        self
+    }
     pub fn foreign_key(mut self, app_name: &'static str, other_name: &'static str, pk_name: &'static str) -> Self {
         self.constraints.push(format!("FOREIGN KEY (\"{}\")", other_name));
         self.constraints.push(format!("REFERENCES \"{}_{}\" (\"{}\")", app_name, other_name, pk_name));
@@ -501,15 +587,90 @@ impl ModelField {
     }
 }
 
-pub trait DataType: Clone + private::Sealed {
+impl<const N: u16> DataType for Option<VarChar<N>> {
+    type T = Option<String>;
+
+    fn from_val(t: Self::T) -> Result<Self> {
+        if let Some(s) = t {
+            Ok(Some(VarChar::from_val(s)?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl<const N: u16> ToSql for Option<VarChar<N>> {
+    fn to_sql(&self) -> String {
+        if let Some(s) = self {
+            s.to_sql()
+        } else {
+            "NULL".to_string()
+        }
+    }
+}
+
+impl DataType for Option<Text> {
+    type T = Option<String>;
+
+    fn from_val(t: Self::T) -> Result<Self> {
+        if let Some(s) = t {
+            Ok(Some(Text::from_val(s)?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl ToSql for Option<Text> {
+    fn to_sql(&self) -> String {
+        if let Some(s) = self {
+            s.to_sql()
+        } else {
+            "NULL".to_string()
+        }
+    }
+}
+
+impl<'a> ToSql for &'a str {
+    fn to_sql(&self) -> String {
+        escape(self)
+    }
+}
+
+impl ToSql for String {
+    fn to_sql(&self) -> String {
+        escape(self)
+    }
+}
+
+pub trait DataType: Clone + ToSql + private::Sealed {
     type T;
     fn from_val(t: Self::T) -> Result<Self> where Self: Sized;
+}
+
+pub trait ToSql: private::Sealed {
     fn to_sql(&self) -> String;
 }
 
 #[async_trait]
 pub trait FromParams: Model {
+    fn pk_from_params(params: &Parameters) -> Result<BigInt>;
     async fn from_params(params: &Parameters) -> Result<Whose<Self>> where Self: Sized;
+}
+
+#[async_trait]
+pub trait ModelTuple<B: BaseRequest> {
+    async fn check(object_namespace: Text, object_key: BigInt, object_predicate: Text, req: &B) -> Result<()>;
+}
+
+#[async_trait]
+pub trait Relate<B: BaseRequest> {
+    async fn on_save(&self, _req: &B) -> Result<()> where Self: Sized {
+        Ok(())
+    }
+    async fn on_delete(&self, _req: &B) -> Result<()> where Self: Sized {
+        Ok(())
+    }
 }
 
 pub trait ToUrl {
@@ -522,10 +683,13 @@ pub trait Model: Sized {
     const NAME: &'static str;
     const PK_NAME: &'static str;
     fn pk(&self) -> Self::Pk;
+    fn pk_mut(&mut self) -> &mut Self::Pk;
+    fn table_name() -> String;
     fn find(data: Self::Pk) -> Whose<Self> where Self: Sized;
     fn find_in(keys: &Vec<Self::Pk>) -> Limit<Self> where Self: Sized;
     fn count() -> Count<Self>;
     fn whose(w: WhoseArg<Self>) -> Whose<Self> where Self: Sized;
+    fn delete_whose(w: WhoseArg<Self>) -> DeleteWhose<Self> where Self: Sized;
     fn limit(n: u32) -> Limit<Self> where Self: Sized;
     fn get(row: DbRow) -> Result<Self> where Self: Sized;
     fn from(rows: DbRowVec) -> Result<Objects<Self>> where Self: Sized;

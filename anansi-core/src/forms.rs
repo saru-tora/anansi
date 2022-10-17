@@ -4,10 +4,9 @@ use std::fmt;
 use std::collections::HashMap;
 use std::error::Error;
 
-use crate::web::{Reverse, TokenRef, CsrfDefense, Result, View, FormMap, BaseRequest, ParamsToModel};
+use crate::web::{Reverse, TokenRef, CsrfDefense, Result, View, FormMap, BaseRequest, GetModel};
 use crate::db::invalid;
 use crate::models::{Model, FromParams};
-pub use crate::empty::EmptyForm;
 
 #[macro_export]
 macro_rules! handle {
@@ -27,11 +26,14 @@ macro_rules! handle {
 
 #[macro_export]
 macro_rules! handle_or_404 {
-    ($form:ty, $trait:ty, $req:ident, |$post:ident| $b:expr) => {
-        anansi::_handle_or_404!($form, $trait, $req, $post, $b)
+    ($form:ty, $t:ty, $req:ident, || $b:expr) => {
+        anansi::_handle_or_404!($form, $t, $req, _a, $b)
     };
-    ($form:ty, $trait:ty, $req:ident, $post:ident, $b:expr) => {
-        anansi::_handle!($form, $trait, $req, $post, async {$b}.await)
+    ($form:ty, $t:ty, $req:ident, |$post:ident| $b:expr) => {
+        anansi::_handle_or_404!($form, $t, $req, $post, $b)
+    };
+    ($form:ty, $t:ty, $req:ident, $post:ident, $b:expr) => {
+        anansi::_handle_or_404!($form, $t, $req, $post, $b)
     };
 }
 
@@ -202,20 +204,20 @@ pub trait Form {
 }
 
 #[async_trait]
-pub trait GetData<B: BaseRequest + ParamsToModel>: Form + HasModel where <Self as HasModel>::Item: FromParams {
+pub trait GetData<B: BaseRequest + GetModel>: Form + HasModel where <Self as HasModel>::Item: FromParams {
     fn from_map(form_map: FormMap) -> Result<<Self as Form>::Data>;
     async fn from_model(model: <Self as HasModel>::Item, req: &B) -> Result<<Self as Form>::Data>;
     async fn get_data(req: &B) -> Result<<Self as Form>::Data> {
         if let Ok(form_map) = req.to_form_map() {
             Self::from_map(form_map)
         } else {
-            Self::from_model(req.to_model().await?, req).await
+            Self::from_model(req.get_model::<<Self as HasModel>::Item>().await?, req).await
         }
     }
 }
 
 #[async_trait]
-pub trait ToEdit<B: BaseRequest + ParamsToModel>: Form + GetData<B> where <Self as HasModel>::Item: FromParams {
+pub trait ToEdit<B: BaseRequest + GetModel>: Form + GetData<B> where <Self as HasModel>::Item: FromParams {
     async fn on_get(req: &B) -> Result<Self> where <Self as Form>::Data: Send, Self: Sized {
         let mut form = Self::from_data(Self::get_data(req).await?).await;
         form.fill()?;
@@ -224,6 +226,12 @@ pub trait ToEdit<B: BaseRequest + ParamsToModel>: Form + GetData<B> where <Self 
 
     async fn on_post(&mut self, data: <Self as Form>::Data, req: &B) -> Result<Self::Item>;
 }
+
+#[anansi_macros::form]
+pub struct EmptyForm {}
+
+#[async_trait::async_trait]
+impl<B: BaseRequest> ToEmpty<B> for EmptyForm {}
 
 #[derive(Clone)]
 pub struct Attributes {
@@ -426,6 +434,17 @@ pub trait ToEmpty<B: BaseRequest>: Form {
 
     async fn on_post(&mut self, _data: <Self as Form>::Data, _req: &B) -> Result<()> where <Self as Form>::Data: Send + Sync {
         Ok(())
+    }
+}
+
+#[async_trait]
+pub trait ToDestroy<B: BaseRequest + GetModel>: Form + HasModel where <Self as HasModel>::Item: FromParams {
+    async fn on_get(_req: &B) -> Result<Self> where Self: Sized {
+        Ok(Self::new())
+    }
+
+    async fn on_post(&mut self, _data: <Self as Form>::Data, req: &B) -> Result<<Self as HasModel>::Item> where <Self as Form>::Data: Send + Sync {
+        req.get_model::<<Self as HasModel>::Item>().await
     }
 }
 

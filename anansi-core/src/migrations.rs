@@ -274,6 +274,8 @@ pub fn process_syntax(db: &str, content: String, v: &mut Vec<(String, String, St
                             sql = "            (\n                \"id\",\n                models::BigInt::field().primary_key()\n            ),\n".to_string() + &sql;
                         }
                         v.push((prefix.to_string(), name.to_string(), sql));
+                        v.push((prefix.to_string(), format!("{}tuple", name), "            (\n                \"id\",\n                models::BigInt::field().primary_key()\n            ),\n            (\n                \"subject_namespace\",\n                models::Text::field()\n            ),\n            (\n                \"subject_key\",\n                models::BigInt::field()\n            ),\n            (\n                \"subject_predicate\",\n                models::Text::field().null()\n            ),\n            (\n                \"object_key\",\n                models::BigInt::field()\n            ),\n            (\n                \"object_predicate\",\n                models::Text::field()\n            ),\n".to_string()));
+
                         if !alter {
                             key_table(meta, v, &prefix, &name);
                         }
@@ -319,13 +321,13 @@ fn get_type(fieldname: &String, field: &Field, meta: &mut Vec<Vec<String>>, db: 
                         let m: Vec<&str> = m.split(',').collect();
                         let m = m[0].trim().to_lowercase();
                         let parent: Vec<&str> = m.split("::").collect();
-                        let parent_app = if parent.len() > 2 {
-                            parent[parent.len() - 3].trim().to_string()
+                        let parent_app = if let Some(p) = attrs.get("app") {
+                            p.to_string()
                         } else {
-                            db.to_string()
+                            format!("\"{}\"", db)
                         };
                         let parent_name = parent.last().unwrap().trim().to_string();
-                        s.push_str(&format!(".foreign_key(\"{}\", \"{}\", \"id\")", parent_app, parent_name));
+                        s.push_str(&format!(".foreign_key({}, \"{}\", \"id\")", parent_app, parent_name));
                         s
                     },
                     "DateTime" => {

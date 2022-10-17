@@ -1,9 +1,10 @@
 use rpassword::prompt_password;
 
+use anansi::raw_transact;
 use anansi::db::DbPool;
 use anansi::web::Result;
-use anansi::models::{Model, DataType, Boolean};
-use super::models::{User, hash_password};
+use anansi::models::{Model, Text};
+use super::models::{User, Group, group::groupname, GroupTuple, hash_password};
 
 pub fn admin(pool: DbPool) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
     Box::pin(_admin(pool))
@@ -47,9 +48,13 @@ async fn _admin(pool: DbPool) -> Result<()> {
         if password != confirm {
             eprintln!("Password does not match.\n");
         } else {
-            let u = User::new(name, hash_password(&password).unwrap(), Boolean::from_val(true).unwrap()).raw_save(&pool).await.expect("Problem creating admin.");
-            println!("Created admin \"{}\"", u.username);
-            break Ok(());
+            break raw_transact!(pool, {
+                let u = User::new(name, hash_password(&password).unwrap()).raw_save(&pool).await.expect("Problem creating admin.");
+                let group = Group::whose(groupname().eq("admin")).raw_get(&pool).await?;
+                GroupTuple::new(Text::from("auth_user".to_string()), u.pk(), None, group.pk(), Text::from("member".to_string())).raw_save(&pool).await.expect("Problem adding admin.");
+                println!("Created admin \"{}\"", u.username);
+                Ok(())
+            })
         }
     }
 }

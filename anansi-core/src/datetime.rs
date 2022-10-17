@@ -5,7 +5,7 @@ use std::error::Error;
 
 use crate::db::{invalid, Db, DbTypeInfo};
 use crate::web::Result;
-use crate::models::{DataType, ModelField};
+use crate::models::{DataType, ModelField, ToSql};
 use sqlx::{Type, Decode, Database, database::HasValueRef};
 
 #[derive(PartialEq, PartialOrd, Clone, Copy, Debug)]
@@ -207,6 +207,9 @@ impl DataType for DateTime {
             Ok(Self {date, time})
         }
     }
+}
+
+impl ToSql for DateTime {
     fn to_sql(&self) -> String {
         format!("'{} {}'", self.date, self.time)
     }

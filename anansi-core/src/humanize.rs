@@ -77,7 +77,7 @@ pub fn ago(dt: DateTime) -> String {
         } else if minute_diff > 0 {
             plural(minute_diff, "minute")
         } else {
-            "now".to_string()
+            "just now".to_string()
         }
     }
 }

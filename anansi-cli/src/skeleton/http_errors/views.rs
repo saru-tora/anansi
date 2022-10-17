@@ -1,10 +1,11 @@
-use anansi::{check, viewer, render};
-use anansi::web::{if_guest, Result, Response};
+use anansi::{raw_check, checker, render};
+use anansi::web::{Result, Response};
+use anansi::util::auth::models::Group;
 use crate::project::Request;
 
-#[viewer]
+#[checker]
 impl<R: Request> ErrorView<R> {
-    #[check(if_guest)]
+    #[raw_check(Group::is_visitor)]
     pub async fn not_found(_req: R) -> Result<Response> {
         render!("not_found")
     }

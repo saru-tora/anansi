@@ -1,3 +1,4 @@
 anansi::operations! {
-    migrations::RunSql::new("INSERT INTO auth_user (id, username, password, is_admin) VALUES (0, \"guest\", \"\", 0);"),
+    migrations::RunSql::new("INSERT INTO auth_user (id, username, password) VALUES (0, 'guest', '');"),
+    migrations::RunSql::new("INSERT INTO auth_group (id, groupname) VALUES (1, 'admin');"),
 }

@@ -49,12 +49,16 @@ pub fn model_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenSt
         let mut mv = Vec::new();
         let mut mtv = Vec::new();
         let pkn = format_ident!("{}", pk_name);
-        for (mt0, mt1) in &pkd.member_type {
+        for (null, mt0, mt1) in &pkd.member_type {
             if mt0 != fname && *mt0 != pkn {
                 mv.push(quote! {#mt0});
                 mtv.push(quote! {#mt0: #mt1});
             } else if mt0 == fname {
-                mv.push(quote! {ForeignKey::new(self.model)});
+                if !null {
+                    mv.push(quote! {ForeignKey::new(self.model)});
+                } else {
+                    mv.push(quote! {Some(ForeignKey::new(self.model))});
+                }
             }
         }
         let q3 = quote! {
@@ -72,14 +76,16 @@ pub fn model_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenSt
                 }
                 pub fn order_by(&self, o: anansi::db::OrderByArg<#name>) -> anansi::db::OrderBy<#name> {
                     use anansi::models::Model;
-                    #name::whose(#fname().eq().data(<#full as #pdt>::pk(self.model))).order_by(o)
+                    #name::whose(#fname().eq(<#full as #pdt>::pk(self.model))).order_by(o)
                 }
             }
         };
         fv.push(q3);
     }
+
     let name_string = name.to_string();
     let table = quote! {&format!("{}_{}", super::init::APP_NAME, #lowercase)};
+    let table_name = quote! {format!("{}_{}", super::init::APP_NAME, #lowercase)};
     let model_fields = format_ident!("{}Fields", name);
     
     let primary = quote! {<#name as #pdt>::pk(&self)};
@@ -92,17 +98,24 @@ pub fn model_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenSt
             fn pk(&self) -> #pt {
                 self.#pk_id.clone()
             }
+            fn pk_mut(&mut self) -> &mut #pt {
+                &mut self.#pk_id
+            }
             fn find(d: #pt) -> anansi::db::Whose<Self> {
-                Self::whose(#lowname::pk().eq().data(d))
+                Self::whose(#lowname::pk().eq(d))
             }
             fn find_in(keys: &Vec<#pt>) -> anansi::db::Limit<Self> {
-                Self::whose(#lowname::pk().is_in().data(keys)).order_by(#lowname::pk().field(keys)).limit(keys.len() as u32)
+                assert!(!keys.is_empty());
+                Self::whose(#lowname::pk().is_in(keys)).order_by(#lowname::pk().field(keys)).limit(keys.len() as u32)
             }
             fn count() -> anansi::db::Count<Self> {
                 anansi::db::Count::from(anansi::db::Builder::count(#table))
             }
             fn whose(w: anansi::db::WhoseArg<Self>) -> anansi::db::Whose<Self> {
                 anansi::db::Whose::from(anansi::db::Builder::select(&[#(#members),*], #table).whose().append(w.builder()))
+            }
+            fn delete_whose(w: anansi::db::WhoseArg<Self>) -> anansi::db::DeleteWhose<Self> {
+                anansi::db::DeleteWhose::from(anansi::db::Builder::delete(#table).whose().append(w.builder()))
             }
             fn limit(n: u32) -> anansi::db::Limit<Self> {
                 anansi::db::Limit::from(anansi::db::Builder::select(&[#(#members),*], #table).limit(n))
@@ -120,6 +133,9 @@ pub fn model_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenSt
             fn order_by(w: anansi::db::OrderByArg<Self>) -> anansi::db::OrderBy<Self> {
                 anansi::db::OrderBy::from(anansi::db::Builder::select(&[#(#members),*], #table).order_by().push_str(&w.builder().val()))
             }
+            fn table_name() -> String {
+                #table_name
+            }
             async fn update<B: anansi::web::BaseRequest>(&mut self, req: &B) -> anansi::web::Result<()> {
                                                                                                 self.raw_update(req.raw().pool()).await
             }
@@ -129,10 +145,18 @@ pub fn model_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenSt
                 u.raw_update(pool).await
             }
             async fn delete<B: anansi::web::BaseRequest>(&self, req: &B) -> anansi::web::Result<()> {
-                anansi::db::delete_from(#table, Self::PK_NAME, #primary, req).await
+                use anansi::models::Relate;
+                anansi::transact!(req, {
+                    self.on_delete(req).await?;
+                    anansi::db::delete_from(#table, Self::PK_NAME, #primary, req).await
+                })
             }
-            async fn save<B: anansi::web::BaseRequest>(self, req: &B) -> anansi::web::Result<Self> {
-                self.raw_save(req.raw().pool()).await
+            async fn save<R: anansi::web::BaseRequest>(self, req: &R) -> anansi::web::Result<Self> {
+                use anansi::models::Relate;
+                anansi::transact!(req, {
+                    self.on_save(req).await?;
+                    self.raw_save(req.raw().pool()).await
+                })
             }
             async fn raw_save(self, pool: &anansi::db::DbPool) -> anansi::web::Result<Self> {
                 let i: anansi::db::Insert<Self> = anansi::db::Insert::new(#table, &[#(#members),*])
@@ -170,7 +194,7 @@ struct PkData {
     params: Vec<TokenStream>,
     values: Vec<TokenStream>,
     fkv: Vec<(Ident, String)>,
-    member_type: Vec<(Ident, TokenStream)>,
+    member_type: Vec<(bool, Ident, TokenStream)>,
 }
 
 impl PkData {
@@ -186,6 +210,50 @@ impl PkData {
     }
 }
 
+#[proc_macro_derive(Relate)]
+pub fn relate_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = input.ident;
+    let model_tuple = format_ident!("{}Tuple", name);
+    let lower = format_ident!("{}", model_tuple.to_string().to_lowercase());
+
+    let expanded = quote! {
+        impl #name {
+            pub async fn owner<B: anansi::web::BaseRequest>(req: &B) -> anansi::web::Result<()> {
+                use anansi::models::{Model, ModelTuple, FromParams, Text};
+                #model_tuple::check(Text::from(Self::table_name()), Self::pk_from_params(req.params())?, Text::from("owner".to_string()), req).await
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl<R: anansi::web::BaseRequest> anansi::models::Relate<R> for #name {
+            async fn on_save(&self, req: &R) -> anansi::web::Result<()> {
+                use anansi::models::Model;
+                #model_tuple::new(anansi::models::Text::from("auth_user".to_string()), req.user().pk(), None, self.pk(), anansi::models::Text::from("owner".to_string())).save(req).await?;
+                Ok(())
+            }
+            async fn on_delete(&self, req: &R) -> anansi::web::Result<()> {
+                use anansi::models::Model;
+                #model_tuple::delete_whose(#lower::object_key().eq(self.pk())).execute(req).await
+            }
+        }
+    };
+
+    proc_macro::TokenStream::from(expanded)
+}
+
+#[proc_macro_derive(ToDestroy)]
+pub fn to_destroy_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = input.ident;
+    let expanded = quote! {
+        #[async_trait::async_trait]
+        impl<R: crate::project::Request> anansi::forms::ToDestroy<R> for #name {}
+    };
+
+    proc_macro::TokenStream::from(expanded)
+}
+
 #[proc_macro_derive(FromParams)]
 pub fn from_params_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -194,8 +262,11 @@ pub fn from_params_macro_derive(input: proc_macro::TokenStream) -> proc_macro::T
     let expanded = quote! {
         #[async_trait::async_trait]
         impl anansi::models::FromParams for #name {
+            fn pk_from_params(params: &anansi::web::Parameters) -> anansi::web::Result<anansi::models::BigInt> {
+                anansi::humanize::decode(params.get(#param)?)
+            }
             async fn from_params(params: &anansi::web::Parameters) -> anansi::web::Result<anansi::db::Whose<Self>> {
-                let id = anansi::humanize::decode(params.get(#param)?)?;
+                let id = Self::pk_from_params(params)?;
                 use anansi::models::Model;
                 Ok(Self::find(id))
             }
@@ -518,7 +589,6 @@ fn model_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, members
         Data::Struct(ref data) => {
             match data.fields {
                 Fields::Named(ref fields) => {
-                    let mut n: usize = 0;
                     let recurse = fields.named.iter().map(|f| {
                         let name = &f.ident;
                         let member = name.as_ref().unwrap().to_string();
@@ -526,11 +596,12 @@ fn model_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, members
                         let column = quote! {&format!("{}_{}.{}", super::init::APP_NAME, #fname, #member)};
                         let lowcolumn = quote! {&format!("{}_{}.{}", super::super::init::APP_NAME, #fname, #member)};
                         let attrs = get_attrs(&f.attrs);
-                        let fty = &f.ty;
-                        pkd.member_type.push((name.as_ref().unwrap().clone(), quote! {#fty}));
+                        let mut fty = f.ty.clone();
                         match &f.ty {
                             Path(path) => {
-                                let segment = path.path.segments.last().unwrap().ident.to_string();
+                                let mut segment = path.path.segments.last().unwrap().ident.to_string();
+                                let mut null = false;
+                                
                                 let mut is_pk = false;
                                 if let Some(pk) = attrs.get("primary_key") {
                                     if pkd.name.is_empty() && pk == "true" {
@@ -548,6 +619,31 @@ fn model_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, members
                                     pkd.values.push(quote! {#name});
                                 } else {
                                     pkd.values.push(quote! {#name: anansi::models::ManyToMany::new()});
+                                }
+                                if segment == "Option" {
+                                    pkd.member_type.push((true, name.as_ref().unwrap().clone(), quote! {#fty}));
+                                    null = true;
+                                    let ty = &f.ty;
+                                    let ty = quote! {#ty}.to_string();
+                                    let mut s = ty[segment.len()+3..ty.len()-2].to_string();
+                                    s = match s.rsplit_once("::") {
+                                        Some((_, second)) => second.to_string(),
+                                        None => s,
+                                    };
+                                    match s.rsplit_once('<') {
+                                        Some((first, _)) => {
+                                            segment = first.trim().to_string()
+                                        },
+                                        None => {
+                                            segment = s.trim().to_string()
+                                        },
+                                    }
+                                    let (t, u) = ty.rsplit_once("Option <").unwrap();
+                                    let (u, _) = u.rsplit_once('>').unwrap();
+                                    let v: syn::Type = syn::parse_str(&format!("{}{}", t, u)).unwrap();
+                                    fty = v;
+                                } else {
+                                    pkd.member_type.push((false, name.as_ref().unwrap().clone(), quote! {#fty}));
                                 }
                                 match segment.as_str() {
                                     "ManyToMany" => {
@@ -586,15 +682,28 @@ fn model_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, members
                                             fv.push(q);
                                             fv2.push(q2);
                                             members.push(member);
-                                            let mut ts = ty_string(&f.ty, &segment);
+                                            let mut ts = ty_string(&fty, &segment);
                                             if let Some(t) = ts.split_once(',') {
                                                 ts = t.0.trim().to_string();
                                             }
                                             pkd.fkv.push((name.as_ref().unwrap().clone(), ts));
-                                            let ty = &f.ty;
-                                            quote_spanned! {f.span() =>
-                                                #name: <anansi::models::#ty as anansi::models::DataType>::from_val(row.try_get(#m2)?)?,
-                                            }
+                                            let qs = if !null {
+                                                quote_spanned! {f.span() =>
+                                                    #name: <anansi::models::#fty as anansi::models::DataType>::from_val(row.try_get(#m2)?)?,
+                                                }
+                                            } else {
+                                                quote_spanned! {f.span() =>
+                                                    #name: {
+                                                        let o: Option<i64> = row.try_get(#m2)?;
+                                                        if let Some(n) = o {
+                                                            Some(<anansi::models::#fty as anansi::models::DataType>::from_val(n)?)
+                                                        } else {
+                                                            None
+                                                        }
+                                                    }
+                                                }
+                                            };
+                                            qs
                                         } else {
                                             panic!("unexpected primary key type for foreign key");
                                         }
@@ -620,33 +729,50 @@ fn model_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, members
                                         }
                                     },
                                     "VarChar" => {
-                                        let ty = &f.ty;
-                                        let q = quote! {pub fn #name<'a>() -> anansi::db::Column<#mname, anansi::models::#ty> {anansi::db::Column::new(#lowcolumn)}};
-                                        let q2 = quote! {pub fn #name<'a>(self) -> anansi::db::Column<F, anansi::models::#ty> {anansi::db::Column::from(self.b.push_str(#column))}};
+                                        let q = quote! {pub fn #name<'a>() -> anansi::db::Column<#mname, anansi::models::#fty> {anansi::db::Column::new(#lowcolumn)}};
+                                        let q2 = quote! {pub fn #name<'a>(self) -> anansi::db::Column<F, anansi::models::#fty> {anansi::db::Column::from(self.b.push_str(#column))}};
                                         fv.push(q);
                                         fv2.push(q2);
                                         members.push(member);
-                                        quote_spanned! {f.span() =>
-                                            #name: <anansi::models::#ty as anansi::models::DataType>::from_val(row.try_get(#m2)?)?,
+                                        if !null {
+                                            quote_spanned! {f.span() =>
+                                                #name: <anansi::models::#fty as anansi::models::DataType>::from_val(row.try_get(#m2)?)?,
+                                            }
+                                        } else {
+                                            quote_spanned! {f.span() =>
+                                                #name: {
+                                                    let o: Option<String> = row.try_get(#m2)?;
+                                                    if let Some(s) = o {
+                                                        Some(<anansi::models::#fty as anansi::models::DataType>::from_val(s)?)
+                                                    } else {
+                                                        None
+                                                    }
+                                                }
+                                                ,
+                                            }
                                         }
                                     },
                                     "Text" => {
-                                        let ty = &f.ty;
-                                        let q = quote! {pub fn #name<'a>() -> anansi::db::Column<#mname, anansi::models::#ty> {anansi::db::Column::new(#lowcolumn)}};
-                                        let q2 = quote! {pub fn #name<'a>(self) -> anansi::db::Column<F, anansi::models::#ty> {anansi::db::Column::from(self.b.push_str(#column))}};
+                                        let q = quote! {pub fn #name<'a>() -> anansi::db::Column<#mname, anansi::models::Text> {anansi::db::Column::new(#lowcolumn)}};
+                                        let q2 = quote! {pub fn #name<'a>(self) -> anansi::db::Column<F, anansi::models::Text> {anansi::db::Column::from(self.b.push_str(#column))}};
                                         fv.push(q);
                                         fv2.push(q2);
                                         members.push(member);
-                                        quote_spanned! {f.span() =>
-                                            #name: Text::from(row.try_get(#m2)?),
+                                        if !null {
+                                            quote_spanned! {f.span() =>
+                                                #name: anansi::models::Text::from(row.try_get(#m2)?),
+                                            }
+                                        } else {
+                                            quote_spanned! {f.span() =>
+                                                #name: {
+                                                    let o: Option<String> = row.try_get(#m2)?;
+                                                    o.map(|s| anansi::models::Text::from(s))
+                                                },
+                                            }
                                         }
                                     },
                                     _ => {
-                                        n += 1;
-                                        let m = n - 1;
-                                        quote_spanned! {f.span() =>
-                                            #name: #path::from(&dv[n + #m])?,
-                                        }
+                                        panic!("{}", segment.as_str());
                                     },
                                 }
                             },
@@ -699,17 +825,17 @@ pub fn base_view(_args: proc_macro::TokenStream, input: proc_macro::TokenStream)
 }
 
 #[proc_macro_attribute]
-pub fn view(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub fn check(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as ItemFn);
-    let args = parse_macro_input!(args as Args);
+    let args = parse_macro_input!(args as SchemaArgs);
+    let vars = args.vars;
     let vis = input.vis;
     let sig = input.sig;
-    let func = &args.vars[0];
     let name = String::from("/.parsed/") + &sig.ident.to_string() + ".in";
 
     let stmts = input.block.stmts;
     let q = quote! {
-        #[anansi::check(#func)]
+        #[anansi::raw_check(#(#vars)*)]
         #vis #sig {
             #(#stmts)*
             include!(concat!("templates", #name))
@@ -719,9 +845,13 @@ pub fn view(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> pr
 }
 
 #[proc_macro_attribute]
-pub fn check(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub fn raw_check(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as ItemFn);
-    let args = parse_macro_input!(args as syn::ExprPath);
+    let args = parse_macro_input!(args as SchemaArgs);
+    let vars = &args.vars;
+    if vars.is_empty() {
+        panic!("Expected function");
+    }
     let generics = input.sig.generics;
     let vis = input.vis;
     let sig_ident = input.sig.ident;
@@ -751,7 +881,6 @@ pub fn check(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> p
         },
         _ => panic!("Could not get return type"),
     };
-    let func = &args;
     let stmts = input.block.stmts;
     let mut generic_idents = quote!{};
     let where_clause = &generics.where_clause;
@@ -777,10 +906,11 @@ pub fn check(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> p
     };
     let q = quote! {
         async fn #_sig_ident #generics (#req: #ty) -> #rty #where_clause {
+            #(#vars(&#req).await?;)*
             #(#stmts)*
         }
         #vis fn #sig_ident #generics (_raw: #ty) -> std::pin::Pin<Box<dyn std::future::Future<Output = #rty> + Send>> #where_clause {
-            Box::pin(#func(_raw, Self::#_sig_ident #generic_idents))
+            Box::pin(Self::#_sig_ident #generic_idents(_raw))
         }
     };
     q.into()
@@ -847,7 +977,7 @@ pub fn check_fn(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -
 }
 
 #[proc_macro_attribute]
-pub fn viewer(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub fn checker(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as ViewerArgs);
     let imp = input.imp;
     let ty = &imp.self_ty;
@@ -888,11 +1018,52 @@ pub fn model(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream)
                 }
                 _ => {},
             }
+
+            let model_tuple = format_ident!("{}Tuple", ast.ident);
+            let lower = format_ident!("{}", model_tuple.to_string().to_lowercase());
+            let tuple = quote! {
+                #[derive(anansi::Model)]
+                pub struct #model_tuple {
+                    #[field(primary_key = "true", default_fn = "anansi::models::generate_id")]
+                    id: anansi::models::BigInt,
+                    pub subject_namespace: anansi::models::Text,
+                    pub subject_key: anansi::models::BigInt,
+                    pub subject_predicate: Option<anansi::models::Text>,
+                    pub object_key: anansi::models::BigInt,
+                    pub object_predicate: anansi::models::Text,
+                }
+                impl<B: anansi::web::BaseRequest> anansi::models::Relate<B> for #model_tuple {}
+                
+                #[async_trait::async_trait]
+                impl<R: anansi::web::BaseRequest> anansi::models::ModelTuple<R> for #model_tuple {
+                    async fn check(object_namespace: anansi::models::Text, object_key: anansi::models::BigInt, object_predicate: anansi::models::Text, req: &R) -> anansi::web::Result<()> {
+                        use anansi::models::Model;
+                        let tuples = Self::whose(#lower::object_key().eq(object_key)).and(#lower::object_predicate().eq(object_predicate)).get_all().query(req).await?;
+                        for tuple in tuples {
+                            match tuple.subject_predicate {
+                                None => {
+                                    if tuple.subject_namespace == "auth_user" && tuple.subject_key == req.user().pk() {
+                                        return Ok(());
+                                    }
+                                },
+                                Some(predicate) => {
+                                    if Self::check(tuple.subject_namespace, tuple.subject_key, predicate, req).await.is_ok() {
+                                        return Ok(());
+                                    }
+                                },
+                            }
+                        }
+                        Err(anansi::db::invalid())
+                    }
+                }
+            };
             
-            return quote! {
+            let q = quote! {
                 #[derive(anansi::Model)]
                 #ast
-            }.into();
+                #tuple
+            };
+            return q.into();
         }
         _ => panic!("macro has to be used on a struct"),
     }
@@ -996,7 +1167,8 @@ pub fn model_admin(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                                 &[#(#es)*]
                             }
                             async fn fields(self, _req: &R) -> Vec<String> {
-                                vec![#(self.#elements.to_string(),)*]
+                                use anansi::admin_site::AdminField;
+                                vec![#(self.#elements.admin_field(),)*]
                             }
                         });
                     } else {

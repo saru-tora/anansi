@@ -11,7 +11,7 @@ use std::future::Future;
 
 use crate::server::Rng;
 use crate::router::Routes;
-use crate::models::{FromParams, DateTime};
+use crate::models::{Model, FromParams, BigInt, DateTime};
 use crate::admin_site::AdminRef;
 
 pub type Result<T> = result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -85,7 +85,7 @@ macro_rules! middleware {
                 use anansi::models::{Model, DataType};
                 let session = match anansi::util::sessions::models::Session::from_raw(raw).await {
                     Ok(s) => s,
-                    Err(_) => return Err(Box::new(anansi::web::HttpError::from(anansi::web::HttpErrorKind::NoSession))),
+                    Err(_) => return Err(Box::new(anansi::web::WebError::from(anansi::web::WebErrorKind::NoSession))),
                 };
                 let session_data = session.to_data()?;
                 let user_id = session_data.get(anansi::util::auth::models::User::KEY)?.as_i64().expect("could not get user id");
@@ -99,7 +99,7 @@ macro_rules! middleware {
         }
         impl anansi::web::BaseMiddleware for Middleware {}
         anansi::request_derive!();
-        pub trait Request: anansi::web::BaseRequest + anansi::util::sessions::middleware::Sessions + anansi::util::auth::middleware::Auth + anansi::util::admin::site::HasAdmin + anansi::web::CsrfDefense + anansi::web::ParamsToModel + anansi::web::Reverse + std::fmt::Debug + 'static {}
+        pub trait Request: anansi::web::BaseRequest + anansi::util::sessions::middleware::Sessions + anansi::util::auth::middleware::Auth + anansi::util::admin::site::HasAdmin + anansi::web::CsrfDefense  + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetModel + 'static {}
         impl Request for HttpRequest {}
         impl anansi::util::admin::site::HasAdmin for HttpRequest {
             fn admin(&self) -> anansi::util::admin::site::AdminRef<Self> {
@@ -108,11 +108,7 @@ macro_rules! middleware {
         }
         impl anansi::util::auth::admin::Request for HttpRequest {}
         #[async_trait::async_trait]
-        impl anansi::util::auth::middleware::Auth for HttpRequest {
-            fn user(&self) -> &anansi::util::auth::models::User {
-                &self.mid.user
-            }
-        }
+        impl anansi::util::auth::middleware::Auth for HttpRequest {}
         #[async_trait::async_trait]
         impl anansi::util::sessions::middleware::Sessions for HttpRequest {
             fn session(&self) -> &anansi::util::sessions::models::Session {
@@ -155,6 +151,13 @@ macro_rules! middleware {
 macro_rules! transact {
     ($req:ident, $b:expr) => {
         $req.raw().transact(async {$b}).await
+    }
+}
+
+#[macro_export]
+macro_rules! raw_transact {
+    ($pool:ident, $b:expr) => {
+        $pool.transact(async {$b}).await
     }
 }
 
@@ -215,7 +218,7 @@ macro_rules! strip_plus {
 }
 
 #[macro_export]
-macro_rules! checker {
+macro_rules! view_checker {
     ($id:ident<$r:ident: $p:path>, |$req:ident| $check:expr, $response:expr) => {
         pub async fn $id<F, $r: $p>($req: $r, view: impl Fn($r) -> F) -> Result<Response>
         where F: std::future::Future<Output = Result<Response>> {
@@ -228,7 +231,7 @@ macro_rules! checker {
     }
 }
 
-checker!(if_guest<B: BaseRequest>, |_req| true, redirect!());
+view_checker!(if_guest<B: BaseRequest>, |_req| true, redirect!());
 
 #[derive(Debug, Clone)]
 pub struct Headers(HashMap<String, String>);
@@ -280,37 +283,41 @@ impl<B: BaseRequest> fmt::Display for Http404<B> {
 impl<B: BaseRequest + fmt::Debug> Error for Http404<B> {}
 
 #[derive(Debug)]
-pub struct HttpError {
-    kind: HttpErrorKind,
+pub struct WebError {
+    kind: WebErrorKind,
 }
 
-impl HttpError {
-    pub fn from(kind: HttpErrorKind) -> Self {
+impl WebError {
+    pub fn from(kind: WebErrorKind) -> Self {
         Self {kind}
     }
-    pub fn kind(&self) -> &HttpErrorKind {
+    pub fn kind(&self) -> &WebErrorKind {
         &self.kind
     }
 }
 
-impl fmt::Display for HttpError {
+impl fmt::Display for WebError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.kind)
     }
 }
 
-impl Error for HttpError {}
+impl Error for WebError {}
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[non_exhaustive]
-pub enum HttpErrorKind {
+pub enum WebErrorKind {
+    Invalid,
     NoSession,
+    Unauthenticated,
 }
 
-impl fmt::Display for HttpErrorKind {
+impl fmt::Display for WebErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
+            Self::Invalid => "invalid data",
             Self::NoSession => "could not get session token from cookie",
+            Self::Unauthenticated => "user not authenticated",
         };
         write!(f, "{}", s)
     }
@@ -614,8 +621,8 @@ pub trait Reverse {
 }
 
 #[async_trait]
-pub trait ParamsToModel: BaseRequest {
-    async fn to_model<F: FromParams + Send + Sync>(&self) -> Result<F> where Self: Sized {
+pub trait GetModel: BaseRequest {
+    async fn get_model<F: FromParams + Send + Sync>(&self) -> Result<F> where Self: Sized {
         F::from_params(self.params()).await?.get(self).await
     }
 }
@@ -623,6 +630,7 @@ pub trait ParamsToModel: BaseRequest {
 #[async_trait]
 pub trait BaseRequest: Send + Sync {
     type Mid: BaseMiddleware;
+    type Usr: BaseUser;
 
     async fn new(buffer: &[u8], request_line: RequestLine, url: Arc<HashMap<usize, Vec<String>>>, pool: DbPool, rng: Rng, admin: AdminRef<Self>) -> Result<Self> where Self: Sized;
     fn method(&self) -> &Method;
@@ -636,6 +644,8 @@ pub trait BaseRequest: Send + Sync {
     fn mid(&self) -> &Self::Mid;
     fn to_form_map(&self) -> Result<FormMap>;
     fn from(raw: RawRequest, mid: Self::Mid, urls: Arc<HashMap<usize, Vec<String>>>, admin: AdminRef<Self>) -> Self where Self: Sized;
+    fn user(&self) -> &Self::Usr;
+    fn user_mut(&mut self) -> &mut Self::Usr;
     fn to_raw(self) -> RawRequest;
     async fn handle_no_session(response: Response, pool: DbPool, std_rng: Rng) -> Result<Response> where Self: Sized;
 }
@@ -666,7 +676,7 @@ pub async fn route_request<B: BaseRequest + fmt::Debug + 'static>(dirs: Vec<&str
     Err(Box::new(anansi::web::Http404 {req}))
 }
 
-impl<M> fmt::Debug for dyn BaseRequest<Mid = M> {
+impl<M, U> fmt::Debug for dyn BaseRequest<Mid = M, Usr = U> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "BaseRequest")
     }
@@ -696,10 +706,11 @@ macro_rules! request_derive {
             }
         }
         #[async_trait::async_trait]
-        impl anansi::web::ParamsToModel for HttpRequest {}
+        impl anansi::web::GetModel for HttpRequest {}
         #[async_trait::async_trait]
         impl anansi::web::BaseRequest for HttpRequest {
             type Mid = Middleware;
+            type Usr = anansi::util::auth::models::User;
 
             async fn new(buffer: &[u8], request_line: $crate::web::RequestLine, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: $crate::db::DbPool, std_rng: $crate::server::Rng, admin: $crate::admin_site::AdminRef<Self>) -> $crate::web::Result<Self> where Self: Sized {
                 let mut raw = $crate::web::RawRequest::new(buffer, request_line, pool, std_rng).await?;
@@ -741,6 +752,12 @@ macro_rules! request_derive {
             }
             fn to_raw(self) -> anansi::web::RawRequest {
                 self.raw
+            }
+            fn user(&self) -> &Self::Usr {
+                &self.mid.user
+            }
+            fn user_mut(&mut self) -> &mut Self::Usr {
+                &mut self.mid.user
             }
             async fn handle_no_session(response: anansi::web::Response, pool: anansi::db::DbPool, std_rng: anansi::server::Rng) -> anansi::web::Result<anansi::web::Response> {
                 let session = anansi::util::sessions::models::Session::gen(&pool, &std_rng).await?;
@@ -848,13 +865,14 @@ impl RawRequest {
         &self.url
     }
     pub async fn transact<F: Future<Output = Result<O>>, O>(&self, future: F) -> F::Output {
-        let tran = self.pool().0.begin().await?;
-        let res = future.await;
-        if res.is_ok() {
-            tran.commit().await?;
-        }
-        res
+        self.pool().transact(future).await
     }
+}
+
+pub trait BaseUser: Model<Pk = BigInt> + Send + Sync {
+    type Name: fmt::Display;
+    fn username(&self) -> &Self::Name;
+    fn is_auth(&self) -> bool;
 }
 
 pub trait BaseMiddleware: Sync + Send {}

@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::fmt;//::{self, Display};
-use anansi::web::{BaseRequest, View, ParamsToModel};
-use anansi::models::{Model, FromParams};
+use anansi::web::{BaseRequest, View, GetModel};//, CheckModel};
+use anansi::models::{Model, FromParams};//CheckModel};//FromParams};
 use anansi::forms::{Form, ToModel, ToEdit, HasModel};
 
 pub type AdminRef<B> = Arc<Mutex<dyn AdminSite<B>>>;
@@ -46,8 +46,22 @@ impl<B: BaseRequest> AdminEntry<B> {
     }
 }
 
+pub trait AdminField {
+    fn admin_field(&self) -> String;
+}
+
+impl<D: fmt::Display> AdminField for Option<D> {
+    fn admin_field(&self) -> String {
+        if let Some(s) = self {
+            s.to_string()
+        } else {
+            String::new()
+        }
+    }
+}
+
 #[async_trait::async_trait]
-pub trait ModelAdmin<B: BaseRequest + ParamsToModel>: Model
+pub trait ModelAdmin<B: BaseRequest + GetModel>: Model
 where <<Self as ModelAdmin<B>>::AdminForm as HasModel>::Item: FromParams
 {
     type AdminForm: Form + Send + ToEdit<B>;

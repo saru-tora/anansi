@@ -15,23 +15,35 @@ anansi::operations! {
                 "password",
                 models::VarChar::<150>::field()
             ),
-            (
-                "is_admin",
-                models::Boolean::field()
-            ),
         ],
     },
     migrations::CreateModel {
         prefix: "auth",
-        name: "user_group",
+        name: "usertuple",
         fields: vec![
             (
-                "user",
-                models::BigInt::field().foreign_key("auth", "user", "id")
+                "id",
+                models::BigInt::field().primary_key()
             ),
             (
-                "group",
-                models::BigInt::field().foreign_key("auth", "group", "id")
+                "subject_namespace",
+                models::Text::field()
+            ),
+            (
+                "subject_key",
+                models::BigInt::field()
+            ),
+            (
+                "subject_predicate",
+                models::Text::field().null()
+            ),
+            (
+                "object_key",
+                models::BigInt::field()
+            ),
+            (
+                "object_predicate",
+                models::Text::field()
             ),
         ],
     },
@@ -44,8 +56,38 @@ anansi::operations! {
                 models::BigInt::field().primary_key()
             ),
             (
-                "name",
+                "groupname",
                 models::VarChar::<150>::field()
+            ),
+        ],
+    },
+    migrations::CreateModel {
+        prefix: "auth",
+        name: "grouptuple",
+        fields: vec![
+            (
+                "id",
+                models::BigInt::field().primary_key()
+            ),
+            (
+                "subject_namespace",
+                models::Text::field()
+            ),
+            (
+                "subject_key",
+                models::BigInt::field()
+            ),
+            (
+                "subject_predicate",
+                models::Text::field().null()
+            ),
+            (
+                "object_key",
+                models::BigInt::field()
+            ),
+            (
+                "object_predicate",
+                models::Text::field()
             ),
         ],
     },

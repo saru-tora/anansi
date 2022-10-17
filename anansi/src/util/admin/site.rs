@@ -1,7 +1,7 @@
-use anansi::{check, render};
+use anansi::{raw_check, render};
 use anansi::web::{View, Response, Result, BaseRequest};
 pub use anansi::admin_site::{ModelAdmin, ModelEntry, AdminSite, AdminRef, AdminEntry};
-use super::super::auth::admin::{base, BaseArgs, Request, AuthAdminView, if_admin};
+use super::super::auth::admin::{base, BaseArgs, Request, AuthAdminView};//, if_admin};
 use super::super::auth::models::{User, Group};
 
 pub trait HasAdmin: BaseRequest {
@@ -44,7 +44,7 @@ impl<R: Request> AdminSite<R> for BasicAdminSite<R> {
 }
 
 impl<R: Request> BasicAdminSite<R> {
-    #[check(if_admin)]
+    #[raw_check(Group::is_admin)]
     pub async fn index(req: R) -> Result<Response> {
         let title = "Site Administration";
         render!("index")

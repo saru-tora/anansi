@@ -1,13 +1,13 @@
-use std::thread;
-use std::str;
+use std::{str, thread};
 use std::io::{self, Read, ErrorKind};
 use std::marker::PhantomData;
 use std::borrow::Cow;
+use std::future::Future;
 use tokio::process::Command;
 
 use sqlx::{Decode, Type};
 
-use crate::models::{Model, DataType, BigInt, Objects};
+use crate::models::{Model, DataType, BigInt, Objects, ToSql};
 use crate::web::{Result, BaseRequest, BASE_DIR};
 
 pub type Db = sqlx::Sqlite;
@@ -83,6 +83,17 @@ impl DbPool {
         let mut child = cmd.spawn().expect("Failed to start cargo");
         child.wait().await.expect("failed to wait on child");
         println!("Initialized database");
+    }
+    pub async fn transact<F: Future<Output = Result<O>>, O>(&self, future: F) -> F::Output {
+        let tran = self.0.begin().await?;
+        let res = future.await;
+        if res.is_ok() {
+            tran.commit().await?;
+        }
+        res
+    }
+    pub async fn query(&self, val: &str) -> Result<DbRowVec> {
+        Ok(DbRowVec {rows: sqlx::query(val).fetch_all(&self.0).await?})
     }
 }
 
@@ -267,6 +278,10 @@ impl<B: Model> Builder<B> {
         start.push_str(") VALUES (");
         Self::from(start)
     }
+    pub fn delete(database: &str)  -> Self {
+        let start = format!("DELETE FROM {}", database);
+        Self::from(start)
+    }
     pub fn update(database: &str)  -> Self {
         let start = format!("UPDATE {} SET", database);
         Self::from(start)
@@ -317,6 +332,15 @@ impl<B: Model> Builder<B> {
     }
 }
 
+pub struct DeleteWhoseArg<M: Model> {
+    b: Builder<M>,
+}
+
+impl<M: Model> DeleteWhoseArg<M> {
+    pub fn builder(self) -> Builder<M> {
+        self.b
+    }
+}
 pub struct WhoseArg<M: Model> {
     b: Builder<M>,
 }
@@ -341,8 +365,8 @@ impl<M: Model> Count<M> {
     pub fn whose(self, w: WhoseArg<M>) -> WhoseCount<M> {
         WhoseCount::from(self.stmt.val.whose().append(w.b))
     }
-    pub fn by_pk<D: DataType>(self, pks: &Vec<D>, fk: Column<M, D>) -> LimitCount<M> {
-        self.whose(fk.clone().is_in().data(pks)).group_by(fk.clone()).order_by(fk.field(pks)).limit(pks.len() as u32)
+    pub fn by_pk<D: DataType + std::cmp::PartialEq<<D as DataType>::T>>(self, pks: &Vec<D>, fk: Column<M, D>) -> LimitCount<M> {
+        self.whose(fk.clone().is_in(pks)).group_by(fk.clone()).order_by(fk.field(pks)).limit(pks.len() as u32)
     }
 }
 
@@ -374,6 +398,28 @@ impl<M: Model> WhoseCount<M>  {
     }
 }
 
+pub struct DeleteWhose<M: Model> {
+    stmt: Statement<M>,
+}
+
+impl<M: Model> DeleteWhose<M>  {
+    pub fn from(b: Builder<M>) -> Self {
+        Self {stmt: Statement::from(b)}
+    }
+    pub async fn execute<B: BaseRequest>(self, req: &B) -> Result<()> {
+        if !req.raw().valid_token() {
+            return Err(invalid());
+        }
+        let mut val = self.stmt.val.val();
+        val.push_str(";\n");
+       
+        match sqlx::query(&val).execute(&req.raw().pool().0).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+}
+
 pub struct Whose<M: Model> {
     stmt: Statement<M>,
 }
@@ -393,6 +439,9 @@ impl<M: Model> Whose<M>  {
     }
     pub async fn get<B: BaseRequest>(self, req: &B) -> Result<M> {
         self.stmt.get(req).await
+    }
+    pub fn get_all(self) -> Limit<M> {
+        self.stmt.get_all()
     }
     pub fn limit(self, n: u32) -> Limit<M> {
         self.stmt.limit(n)
@@ -504,6 +553,9 @@ impl<S: Model> Statement<S> {
     async fn get<B: BaseRequest>(self, req: &B) -> Result<S> {
         self.raw_get(req.raw().pool()).await
     }
+    fn get_all(self) -> Limit<S> {
+        Limit::from(self.val)
+    }
     fn limit(self, n: u32) -> Limit<S> {
         Limit::from(self.val.limit(n))
     }
@@ -512,30 +564,40 @@ impl<S: Model> Statement<S> {
     }
 }
 
-pub struct Column<M: Model, D: DataType> {
+pub struct Column<M: Model, T: ToSql> {
     b: Builder<M>,
-    d: PhantomData<D>,
+    t: PhantomData<T>,
 }
 
-impl<M: Model, D: DataType> Clone for Column<M, D> {
+impl<M: Model, T: ToSql> Clone for Column<M, T> {
     fn clone(&self) -> Self {
-        Self {b: self.b.clone(), d: self.d.clone()}
+        Self {b: self.b.clone(), t: self.t.clone()}
     }
 }
 
 impl<M: Model, D: DataType> Column<M, D> {
     pub fn new(s: &str) -> Self {
         let b = Builder::new().push_str(s);
-        Self {b, d: PhantomData}
+        Self {b, t: PhantomData}
     }
     pub fn from(b: Builder<M>) -> Self {
-        Self {b, d: PhantomData}
+        Self {b, t: PhantomData}
     }
-    pub fn eq(self) -> Rhs<M, D> {
-        Rhs::new(self.b.push_str(" ="))
+    pub fn eq<U: ToSql + PartialEq<D::T>>(self, u: U) -> WhoseArg<M> {
+        WhoseArg::from(self.b.push_str(&format!(" = {}", u.to_sql())))
     }
-    pub fn is_in(self) -> IsIn<M, D> {
-        IsIn::new(self.b.push_str(" IN"))
+    pub fn is_in<U: ToSql + PartialEq<D::T>>(mut self, v: &Vec<U>) -> WhoseArg<M> {
+        self.b.push(" IN(");
+        let mut i = 0;
+        for t in v {
+            if i > 0 {
+                self.b.push(&format!(", {}", t.to_sql()));
+            } else {
+                self.b.push(&format!(" {}", t.to_sql()));
+            }
+            i += 1;
+        }
+        WhoseArg::from(self.b.push_str(")"))
     }
     pub fn asc(self) -> OrderByArg<M> {
         OrderByArg {b: self.b.push_str(" ASC")}
@@ -555,50 +617,6 @@ impl<M: Model, D: DataType> Column<M, D> {
     }
 }
 
-pub struct Rhs<M: Model, D: DataType> {
-    b: Builder<M>,
-    d: PhantomData<D>,
-}
-
-impl<M: Model, D: DataType> Rhs<M, D> {
-    pub fn new(b: Builder<M>) -> Self {
-        Self {b, d: PhantomData}
-    }
-    pub fn val(self, t: D::T) -> Result<WhoseArg<M>> {
-        Ok(WhoseArg::from(self.b.push_str(&format!(" {}", D::from_val(t)?.to_sql()))))
-    }
-    pub fn data(self, d: D) -> WhoseArg<M> {
-        WhoseArg::from(self.b.push_str(&format!(" {}", d.to_sql())))
-    }
-    pub fn data_ref(self, d: &D) -> WhoseArg<M> {
-        WhoseArg::from(self.b.push_str(&format!(" {}", d.to_sql())))
-    }
-}
-
-pub struct IsIn<M: Model, D: DataType> {
-    b: Builder<M>,
-    d: PhantomData<D>,
-}
-
-impl<M: Model, D: DataType> IsIn<M, D> {
-    pub fn new(b: Builder<M>) -> Self {
-        Self {b, d: PhantomData}
-    }
-    pub fn data(mut self, v: &Vec<D>) -> WhoseArg<M> {
-        self.b.push("(");
-        let mut i = 0;
-        for d in v {
-            if i > 0 {
-                self.b.push(&format!(", {}", d.to_sql()));
-            } else {
-                self.b.push(&format!(" {}", d.to_sql()));
-            }
-            i += 1;
-        }
-        WhoseArg::from(self.b.push_str(")"))
-    }
-}
-
 pub struct Update<U: Model> {
     val: Builder<U>,
     count: u32,
@@ -610,7 +628,7 @@ impl<U: Model> Update<U> {
         let count = 0;
         Self {val, count}
     }
-    pub fn set<D: DataType + std::fmt::Display>(mut self, name: &str, data: &D) -> Self {
+    pub fn set<D: DataType>(mut self, name: &str, data: &D) -> Self {
         let s = data.to_sql();
         self.count += 1;
         let val = if self.count > 1 {
@@ -650,7 +668,7 @@ impl<I: Model> Insert<I> {
         let val = Builder::insert_into(database, columns);
         Self {val, n: 0}
     }
-    pub fn value<D: DataType + std::fmt::Display>(mut self, data: &D) -> Self {
+    pub fn value<D: DataType>(mut self, data: &D) -> Self {
         let s = data.to_sql();
         let val = if self.n > 0 {
             self.val.push_str(&format!(", {}", s))
@@ -671,8 +689,12 @@ impl<I: Model> Insert<I> {
         let mut val = self.val.val();
         val.push_str(");\n");
         match sqlx::query(&val).execute(&pool.0).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(Box::new(e)),
+            Ok(_) => {
+                Ok(())
+            },
+            Err(e) => {
+                Err(Box::new(e))
+            },
         }
     }
 }
@@ -705,8 +727,12 @@ impl<M: Model> Limit<M> {
         val.push_str(";\n");
 
         match sqlx::query(&val).fetch_all(&pool.0).await {
-            Ok(rows) => M::from(DbRowVec {rows}),
-            Err(_) => Err(invalid()),
+            Ok(rows) => {
+                M::from(DbRowVec {rows})
+            },
+            Err(_) => {
+                Err(invalid())
+            },
         }
     }
 }

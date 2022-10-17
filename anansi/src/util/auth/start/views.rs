@@ -1,16 +1,17 @@
-use anansi::{viewer, render};
-use crate::web::{if_guest, Result, Response, BaseRequest};
+use anansi::{checker, render};
+use anansi::web::{Result, Response, BaseRequest};
+use super::super::models::Group;
 
 #[cfg(debug_assertions)]
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(debug_assertions)]
-use anansi::check;
+use anansi::raw_check;
 
 #[cfg(debug_assertions)]
-#[viewer]
+#[checker]
 impl<B: BaseRequest + 'static> StartView<B> {
-    #[check(if_guest)]
+    #[raw_check(Group::is_visitor)]
     pub async fn start(_req: B) -> Result<Response> {
         render!("start")
     }

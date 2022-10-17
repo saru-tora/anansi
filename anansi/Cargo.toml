@@ -1,6 +1,6 @@
 [package]
 name = "anansi"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["sarutora"]
 license = "MIT"
@@ -14,8 +14,9 @@ keywords = ["http", "web", "framework", "async"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anansi-core = { path = "../anansi-core" , version = "0.2.0" }
+anansi-core = { path = "../anansi-core" , version = "0.3.0" }
 async-trait = "0.1.57"
+async-recursion = "1.0.0"
 serde_json = "1.0"
 pbkdf2 = "0.10"
 rpassword = "7.0"

@@ -4,8 +4,8 @@ use serde_json::map::Map;
 use anansi::server::Rng;
 use anansi::web::{Result, BaseRequest, Reverse, RawRequest, View, Response, TokenRef};
 use anansi::db::{invalid, DbPool};
-use anansi::models::{Model, VarChar, Text, DateTime, generate_id};
-use anansi::model;
+use anansi::models::{Model, VarChar, Text, DateTime, Relate, generate_id};
+use anansi::{model};
 
 #[model]
 #[derive(Debug, Clone)]
@@ -14,6 +14,8 @@ pub struct Session {
     pub secret: VarChar<32>,
     pub expires: DateTime,
 }
+
+impl<B: BaseRequest> Relate<B> for Session {}
 
 #[derive(Debug, Clone)]
 pub struct SessionData {
@@ -62,7 +64,7 @@ impl Session  {
     }
     pub async fn from_raw(raw: &mut RawRequest) -> Result<Self> {
         let st = raw.cookies_mut().remove("st")?;
-        let session = Self::whose(session::secret().eq().val(st)?).raw_get(raw.pool()).await?;
+        let session = Self::whose(session::secret().eq(st)).raw_get(raw.pool()).await?;
         if session.expires > DateTime::now() {
             Ok(session)
         } else {

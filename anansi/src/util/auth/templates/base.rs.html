@@ -11,7 +11,7 @@
 				Anansi administration
 			</div>
 			 <div class="right">
-				 Welcome, @(req.user().username). <a href="/">View site</a> / <a href="@url!(req, AuthAdminView::logout)">Log out</a>
+				 Welcome, @(req.user().username()). <a href="/">View site</a> / <a href="@url!(req, AuthAdminView::logout)">Log out</a>
 			</div>
 		</div>
 		@block content

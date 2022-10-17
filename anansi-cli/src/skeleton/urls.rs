@@ -1,5 +1,5 @@
 use anansi::web::prelude::*;
 
 routes! {
-    path("/", anansi::start::views::StartView::start),
+    path("/", anansi::util::auth::start::views::StartView::start),
 }

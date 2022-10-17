@@ -1,11 +1,12 @@
+use std::fmt::Debug;
 use anansi::models::{Model, ToUrl, FromParams};
 use anansi::admin_site::{AdminRef};
-use anansi::web::{Result, Response, Reverse, BaseRequest, CsrfDefense, ParamsToModel, if_guest};
+use anansi::web::{Result, Response, Reverse, BaseUser, BaseRequest, CsrfDefense, GetModel};
 use crate::util::auth;
-use anansi::forms::{Form, ToModel, ToEdit, HasModel};
-use anansi::{render, redirect, handle, base_view};
+use anansi::forms::{Form, ToModel, HasModel, ToEdit};
+use anansi::{render, redirect, handle, base_view, handle_or_404};
 use super::forms::{UserLogin};
-use anansi::{check, checker, viewer, model_admin};
+use anansi::{raw_check, view_checker, checker, model_admin};
 use crate::{_register};
 use super::middleware::Auth;
 use super::super::sessions::middleware::Sessions;
@@ -13,9 +14,9 @@ use super::super::admin::site::{HasAdmin, BasicAdminSite};
 use super::models::{User, Group};
 use crate::util::admin::site::ModelAdmin;
 
-pub trait Request: BaseRequest + Auth + HasAdmin + Reverse + CsrfDefense + Sessions + ParamsToModel + 'static {}
+pub trait Request: BaseRequest + Auth + HasAdmin + Reverse + CsrfDefense + Sessions + GetModel + 'static + Debug {}
 
-checker!(if_admin<R: Request>, |req| req.check_admin(), redirect!());
+view_checker!(if_admin<R: Request>, |req| false, redirect!());
 
 #[base_view]
 fn base<R: Request>(req: R) -> Result<Response> {}
@@ -29,7 +30,7 @@ model_admin!(auth::models::User {
 model_admin!(auth::models::Group {
     form: auth::forms::GroupForm,
     add_form: auth::forms::GroupForm,
-    fields: [name],
+    fields: [groupname],
 });
 
 pub fn initialize_admin<R: Request>(site: AdminRef<R>) {
@@ -38,9 +39,9 @@ pub fn initialize_admin<R: Request>(site: AdminRef<R>) {
     _register!(Group);
 }
 
-#[viewer]
+#[checker]
 impl<R: Request> AuthAdminView<R> {
-    #[check(if_guest)]
+    #[raw_check(Group::is_visitor)]
     pub async fn login(mut req: R) -> Result<Response> {
         let form = handle!(UserLogin, ToModel<R>, req, user, {
             req.auth_admin(&user).await?;
@@ -49,7 +50,7 @@ impl<R: Request> AuthAdminView<R> {
         render!("login")
     }
 
-    #[check(if_admin)]
+    #[raw_check(Group::is_admin)]
     pub async fn logout(mut req: R) -> Result<Response> {
         let title = "Log out";
         let form = handle!(req, R, {
@@ -59,7 +60,7 @@ impl<R: Request> AuthAdminView<R> {
         render!("logout")
     }
 
-    #[check(if_admin)]
+    #[raw_check(Group::is_admin)]
     pub async fn model_index<M: ModelAdmin<R> + Send + ToUrl + 'static>(req: R) -> Result<Response>
 where <<M as ModelAdmin<R>>::AdminForm as HasModel>::Item: FromParams, <M as Model>::Pk: std::fmt::Display
     {
@@ -70,7 +71,7 @@ where <<M as ModelAdmin<R>>::AdminForm as HasModel>::Item: FromParams, <M as Mod
         render!("model_index")
     }
 
-    #[check(if_admin)]
+    #[raw_check(Group::is_admin)]
     pub async fn model_new<M: ModelAdmin<R> + 'static>(mut req: R) -> Result<Response>
 where <<M as ModelAdmin<R>>::AdminForm as HasModel>::Item: FromParams
     {
@@ -80,12 +81,12 @@ where <<M as ModelAdmin<R>>::AdminForm as HasModel>::Item: FromParams
         render!("model_new")
     }
 
-    #[check(if_admin)]
+    #[raw_check(Group::is_admin)]
     pub async fn model_edit<M: ModelAdmin<R> + 'static>(mut req: R) -> Result<Response>
 where <<M as ModelAdmin<R>>::AdminForm as HasModel>::Item: FromParams
     {
         let title = format!("Edit {}", M::NAME);
-        let form = handle!(<M as ModelAdmin<R>>::AdminForm, ToEdit<R>, req, || Ok(redirect!(req, BasicAdminSite::index)))?;
+        let form = handle_or_404!(<M as ModelAdmin<R>>::AdminForm, ToEdit<R>, req, || Ok(redirect!(req, BasicAdminSite::index)))?;
         let button = "Edit";
         render!("model_new")
     }

@@ -13,12 +13,13 @@ pub struct Router<B: BaseRequest + 'static> {
     pub routes: Routes<B>,
     pub handle_404: View<B>,
     pub internal_error: Response,
+    pub login_url: String,
     files: HashMap<&'static str, &'static [u8]>,
 }
 
 impl<B: BaseRequest> Router<B> {
-    pub fn new(routes: Vec<Route<B>>, handle_404: View<B>, internal_error: Response, files: HashMap<&'static str, &'static [u8]>) -> Result<Self> {
-        let mut router = Self {routes: vec![], handle_404, internal_error, files};
+    pub fn new(routes: Vec<Route<B>>, handle_404: View<B>, internal_error: Response, login_url: String, files: HashMap<&'static str, &'static [u8]>) -> Result<Self> {
+        let mut router = Self {routes: vec![], handle_404, internal_error, login_url, files};
         let mut v = vec![];
         for route in routes {
             match route {
