@@ -343,7 +343,7 @@ impl<R: Request> TopicView<R> {
         let title = &topic.title;
 	let poster = topic.user.get(&req).await?.username;
         let comments = topic.recent_comments().limit(25).query(&req).await?;
-        let users = comments.parents(|c| &c.user).query(&req).await?;
+        let users = comments.parents(&req, |c| &c.user).await?;
     }
 }
 ```
