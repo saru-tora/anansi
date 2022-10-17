@@ -31,19 +31,24 @@ Work with databases in Rust instead of SQL.
 ```rust
 // A topic in a forum.
 #[model]
-#[derive(ToUrl)]
+#[derive(Relate, FromParams, ToUrl)]
 pub struct Topic {
     pub title: VarChar<200>,
+    #[field(app = "auth")]
+    pub user: ForeignKey<User>,
+    pub content: VarChar<40000>,
     pub date: DateTime,
 }
 
 // A comment in a topic.
 #[model]
+#[derive(Relate, FromParams)]
 pub struct Comment {
     pub topic: ForeignKey<Topic>,
-    pub user: ForeignKey<auth::models::User>,
+    #[field(app = "auth")]
+    pub user: ForeignKey<User>,
     pub content: VarChar<40000>,
-    pub created: DateTime,
+    pub date: DateTime,
 }
 ```
 
@@ -61,10 +66,10 @@ routes! {
 ```
 
 ```rust
-#[viewer]
+#[checker]
 impl<R: Request> TopicView<R> {
     // A view of the last 25 topics.
-    #[view(if_guest)]
+    #[check(Group::is_visitor)]
     pub async fn index(req: R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
@@ -85,14 +90,14 @@ Templates allow you to mix Rust with HTML for formatting.
 
 @block content {
     <h1>@title</h1>
+    @if req.user().is_auth() {
+        @link req, Self::new {New Topic}
+    }
     <ul>
         @for topic in topics {
     	    <li>@link req, Self::show, topic {@topic.title}</li>
         }
     </ul>
-    @if req.user().is_auth() {
-        @link req, Self::new {New Topic}
-    }
 }
 ```
 
