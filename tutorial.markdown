@@ -308,7 +308,7 @@ pub struct Topic {
 
 impl Topic {
     pub fn recent_comments(&self) -> OrderBy<Comment> {
-        Comment::by_topic(self).order_by(comment::created().desc())
+        Comment::by_topic(self).order_by(comment::date().desc())
     }
 }
 ```
@@ -341,7 +341,7 @@ impl<R: Request> TopicView<R> {
     pub async fn show(req: R) -> Result<Response> {
         let topic = get_or_404!(Topic, req);
         let title = &topic.title;
-	let poster = topic.user.get(&req).await?.username;
+        let poster = topic.user.get(&req).await?.username;
         let comments = topic.recent_comments().limit(25).query(&req).await?;
         let users = comments.parents(&req, |c| &c.user).await?;
     }
@@ -472,7 +472,7 @@ To add topics, we can start by creating a form in the file `forum/forms.rs`:
 use crate::prelude::*;
 use anansi::models::{DateTime, ForeignKey};
 use anansi::forms::{VarChar, ToModel};
-use super::models::{Topic, Comment};
+use super::models::Topic;
 
 #[form(Topic)]
 pub struct TopicForm {
@@ -484,10 +484,9 @@ pub struct TopicForm {
 impl<R: Request> ToModel<R> for TopicForm {
     async fn on_post(&mut self, data: TopicFormData, req: &R) -> Result<Topic> {
         let now = DateTime::now();
-	let user_fk = ForeignKey::from_data(req.user().pk())?;
+        let user_fk = ForeignKey::from_data(req.user().pk())?;
         Topic::new(data.title, user_fk, data.content, now).save(req).await
             .or(form_error!("Problem adding topic"))
-        })
     }
 }
 ```
@@ -675,7 +674,7 @@ impl<R: Request> TopicView<R> {
     #[check(Topic::owner)]
     pub async fn destroy(mut req: R) -> Result<Response> {
         let title = "Delete topic";
-	let topic = get_or_404!(Topic, req);
+        let topic = get_or_404!(Topic, req);
         let form = handle!(req, R, {
             topic.delete(&req).await?;
             Ok(redirect!(req, Self::index))
