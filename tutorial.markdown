@@ -666,20 +666,7 @@ app_admins! {
 Deleting
 --------
 
-To delete topics, add a trait to `forum/forms.rs`:
-
-```rust
-use anansi::ToDestroy;
-
-#[form(Topic)]
-#[derive(ToDestroy)]
-pub struct TopicForm {
-    pub title: VarChar<200>,
-    pub content: VarChar<40000>,
-}
-```
-
-And edit `forum/topic/views.rs`:
+To delete topics edit `forum/topic/views.rs`:
 
 ```rust
 #[checker]
@@ -688,7 +675,8 @@ impl<R: Request> TopicView<R> {
     #[check(Topic::owner)]
     pub async fn destroy(mut req: R) -> Result<Response> {
         let title = "Delete topic";
-        let topic = handle_or_404!(TopicForm, ToDestroy<R>, req, topic, {
+	let topic = get_or_404!(Topic, req);
+        let form = handle!(req, R, {
             topic.delete(&req).await?;
             Ok(redirect!(req, Self::index))
         })?;
