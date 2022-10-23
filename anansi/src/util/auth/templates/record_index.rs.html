@@ -1,0 +1,55 @@
+@extend base
+
+@block title {@title}
+
+@block content {
+<div class="lower">
+	@link req, BasicAdminSite::index {Home}
+</div>
+<div class="site">
+	<div class="sub">
+		@title
+	</div>
+	@if let Some(form) = search {
+		@build form {
+		<div class="search">
+			<div>
+				@unescape form.q
+				@unescape form.submit("Search")
+				<br>
+				<br>
+				<table>
+					<tr>
+						<th>@M::PK_NAME</th>
+					@for name in field_names {
+						<th>@name</th>
+					}
+					</tr>
+					@if let Some(records) = records {
+						@for record in records {
+						<tr>
+							<td>@link req, m_edit, record, class="link" {@record.to_url()}</td>
+							@for field in record.fields(&req).await {
+							<td>@field</td>
+							}
+						</tr>
+						}
+					}
+				</table>
+			</div>
+			<div class="filter">
+				<div class="filter-title">
+					@link req, Self::record_index::<Filter>, class="link" {Filters} @link req, Self::filter_new::<M>, class="add" {Add}
+				</div>
+				@for filter in filters {
+				<div>
+					<input type="checkbox" name="@filter.filter_name">
+					<label for="@filter.filter_name"> @filter.filter_name </label><br>
+				</div>
+				}
+			</div>
+		</div>
+		}
+	}
+</div>
+}

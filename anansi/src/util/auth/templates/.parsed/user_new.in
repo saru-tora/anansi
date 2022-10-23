@@ -17,4 +17,4 @@
 		");_c.push_str(&format!("{}", form.submit("Create")));_c.push_str("
 		</form>");}_c.push_str("
 	</div>
-</div>"); _c}};base(req, BaseArgs{_title, _content, })}
+</div>"); _c}};base::base(req, base::Args{_title, _content, })}

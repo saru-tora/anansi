@@ -1,8 +1,8 @@
-use anansi::{raw_check, render};
+use anansi::{check, render};
 use anansi::web::{View, Response, Result, BaseRequest};
-pub use anansi::admin_site::{ModelAdmin, ModelEntry, AdminSite, AdminRef, AdminEntry};
-use super::super::auth::admin::{base, BaseArgs, Request, AuthAdminView};//, if_admin};
-use super::super::auth::models::{User, Group};
+pub use anansi::admin_site::{RecordAdmin, RecordEntry, AdminSite, AdminRef, AdminEntry};
+use super::super::auth::admin::{base, Request, AuthAdminView};//, if_admin};
+use super::super::auth::records::{User, Group};
 
 pub trait HasAdmin: BaseRequest {
     fn admin(&self) -> AdminRef<Self>;
@@ -22,7 +22,7 @@ impl<R: Request> AdminSite<R> for BasicAdminSite<R> {
         ];
         Self {registered: vec![], urls}
     }
-    fn register(&mut self, app_name: String, entry: ModelEntry<R>) {
+    fn register(&mut self, app_name: String, entry: RecordEntry<R>) {
         for admin_entry in &mut self.registered {
             if admin_entry.app_name() == &app_name {
                 admin_entry.entries_mut().push(entry);
@@ -44,7 +44,7 @@ impl<R: Request> AdminSite<R> for BasicAdminSite<R> {
 }
 
 impl<R: Request> BasicAdminSite<R> {
-    #[raw_check(Group::is_admin)]
+    #[check(Group::is_admin)]
     pub async fn index(req: R) -> Result<Response> {
         let title = "Site Administration";
         render!("index")

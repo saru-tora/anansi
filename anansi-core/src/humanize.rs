@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::web::Result;
 use crate::db::invalid;
-use crate::models::{DateTime, BigInt, DataType};
+use crate::records::{DateTime, BigInt, DataType};
 
 const ENCODE: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_";
 

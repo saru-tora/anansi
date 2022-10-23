@@ -4,9 +4,9 @@ use std::fmt;
 use std::collections::HashMap;
 use std::error::Error;
 
-use crate::web::{Reverse, TokenRef, CsrfDefense, Result, View, FormMap, BaseRequest, GetModel};
+use crate::web::{Reverse, TokenRef, CsrfDefense, Result, View, FormMap, BaseRequest, GetRecord};
 use crate::db::invalid;
-use crate::models::{Model, FromParams};
+use crate::records::{Record, FromParams};
 
 #[macro_export]
 macro_rules! handle {
@@ -149,8 +149,8 @@ macro_rules! form_error {
     }
 }
 
-pub trait HasModel {
-    type Item: Model + Send + Sync;
+pub trait HasRecord {
+    type Item: Record + Send + Sync;
 }
 
 #[async_trait]
@@ -162,6 +162,7 @@ pub trait Form {
     fn insert_attr(self, key: &str, value: &str) -> Self where Self: Sized;
     fn post(&mut self, token: &TokenRef);
     async fn from_data(data: Self::Data) -> Self where Self: Sized;
+    fn from_get<B: BaseRequest>(req: &mut B) -> Result<Self> where Self: Sized;
     fn from_post<B: BaseRequest + CsrfDefense>(req: &mut B) -> Result<Self> where Self: Sized;
     fn fill(&mut self) -> Result<()> where Self: Sized;
     fn validate(&mut self) -> Result<Self::Data>;
@@ -204,20 +205,20 @@ pub trait Form {
 }
 
 #[async_trait]
-pub trait GetData<B: BaseRequest + GetModel>: Form + HasModel where <Self as HasModel>::Item: FromParams {
+pub trait GetData<B: BaseRequest + GetRecord>: Form + HasRecord where <Self as HasRecord>::Item: FromParams {
     fn from_map(form_map: FormMap) -> Result<<Self as Form>::Data>;
-    async fn from_model(model: <Self as HasModel>::Item, req: &B) -> Result<<Self as Form>::Data>;
+    async fn from_record(record: <Self as HasRecord>::Item, req: &B) -> Result<<Self as Form>::Data>;
     async fn get_data(req: &B) -> Result<<Self as Form>::Data> {
         if let Ok(form_map) = req.to_form_map() {
             Self::from_map(form_map)
         } else {
-            Self::from_model(req.get_model::<<Self as HasModel>::Item>().await?, req).await
+            Self::from_record(req.get_record::<<Self as HasRecord>::Item>().await?, req).await
         }
     }
 }
 
 #[async_trait]
-pub trait ToEdit<B: BaseRequest + GetModel>: Form + GetData<B> where <Self as HasModel>::Item: FromParams {
+pub trait ToEdit<B: BaseRequest + GetRecord>: Form + GetData<B> where <Self as HasRecord>::Item: FromParams {
     async fn on_get(req: &B) -> Result<Self> where <Self as Form>::Data: Send, Self: Sized {
         let mut form = Self::from_data(Self::get_data(req).await?).await;
         form.fill()?;
@@ -340,6 +341,8 @@ field!(MultipleChoice);
 
 field!(Boolean);
 
+field!(Text);
+
 pub trait Widget: fmt::Display {
     fn name(&self) -> &'static str;
     fn attrs(&self) -> &Attributes;
@@ -355,12 +358,12 @@ pub struct Checkbox {
 widget!(Checkbox);
 
 #[derive(Clone)]
-pub struct Text {
+pub struct TextInput {
     pub name: &'static str,
     pub attrs: Attributes,
 }
 
-widget!(Text);
+widget!(TextInput);
 
 #[derive(Clone)]
 pub struct Password {
@@ -403,6 +406,12 @@ impl<const N: u16> fmt::Display for VarChar<N> {
     }
 }
 
+impl fmt::Display for Text {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,  "{}", self.widget())
+    }
+}
+
 impl fmt::Display for MultipleChoice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f,  "{}", self.widget())
@@ -438,18 +447,18 @@ pub trait ToEmpty<B: BaseRequest>: Form {
 }
 
 #[async_trait]
-pub trait ToDestroy<B: BaseRequest + GetModel>: Form + HasModel where <Self as HasModel>::Item: FromParams {
+pub trait ToDestroy<B: BaseRequest + GetRecord>: Form + HasRecord where <Self as HasRecord>::Item: FromParams {
     async fn on_get(_req: &B) -> Result<Self> where Self: Sized {
         Ok(Self::new())
     }
 
-    async fn on_post(&mut self, _data: <Self as Form>::Data, req: &B) -> Result<<Self as HasModel>::Item> where <Self as Form>::Data: Send + Sync {
-        req.get_model::<<Self as HasModel>::Item>().await
+    async fn on_post(&mut self, _data: <Self as Form>::Data, req: &B) -> Result<<Self as HasRecord>::Item> where <Self as Form>::Data: Send + Sync {
+        req.get_record::<<Self as HasRecord>::Item>().await
     }
 }
 
 #[async_trait]
-pub trait ToModel<B: BaseRequest>: Form + HasModel {
+pub trait ToRecord<B: BaseRequest>: Form + HasRecord {
     async fn on_get(_req: &B) -> Result<Self> where Self: Sized {
         Ok(Self::new())
     }
@@ -463,7 +472,7 @@ impl fmt::Display for Checkbox {
     }
 }
 
-impl fmt::Display for Text {
+impl fmt::Display for TextInput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "<input type=\"text\" name=\"{}\"{}", self.name, self.attrs)
     }

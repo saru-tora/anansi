@@ -25,4 +25,4 @@
 		</div>
 	</body>
 </html>
-");Ok(anansi::web::Response::new("HTTP/1.1 200 OK", _c.into_bytes()))}
+");Ok(Response::new("HTTP/1.1 200 OK", _c.into_bytes()))}

@@ -76,6 +76,24 @@ div.namebox input {
 	list-style: none;
 	color: red;
 }
+.search {
+	display: flex;
+	margin-left: 10px;
+}
+.filter {
+	background-color: whitesmoke;
+	margin-left: 20px;
+	min-width: 200px;
+}
+.filter-title {
+	background-color: mediumseagreen;
+	padding: 5px;
+	padding-left: 10px;
+}
+.filter-list {
+	padding: 5px;
+	padding-left: 10px;
+}
 table {
   border-collapse: collapse;
 }

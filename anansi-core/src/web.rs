@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use std::sync::Arc;
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Iter};
 use crate::db::{DbPool, invalid};
 use std::string::FromUtf8Error;
 use std::error::Error;
@@ -11,7 +11,7 @@ use std::future::Future;
 
 use crate::server::Rng;
 use crate::router::Routes;
-use crate::models::{Model, FromParams, BigInt, DateTime};
+use crate::records::{Record, FromParams, BigInt, DateTime};
 use crate::admin_site::AdminRef;
 
 pub type Result<T> = result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -76,30 +76,30 @@ macro_rules! middleware {
         }
         #[derive(Debug, Clone)]
         pub struct Middleware {
-            user: anansi::util::auth::models::User,
-            session: anansi::util::sessions::models::Session,
-            session_data: anansi::util::sessions::models::SessionData,
+            user: anansi::util::auth::records::User,
+            session: anansi::util::sessions::records::Session,
+            session_data: anansi::util::sessions::records::SessionData,
         }
         impl Middleware {
             pub async fn new(raw: &mut anansi::web::RawRequest) -> $crate::web::Result<Self> {
-                use anansi::models::{Model, DataType};
-                let session = match anansi::util::sessions::models::Session::from_raw(raw).await {
+                use anansi::records::{Record, DataType};
+                let session = match anansi::util::sessions::records::Session::from_raw(raw).await {
                     Ok(s) => s,
                     Err(_) => return Err(Box::new(anansi::web::WebError::from(anansi::web::WebErrorKind::NoSession))),
                 };
                 let session_data = session.to_data()?;
-                let user_id = session_data.get(anansi::util::auth::models::User::KEY)?.as_i64().expect("could not get user id");
+                let user_id = session_data.get(anansi::util::auth::records::User::KEY)?.as_i64().expect("could not get user id");
                 let user = if user_id == 0 {
-                    anansi::util::auth::models::User::guest()
+                    anansi::util::auth::records::User::guest()
                 } else {
-                    anansi::util::auth::models::User::find(anansi::models::BigInt::from_val(user_id)?).raw_get(raw.pool()).await?
+                    anansi::util::auth::records::User::find(anansi::records::BigInt::from_val(user_id)?).raw_get(raw.pool()).await?
                 };
                 Ok(Middleware {user, session, session_data})
             }
         }
         impl anansi::web::BaseMiddleware for Middleware {}
         anansi::request_derive!();
-        pub trait Request: anansi::web::BaseRequest + anansi::util::sessions::middleware::Sessions + anansi::util::auth::middleware::Auth + anansi::util::admin::site::HasAdmin + anansi::web::CsrfDefense  + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetModel + 'static {}
+        pub trait Request: anansi::web::BaseRequest + anansi::util::sessions::middleware::Sessions + anansi::util::auth::middleware::Auth + anansi::util::admin::site::HasAdmin + anansi::web::CsrfDefense  + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetRecord + 'static {}
         impl Request for HttpRequest {}
         impl anansi::util::admin::site::HasAdmin for HttpRequest {
             fn admin(&self) -> anansi::util::admin::site::AdminRef<Self> {
@@ -111,17 +111,17 @@ macro_rules! middleware {
         impl anansi::util::auth::middleware::Auth for HttpRequest {}
         #[async_trait::async_trait]
         impl anansi::util::sessions::middleware::Sessions for HttpRequest {
-            fn session(&self) -> &anansi::util::sessions::models::Session {
+            fn session(&self) -> &anansi::util::sessions::records::Session {
                 &self.mid.session
             }
-            fn session_data(&self) -> &anansi::util::sessions::models::SessionData {
+            fn session_data(&self) -> &anansi::util::sessions::records::SessionData {
                 &self.mid.session_data
             }
-            fn session_data_mut(&mut self) -> &mut anansi::util::sessions::models::SessionData {
+            fn session_data_mut(&mut self) -> &mut anansi::util::sessions::records::SessionData {
                 &mut self.mid.session_data
             }
             async fn update_session(&mut self) -> anansi::web::Result<()> {
-                use anansi::models::Model;
+                use anansi::records::Record;
                 self.mid.session.data = self.mid.session_data.to_text()?;
                 self.mid.session.raw_update(self.raw.pool()).await
             }
@@ -216,22 +216,6 @@ macro_rules! strip_plus {
         $($rest)*
     }
 }
-
-#[macro_export]
-macro_rules! view_checker {
-    ($id:ident<$r:ident: $p:path>, |$req:ident| $check:expr, $response:expr) => {
-        pub async fn $id<F, $r: $p>($req: $r, view: impl Fn($r) -> F) -> Result<Response>
-        where F: std::future::Future<Output = Result<Response>> {
-            if $check {
-                view($req).await
-            } else {
-                Ok($response)
-            }
-        }
-    }
-}
-
-view_checker!(if_guest<B: BaseRequest>, |_req| true, redirect!());
 
 #[derive(Debug, Clone)]
 pub struct Headers(HashMap<String, String>);
@@ -339,6 +323,9 @@ impl Parameters {
     pub fn insert(&mut self, key: String, value: String) {
         self.0.insert(key, value);
     }
+    pub fn iter(&self) -> Iter<String, String> {
+        self.0.iter()
+    }
 }
 
 #[derive(Clone)]
@@ -386,7 +373,7 @@ impl Response {
         let mut headers = Headers::new();
         headers.insert_str("content-type", "text/html");
         headers.insert_str("charset", "UTF-8");
-        headers.insert_str("Server", "server");
+        headers.insert_str("Server", "webserver");
         headers.insert_str("content-security-policy", "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests;");
         headers.insert_str("x-frame-options", "DENY");
         headers.insert("Content-length".to_string(), contents.len().to_string());
@@ -502,7 +489,7 @@ pub fn percent_encode(s: String) -> String {
     t
 }
 
-pub fn percent_decode(s: String) -> Result<String> {
+pub fn percent_decode(s: &str) -> Result<String> {
     let mut t = String::new();
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
@@ -511,15 +498,11 @@ pub fn percent_decode(s: String) -> Result<String> {
             s.push(chars.next().ok_or(invalid())?);
             s.push(chars.next().ok_or(invalid())?);
             match s.as_str() {
-                "3A" => t.push(':'), 
-                "2F" => t.push('/'), 
-                "3F" => t.push('?'), 
-                "23" => t.push('#'), 
-                "5B" => t.push('['), 
-                "5D" => t.push(']'), 
-                "40" => t.push('@'), 
                 "21" => t.push('!'), 
+                "22" => t.push('"'), 
+                "23" => t.push('#'), 
                 "24" => t.push('$'), 
+                "25" => t.push('%'), 
                 "26" => t.push('&'), 
                 "27" => t.push('\''), 
                 "28" => t.push('('), 
@@ -527,9 +510,26 @@ pub fn percent_decode(s: String) -> Result<String> {
                 "2A" => t.push('*'), 
                 "2B" => t.push('+'), 
                 "2C" => t.push(','), 
+                "2D" => t.push('-'), 
+                "2E" => t.push('.'), 
+                "2F" => t.push('/'), 
+                "3A" => t.push(':'), 
                 "3B" => t.push(';'), 
+                "3C" => t.push('<'), 
                 "3D" => t.push('='), 
-                "25" => t.push('%'), 
+                "3E" => t.push('>'), 
+                "3F" => t.push('?'), 
+                "40" => t.push('@'), 
+                "5B" => t.push('['), 
+                "5C" => t.push('\\'), 
+                "5D" => t.push(']'), 
+                "5E" => t.push('^'), 
+                "5F" => t.push('_'), 
+                "60" => t.push('`'), 
+                "7B" => t.push('{'), 
+                "7C" => t.push('|'), 
+                "7D" => t.push('}'), 
+                "7E" => t.push('~'), 
                 _ => return Err(invalid()),
             }
         } else if c == '+' {
@@ -621,8 +621,8 @@ pub trait Reverse {
 }
 
 #[async_trait]
-pub trait GetModel: BaseRequest {
-    async fn get_model<F: FromParams + Send + Sync>(&self) -> Result<F> where Self: Sized {
+pub trait GetRecord: BaseRequest {
+    async fn get_record<F: FromParams + Send + Sync>(&self) -> Result<F> where Self: Sized {
         F::from_params(self.params()).await?.get(self).await
     }
 }
@@ -650,6 +650,27 @@ pub trait BaseRequest: Send + Sync {
     async fn handle_no_session(response: Response, pool: DbPool, std_rng: Rng) -> Result<Response> where Self: Sized;
 }
 
+fn parse_query_string(qs: &str) -> Option<Vec<(String, String)>> {
+    let qv: Vec<&str> = qs.split('&').collect();
+    let mut queries = vec![];
+    for q in qv {
+        if let Some((key, value)) = q.split_once('=') {
+            if let Ok(k) = percent_decode(key) {
+                if let Ok(val) = percent_decode(value) {
+                    queries.push((k, val));
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
+    Some(queries)
+}
+
 pub async fn route_request<B: BaseRequest + fmt::Debug + 'static>(dirs: Vec<&str>, mut req: B, routes: &Routes<B>) -> Result<Response> {
     for (patterns, view) in routes {
         if patterns.len() == dirs.len() {
@@ -657,7 +678,20 @@ pub async fn route_request<B: BaseRequest + fmt::Debug + 'static>(dirs: Vec<&str
             let mut params = Parameters::new();
             for (pattern, dir) in patterns.iter().zip(dirs.iter()) {
                 match pattern.as_bytes()[0] {
-                    SLASH => if pattern != dir {
+                    SLASH => if pattern == dir {
+                        continue;
+                    } else if let Some((d, qs)) = dir.split_once('?') {
+                        if pattern == d {
+                            if let Some(qv) = parse_query_string(qs) {
+                                for (k, v) in qv {
+                                    params.insert(k, v);
+                                }
+                                break;
+                            }
+                        }
+                        b = false;
+                        break;
+                    } else {
                         b = false;
                         break;
                     },
@@ -706,11 +740,11 @@ macro_rules! request_derive {
             }
         }
         #[async_trait::async_trait]
-        impl anansi::web::GetModel for HttpRequest {}
+        impl anansi::web::GetRecord for HttpRequest {}
         #[async_trait::async_trait]
         impl anansi::web::BaseRequest for HttpRequest {
             type Mid = Middleware;
-            type Usr = anansi::util::auth::models::User;
+            type Usr = anansi::util::auth::records::User;
 
             async fn new(buffer: &[u8], request_line: $crate::web::RequestLine, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: $crate::db::DbPool, std_rng: $crate::server::Rng, admin: $crate::admin_site::AdminRef<Self>) -> $crate::web::Result<Self> where Self: Sized {
                 let mut raw = $crate::web::RawRequest::new(buffer, request_line, pool, std_rng).await?;
@@ -760,7 +794,7 @@ macro_rules! request_derive {
                 &mut self.mid.user
             }
             async fn handle_no_session(response: anansi::web::Response, pool: anansi::db::DbPool, std_rng: anansi::server::Rng) -> anansi::web::Result<anansi::web::Response> {
-                let session = anansi::util::sessions::models::Session::gen(&pool, &std_rng).await?;
+                let session = anansi::util::sessions::records::Session::gen(&pool, &std_rng).await?;
                 Ok(response.set_persistent("st", &session.secret, &session.expires))
             }
         }
@@ -815,7 +849,8 @@ impl RawRequest {
                     n = m + 1;
                     m = find_byte(buffer, n, AMPERSAND);
                     let value = get_string(&buffer[n..m])?;
-                    map.insert(key, percent_decode(value)?);
+                    let decoded = percent_decode(&value)?;
+                    map.insert(key, decoded);
                     n = m + 1;
                 }
                 return Ok(FormMap {map})
@@ -869,7 +904,7 @@ impl RawRequest {
     }
 }
 
-pub trait BaseUser: Model<Pk = BigInt> + Send + Sync {
+pub trait BaseUser: Record<Pk = BigInt> + Send + Sync {
     type Name: fmt::Display;
     fn username(&self) -> &Self::Name;
     fn is_auth(&self) -> bool;

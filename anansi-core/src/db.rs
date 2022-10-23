@@ -7,7 +7,7 @@ use tokio::process::Command;
 
 use sqlx::{Decode, Type};
 
-use crate::models::{Model, DataType, BigInt, Objects, ToSql};
+use crate::records::{Record, DataType, BigInt, Objects, ToSql};
 use crate::web::{Result, BaseRequest, BASE_DIR};
 
 pub type Db = sqlx::Sqlite;
@@ -79,7 +79,7 @@ impl DbPool {
     async fn init_db(dir: &str) {
         let mut cmd = Command::new("sqlite3");
         cmd.arg(dir);
-        cmd.arg("CREATE TABLE \"anansi_models\"(\n\t\"name\" text NOT NULL,\n\t\"schema\" text NOT NULL\n);\nCREATE TABLE anansi_migrations(\n\t\"id\" INT PRIMARY KEY,\n\t\"app\" TEXT NOT NULL,\n\t\"name\" TEXT NOT NULL,\n\t\"applied\" DATETIME NOT NULL\n);\n");
+        cmd.arg("CREATE TABLE \"anansi_records\"(\n\t\"name\" text NOT NULL,\n\t\"schema\" text NOT NULL\n);\nCREATE TABLE anansi_migrations(\n\t\"id\" INT PRIMARY KEY,\n\t\"app\" TEXT NOT NULL,\n\t\"name\" TEXT NOT NULL,\n\t\"applied\" DATETIME NOT NULL\n);\n");
         let mut child = cmd.spawn().expect("Failed to start cargo");
         child.wait().await.expect("failed to wait on child");
         println!("Initialized database");
@@ -199,8 +199,28 @@ pub fn invalid() -> Box<io::Error> {
     Box::new(io::Error::from(ErrorKind::InvalidData))
 }
 
+pub fn percent_escape(s: &str) -> String {
+    let mut t = String::new();
+    inner_escape(s, &mut t);
+    let mut val = String::new();
+    for c in t.chars() {
+        if c != '%' {
+            val.push(c);
+        } else {
+            val.push_str("%%");
+        }
+    }
+    val
+}
+
 pub fn escape(s: &str) -> String {
     let mut val = String::from("'");
+    inner_escape(s, &mut val);
+    val.push('\'');
+    val
+}
+
+fn inner_escape(s: &str, val: &mut String) {
     for c in s.chars() {
         if c != '\'' {
             val.push(c);
@@ -208,8 +228,6 @@ pub fn escape(s: &str) -> String {
             val.push_str("''");
         }
     }
-    val.push('\'');
-    val
 }
 
 pub fn unescape(s: &str) -> String {
@@ -229,25 +247,25 @@ pub fn unescape(s: &str) -> String {
     val
 }
 
-struct Statement<S: Model> {
+struct Statement<S: Record> {
     val: Builder<S>,
 }
 
 #[derive(Debug)]
-pub struct Builder<B: Model> {
+pub struct Builder<B: Record> {
     start: String,
     join: String,
     val: String,
     m: PhantomData<B>,
 }
 
-impl<B: Model> Clone for Builder<B> {
+impl<B: Record> Clone for Builder<B> {
     fn clone(&self) -> Self {
         Self {start: self.start.clone(), join: self.join.clone(), val: self.val.clone(), m: PhantomData.clone()}
     }
 }
 
-impl<B: Model> Builder<B> {
+impl<B: Record> Builder<B> {
     pub fn new() -> Self {
         Self {start: String::new(), join: String::new(), val: String::new(), m: PhantomData}
     }
@@ -332,21 +350,21 @@ impl<B: Model> Builder<B> {
     }
 }
 
-pub struct DeleteWhoseArg<M: Model> {
+pub struct DeleteWhoseArg<M: Record> {
     b: Builder<M>,
 }
 
-impl<M: Model> DeleteWhoseArg<M> {
+impl<M: Record> DeleteWhoseArg<M> {
     pub fn builder(self) -> Builder<M> {
         self.b
     }
 }
-pub struct WhoseArg<M: Model> {
+pub struct WhoseArg<M: Record> {
     b: Builder<M>,
 }
 
-impl<M: Model> WhoseArg<M> {
-    fn from(b: Builder<M>) -> Self {
+impl<M: Record> WhoseArg<M> {
+    pub fn from(b: Builder<M>) -> Self {
         Self {b}
     }
     pub fn builder(self) -> Builder<M> {
@@ -354,11 +372,11 @@ impl<M: Model> WhoseArg<M> {
     }
 }
 
-pub struct Count<M: Model> {
+pub struct Count<M: Record> {
     stmt: Statement<M>,
 }
 
-impl<M: Model> Count<M> {
+impl<M: Record> Count<M> {
     pub fn from(b: Builder<M>) -> Self {
         Self {stmt: Statement::from(b)}
     }
@@ -370,11 +388,11 @@ impl<M: Model> Count<M> {
     }
 }
 
-pub struct WhoseCount<M: Model> {
+pub struct WhoseCount<M: Record> {
     stmt: Statement<M>,
 }
 
-impl<M: Model> WhoseCount<M>  {
+impl<M: Record> WhoseCount<M>  {
     pub fn from(b: Builder<M>) -> Self {
         Self {stmt: Statement::from(b)}
     }
@@ -398,11 +416,11 @@ impl<M: Model> WhoseCount<M>  {
     }
 }
 
-pub struct DeleteWhose<M: Model> {
+pub struct DeleteWhose<M: Record> {
     stmt: Statement<M>,
 }
 
-impl<M: Model> DeleteWhose<M>  {
+impl<M: Record> DeleteWhose<M>  {
     pub fn from(b: Builder<M>) -> Self {
         Self {stmt: Statement::from(b)}
     }
@@ -420,11 +438,11 @@ impl<M: Model> DeleteWhose<M>  {
     }
 }
 
-pub struct Whose<M: Model> {
+pub struct Whose<M: Record> {
     stmt: Statement<M>,
 }
 
-impl<M: Model> Whose<M>  {
+impl<M: Record> Whose<M>  {
     pub fn from(b: Builder<M>) -> Self {
         Self {stmt: Statement::from(b)}
     }
@@ -433,6 +451,9 @@ impl<M: Model> Whose<M>  {
     }
     pub fn and(self, arg: WhoseArg<M>) -> Self {
         Self{stmt: self.stmt.and(arg.b)}
+    }
+    pub fn or(self, arg: WhoseArg<M>) -> Self {
+        Self{stmt: self.stmt.or(arg.b)}
     }
     pub async fn raw_get(self, pool: &DbPool) -> Result<M> {
         self.stmt.raw_get(pool).await
@@ -448,21 +469,21 @@ impl<M: Model> Whose<M>  {
     }
 }
 
-pub struct OrderByArg<M: Model> {
+pub struct OrderByArg<M: Record> {
     b: Builder<M>,
 }
 
-impl<M: Model> OrderByArg<M> {
+impl<M: Record> OrderByArg<M> {
     pub fn builder(self) -> Builder<M> {
         self.b
     }
 }
 
-pub struct OrderBy<M: Model> {
+pub struct OrderBy<M: Record> {
     stmt: Statement<M>,
 }
 
-impl<M: Model> OrderBy<M> {
+impl<M: Record> OrderBy<M> {
     pub fn from(b: Builder<M>) -> Self {
         Self {stmt: Statement::from(b)}
     }
@@ -474,11 +495,11 @@ impl<M: Model> OrderBy<M> {
     }
 }
 
-pub struct GroupByCount<M: Model> {
+pub struct GroupByCount<M: Record> {
     stmt: Statement<M>,
 }
 
-impl<M: Model> GroupByCount<M> {
+impl<M: Record> GroupByCount<M> {
     pub fn from(b: Builder<M>) -> Self {
         Self {stmt: Statement::from(b)}
     }
@@ -493,11 +514,11 @@ impl<M: Model> GroupByCount<M> {
     }
 }
 
-pub struct OrderByCount<M: Model> {
+pub struct OrderByCount<M: Record> {
     stmt: Statement<M>,
 }
 
-impl<M: Model> OrderByCount<M> {
+impl<M: Record> OrderByCount<M> {
     pub fn from(b: Builder<M>) -> Self {
         Self {stmt: Statement::from(b)}
     }
@@ -509,7 +530,7 @@ impl<M: Model> OrderByCount<M> {
     }
 }
 
-impl<S: Model> Statement<S> {
+impl<S: Record> Statement<S> {
     fn from(val: Builder<S>) -> Self {
         Self {val}
     }
@@ -524,6 +545,12 @@ impl<S: Model> Statement<S> {
     }
     fn and(mut self, val: Builder<S>) -> Self {
         let s = format!(" AND {}", val.val);
+        self.val.val.push_str(&s);
+        self.val.join.push_str(&val.join);
+        self
+    }
+    fn or(mut self, val: Builder<S>) -> Self {
+        let s = format!(" OR {}", val.val);
         self.val.val.push_str(&s);
         self.val.join.push_str(&val.join);
         self
@@ -564,18 +591,38 @@ impl<S: Model> Statement<S> {
     }
 }
 
-pub struct Column<M: Model, T: ToSql> {
+pub struct Column<M: Record, T: ToSql> {
     b: Builder<M>,
     t: PhantomData<T>,
 }
 
-impl<M: Model, T: ToSql> Clone for Column<M, T> {
+impl<M: Record, T: ToSql> Clone for Column<M, T> {
     fn clone(&self) -> Self {
         Self {b: self.b.clone(), t: self.t.clone()}
     }
 }
 
-impl<M: Model, D: DataType> Column<M, D> {
+impl<M: Record, D: DataType<T = String>> Column<M, D> {
+    pub fn contains<'a, U: ToSql + PartialEq<&'a str>>(self, u: U) -> WhoseArg<M> {
+        WhoseArg::from(self.b.push_str(&format!(" LIKE '%{}%'", percent_escape(&u.to_sql()))))
+    }
+    pub fn icontains<'a, U: ToSql + std::fmt::Display + PartialEq<&'a str>>(mut self, u: U) -> WhoseArg<M> {
+        self.b.val = format!("LOWER({}) LIKE LOWER('%{}%')", self.b.val, percent_escape(&u.to_string()));
+        WhoseArg::from(self.b)
+    }
+    pub fn iexact<'a, U: ToSql + PartialEq<&'a str>>(mut self, u: U) -> WhoseArg<M> {
+        self.b.val = format!("LOWER({}) = LOWER({})", self.b.val, u.to_sql());
+        WhoseArg::from(self.b)
+    }
+    pub fn starts_with<'a, U: ToSql + PartialEq<&'a str>>(self, u: U) -> WhoseArg<M> {
+        WhoseArg::from(self.b.push_str(&format!(" LIKE \"{}%\"", percent_escape(&u.to_sql()))))
+    }
+    pub fn ends_with<'a, U: ToSql + PartialEq<&'a str>>(self, u: U) -> WhoseArg<M> {
+        WhoseArg::from(self.b.push_str(&format!(" LIKE \"%{}\"", percent_escape(&u.to_sql()))))
+    }
+}
+
+impl<M: Record, D: DataType> Column<M, D> {
     pub fn new(s: &str) -> Self {
         let b = Builder::new().push_str(s);
         Self {b, t: PhantomData}
@@ -585,6 +632,21 @@ impl<M: Model, D: DataType> Column<M, D> {
     }
     pub fn eq<U: ToSql + PartialEq<D::T>>(self, u: U) -> WhoseArg<M> {
         WhoseArg::from(self.b.push_str(&format!(" = {}", u.to_sql())))
+    }
+    pub fn neq<U: ToSql + PartialEq<D::T>>(self, u: U) -> WhoseArg<M> {
+        WhoseArg::from(self.b.push_str(&format!(" <> {}", u.to_sql())))
+    }
+    pub fn gt<U: ToSql + PartialEq<D::T>>(self, u: U) -> WhoseArg<M> {
+        WhoseArg::from(self.b.push_str(&format!(" > {}", u.to_sql())))
+    }
+    pub fn lt<U: ToSql + PartialEq<D::T>>(self, u: U) -> WhoseArg<M> {
+        WhoseArg::from(self.b.push_str(&format!(" < {}", u.to_sql())))
+    }
+    pub fn gte<U: ToSql + PartialEq<D::T>>(self, u: U) -> WhoseArg<M> {
+        WhoseArg::from(self.b.push_str(&format!(" >= {}", u.to_sql())))
+    }
+    pub fn lte<U: ToSql + PartialEq<D::T>>(self, u: U) -> WhoseArg<M> {
+        WhoseArg::from(self.b.push_str(&format!(" <= {}", u.to_sql())))
     }
     pub fn is_in<U: ToSql + PartialEq<D::T>>(mut self, v: &Vec<U>) -> WhoseArg<M> {
         self.b.push(" IN(");
@@ -617,12 +679,12 @@ impl<M: Model, D: DataType> Column<M, D> {
     }
 }
 
-pub struct Update<U: Model> {
+pub struct Update<U: Record> {
     val: Builder<U>,
     count: u32,
 }
 
-impl<U: Model> Update<U> {
+impl<U: Record> Update<U> {
     pub fn new(database: &str) -> Self {
         let val = Builder::update(database);
         let count = 0;
@@ -658,12 +720,12 @@ impl<U: Model> Update<U> {
     }
 }
 
-pub struct Insert<I: Model> {
+pub struct Insert<I: Record> {
     val: Builder<I>,
     n: usize,
 }
 
-impl<I: Model> Insert<I> {
+impl<I: Record> Insert<I> {
     pub fn new(database: &str, columns: &[&str]) -> Self {
         let val = Builder::insert_into(database, columns);
         Self {val, n: 0}
@@ -711,11 +773,11 @@ pub async fn delete_from<B: BaseRequest>(table: &str, table_id: &str, id: BigInt
     }
 }
 
-pub struct Limit<M: Model> {
+pub struct Limit<M: Record> {
     val: Builder<M>,
 }
 
-impl<M: Model> Limit<M> {
+impl<M: Record> Limit<M> {
     pub fn from(val: Builder<M>) -> Self {
         Self {val}
     }
@@ -730,18 +792,19 @@ impl<M: Model> Limit<M> {
             Ok(rows) => {
                 M::from(DbRowVec {rows})
             },
-            Err(_) => {
+            Err(e) => {
+                println!("{}", e);
                 Err(invalid())
             },
         }
     }
 }
 
-pub struct LimitCount<M: Model> {
+pub struct LimitCount<M: Record> {
     val: Builder<M>,
 }
 
-impl<M: Model> LimitCount<M> {
+impl<M: Record> LimitCount<M> {
     pub fn from(val: Builder<M>) -> Self {
         Self {val}
     }

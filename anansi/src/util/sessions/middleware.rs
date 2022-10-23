@@ -1,5 +1,5 @@
 use anansi::web::Result;
-use super::models::{Session, SessionData};
+use super::records::{Session, SessionData};
 
 #[async_trait::async_trait]
 pub trait Sessions {

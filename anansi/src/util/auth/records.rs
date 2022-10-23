@@ -12,10 +12,10 @@ use async_recursion::async_recursion;
 
 use anansi::web::{Result, BaseUser, BaseRequest, WebError, WebErrorKind};
 use anansi::db::{DbPool, DbRowVec, invalid};
-use anansi::models::{Model, BigInt, VarChar, DataType};
-use anansi::{model, FromParams, ToUrl, Relate};
+use anansi::records::{Record, BigInt, VarChar, Text, DataType};
+use anansi::{record, FromParams, ToUrl, Relate};
 
-#[model]
+#[record]
 #[derive(Debug, Clone, FromParams, ToUrl, Relate)]
 pub struct User {
     #[field(unique = "true")]
@@ -135,7 +135,7 @@ impl BaseRelation {
         Ok(v)
     }
     pub fn search(object_namespace: &str, object_key: i64, object_predicate: &str) -> String {
-        use anansi::models::ToSql;
+        use anansi::records::ToSql;
         let q = format!("SELECT * FROM {} WHERE object_key = {} AND object_predicate = {};", format!("{}tuple", object_namespace).to_sql(), object_key, object_predicate.to_sql());
         q
     }
@@ -225,7 +225,7 @@ impl User {
     }
 }
 
-#[model]
+#[record]
 #[derive(Debug, Clone, Relate, FromParams, ToUrl)]
 pub struct Group {
     pub groupname: VarChar<150>,
@@ -245,4 +245,13 @@ impl Group {
     pub async fn is_admin<B: BaseRequest>(req: &B) -> Result<()> {
         BaseRelation::check("auth_group", 1, "member", req).await
     }
+}
+
+#[record]
+#[derive(Relate, FromParams, ToUrl)]
+pub struct Filter {
+    pub table_name: Text,
+    pub filter_name: Text,
+    pub filter: Text,
+    pub raw_query: Text,
 }

@@ -18,7 +18,7 @@ use rand::SeedableRng;
 use sha2::{Digest, Sha256};
 
 use crate::db::DbPool;
-use crate::models::{VarChar, DateTime, DataType};
+use crate::records::{VarChar, DateTime, DataType};
 use crate::web::{BASE_DIR, Result, Static, Route, BaseRequest, RawRequest, Response, Http404, WebError, WebErrorKind, View, route_request, path};
 use crate::router::{Router, get_capture, split_url};
 use crate::migrations::{migrate, sql_migrate, make_migrations, AppMigration};
@@ -32,11 +32,11 @@ macro_rules! main {
         pub mod prelude {
             pub use async_trait::async_trait;
             pub use crate::project::Request;
-            pub use anansi::{form, import, checker, base_view, check, redirect, transact, form_error};
+            pub use anansi::{form, import, record_view, base_view, view, redirect, transact, form_error};
             pub use anansi::web::{Result, Response, BaseUser};
             pub use anansi::forms::Form;
-            pub use anansi::models::Model;
-            pub use anansi::util::auth::models::Group;
+            pub use anansi::records::Record;
+            pub use anansi::util::auth::records::Group;
         }
         fn main() {
             use std::sync::{Arc, Mutex};

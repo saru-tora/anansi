@@ -1,53 +1,53 @@
 anansi::operations! {
-    migrations::CreateModel {
+    migrations::CreateRecord {
         prefix: "sessions",
         name: "session",
         fields: vec![
             (
                 "id",
-                models::BigInt::field().primary_key()
+                records::BigInt::field().primary_key()
             ),
             (
                 "data",
-                models::Text::field()
+                records::Text::field()
             ),
             (
                 "secret",
-                models::VarChar::<32>::field()
+                records::VarChar::<32>::field()
             ),
             (
                 "expires",
-                models::DateTime::field()
+                records::DateTime::field()
             ),
         ],
     },
-    migrations::CreateModel {
+    migrations::CreateRecord {
         prefix: "sessions",
         name: "sessiontuple",
         fields: vec![
             (
                 "id",
-                models::BigInt::field().primary_key()
+                records::BigInt::field().primary_key()
             ),
             (
                 "subject_namespace",
-                models::Text::field()
+                records::Text::field()
             ),
             (
                 "subject_key",
-                models::BigInt::field()
+                records::BigInt::field()
             ),
             (
                 "subject_predicate",
-                models::Text::field().null()
+                records::Text::field().null()
             ),
             (
                 "object_key",
-                models::BigInt::field()
+                records::BigInt::field()
             ),
             (
                 "object_predicate",
-                models::Text::field()
+                records::Text::field()
             ),
         ],
     },

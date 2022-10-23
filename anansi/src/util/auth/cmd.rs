@@ -3,8 +3,8 @@ use rpassword::prompt_password;
 use anansi::raw_transact;
 use anansi::db::DbPool;
 use anansi::web::Result;
-use anansi::models::{Model, Text};
-use super::models::{User, Group, group::groupname, GroupTuple, hash_password};
+use anansi::records::{Record, Text};
+use super::records::{User, Group, group::groupname, GroupTuple, hash_password};
 
 pub fn admin(pool: DbPool) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
     Box::pin(_admin(pool))

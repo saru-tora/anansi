@@ -18,8 +18,8 @@ pub use crate::datetime::DateTime;
 
 #[macro_export]
 macro_rules! get_or_404 {
-    ($model:path, $req:ident) => {
-        match $req.get_model::<$model>().await {
+    ($record:path, $req:ident) => {
+        match $req.get_record::<$record>().await {
             Ok(m) => m,
             Err(_) => {
                 return Err(Box::new(anansi::web::Http404::from($req)))
@@ -51,6 +51,12 @@ impl<const N: u16> AdminField for VarChar<N> {
     }
 }
 
+impl AdminField for Text {
+    fn admin_field(&self) -> String {
+        self.to_string()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Boolean {
     b: bool,
@@ -70,8 +76,8 @@ impl Boolean {
             };
             Ok(Self{b})
     }
-    pub fn field() -> ModelField {
-        ModelField::new("boolean".to_string())
+    pub fn field() -> RecordField {
+        RecordField::new("boolean".to_string())
     }
 }
 
@@ -124,8 +130,8 @@ impl BigInt {
     pub fn into(self) -> i64 {
         self.n
     }
-    pub fn field() -> ModelField {
-        ModelField::new("bigint".to_string())
+    pub fn field() -> RecordField {
+        RecordField::new("bigint".to_string())
     }
 }
 
@@ -186,8 +192,8 @@ impl Text {
     pub fn from(s: String) -> Self {
         Self {s}
     }
-    pub fn field() -> ModelField {
-        ModelField::new("text".to_string())
+    pub fn field() -> RecordField {
+        RecordField::new("text".to_string())
     }
     pub fn as_str(&self) -> &str {
         &self.s
@@ -264,12 +270,20 @@ impl<const N: u16> VarChar<N> {
     pub fn as_str(&self) -> &str {
         &self.s
     }    
-    pub fn field() -> ModelField {
-        ModelField::new(format!("varchar({})", N))
+    pub fn field() -> RecordField {
+        RecordField::new(format!("varchar({})", N))
     }
 }
 
 impl<const N: u16> FromStr for VarChar<N> {
+    type Err = Box<dyn Error + Send + Sync>;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Self::from_val(s.to_string())
+    }
+}
+
+impl FromStr for Text {
     type Err = Box<dyn Error + Send + Sync>;
 
     fn from_str(s: &str) -> Result<Self> {
@@ -343,12 +357,12 @@ where String: Decode<'r, DB> {
 }
 
 #[derive(Debug)]
-pub struct ForeignKey<M: Model, O: OnDelete = Cascade> {
+pub struct ForeignKey<M: Record, O: OnDelete = Cascade> {
     pk: M::Pk,
     o: PhantomData<O>,
 }
 
-impl<M: Model, O: OnDelete> Clone for ForeignKey<M, O> {
+impl<M: Record, O: OnDelete> Clone for ForeignKey<M, O> {
     fn clone(&self) -> Self {
         Self {
             pk: self.pk.clone(),
@@ -357,17 +371,17 @@ impl<M: Model, O: OnDelete> Clone for ForeignKey<M, O> {
     }
 }
 
-impl<M: Model, O: OnDelete> ForeignKey<M, O> {
+impl<M: Record, O: OnDelete> ForeignKey<M, O> {
     pub fn new(m: &M) -> Self {
         Self {pk: m.pk().clone(), o: PhantomData}
     }
-    pub fn from_data(t: <M as Model>::Pk) -> Result<Self> {
+    pub fn from_data(t: <M as Record>::Pk) -> Result<Self> {
         Ok(Self {pk: t, o: PhantomData})
     }
     pub fn pk(&self) -> M::Pk {
         self.pk.clone()
     }
-    pub fn eq_model(&self, m: &M) -> bool where <M as Model>::Pk: PartialEq {
+    pub fn eq_record(&self, m: &M) -> bool where <M as Record>::Pk: PartialEq {
         self.pk == m.pk()
     }
     pub async fn get<B: BaseRequest>(&self, req: &B) -> Result<M> {
@@ -378,24 +392,24 @@ impl<M: Model, O: OnDelete> ForeignKey<M, O> {
     }
 }
 
-impl<M: Model, O: OnDelete> DataType for ForeignKey<M, O> where M::Pk: std::fmt::Display {
-    type T = <<M as Model>::Pk as DataType>::T;
+impl<M: Record, O: OnDelete> DataType for ForeignKey<M, O> where M::Pk: std::fmt::Display {
+    type T = <<M as Record>::Pk as DataType>::T;
 
-    fn from_val(t: <<M as Model>::Pk as DataType>::T) -> Result<Self> {
+    fn from_val(t: <<M as Record>::Pk as DataType>::T) -> Result<Self> {
         Ok(Self {pk: M::Pk::from_val(t)?, o: PhantomData})
     }
 }
 
-impl<M: Model, O: OnDelete> ToSql for ForeignKey<M, O> where M::Pk: std::fmt::Display {
+impl<M: Record, O: OnDelete> ToSql for ForeignKey<M, O> where M::Pk: std::fmt::Display {
     fn to_sql(&self) -> String {
         self.pk.to_sql()
     }
 }
 
-impl<M: Model, O: OnDelete> DataType for Option<ForeignKey<M, O>> where M::Pk: std::fmt::Display {
-    type T = Option<<<M as Model>::Pk as DataType>::T>;
+impl<M: Record, O: OnDelete> DataType for Option<ForeignKey<M, O>> where M::Pk: std::fmt::Display {
+    type T = Option<<<M as Record>::Pk as DataType>::T>;
 
-    fn from_val(t: Option<<<M as Model>::Pk as DataType>::T>) -> Result<Self> {
+    fn from_val(t: Option<<<M as Record>::Pk as DataType>::T>) -> Result<Self> {
         if let Some(s) = t {
             Ok(Some(ForeignKey::from_val(s)?))
         } else {
@@ -404,7 +418,7 @@ impl<M: Model, O: OnDelete> DataType for Option<ForeignKey<M, O>> where M::Pk: s
     }
 }
 
-impl<M: Model, O: OnDelete> ToSql for Option<ForeignKey<M, O>> where M::Pk: std::fmt::Display {
+impl<M: Record, O: OnDelete> ToSql for Option<ForeignKey<M, O>> where M::Pk: std::fmt::Display {
     fn to_sql(&self) -> String {
         if let Some(s) = self {
             s.to_sql()
@@ -414,33 +428,33 @@ impl<M: Model, O: OnDelete> ToSql for Option<ForeignKey<M, O>> where M::Pk: std:
     }
 }
 
-impl<M: Model, O: OnDelete> fmt::Display for ForeignKey<M, O> where M::Pk: std::fmt::Display {
+impl<M: Record, O: OnDelete> fmt::Display for ForeignKey<M, O> where M::Pk: std::fmt::Display {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.pk)
     }
 }
 
-impl<'r, M: Model, O: OnDelete> Type<Db> for ForeignKey<M, O>
-where <<M as Model>::Pk as DataType>::T: Decode<'r, Db> + Type<Db> {
+impl<'r, M: Record, O: OnDelete> Type<Db> for ForeignKey<M, O>
+where <<M as Record>::Pk as DataType>::T: Decode<'r, Db> + Type<Db> {
     fn type_info() -> DbTypeInfo {
-        <<<M as Model>::Pk as DataType>::T as Type<Db>>::type_info()
+        <<<M as Record>::Pk as DataType>::T as Type<Db>>::type_info()
     }
 }
 
-impl<'r, M: Model, O: OnDelete, DB: Database> Decode<'r, DB> for ForeignKey<M, O>
-where <<M as Model>::Pk as DataType>::T: Decode<'r, DB>, <M as Model>::Pk: std::fmt::Display {
+impl<'r, M: Record, O: OnDelete, DB: Database> Decode<'r, DB> for ForeignKey<M, O>
+where <<M as Record>::Pk as DataType>::T: Decode<'r, DB>, <M as Record>::Pk: std::fmt::Display {
     fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<ForeignKey<M, O>, Box<dyn Error + 'static + Send + Sync>> {
-        let value = <<<M as Model>::Pk as DataType>::T as Decode<DB>>::decode(value)?;
+        let value = <<<M as Record>::Pk as DataType>::T as Decode<DB>>::decode(value)?;
         Ok(Self::from_val(value).unwrap())
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct ManyToMany<M: Model> {
+pub struct ManyToMany<M: Record> {
     m: PhantomData<M>,
 }
 
-impl<M: Model> ManyToMany<M> {
+impl<M: Record> ManyToMany<M> {
     pub fn new() -> Self {
         Self {m: PhantomData}
     }
@@ -448,7 +462,7 @@ impl<M: Model> ManyToMany<M> {
 
 pub struct Objects<M>(Vec<M>);
 
-impl<M: Model> Objects<M> {
+impl<M: Record> Objects<M> {
     pub fn pks(&self) -> Vec<M::Pk> {
         let mut v = vec![];
         for d in &self.0 {
@@ -456,7 +470,7 @@ impl<M: Model> Objects<M> {
         }
         v
     }
-    pub async fn parents<P: Model, O: OnDelete, B: BaseRequest>(&self, req: &B, f: for<'a> fn(&'a M) -> &'a ForeignKey<P, O>) -> Result<Objects<P>> {
+    pub async fn parents<P: Record, O: OnDelete, B: BaseRequest>(&self, req: &B, f: for<'a> fn(&'a M) -> &'a ForeignKey<P, O>) -> Result<Objects<P>> {
         if self.0.is_empty() {
             return Ok(Objects::<P>::new());
         }
@@ -468,7 +482,7 @@ impl<M: Model> Objects<M> {
     }
 }
 
-impl<M: Model> Objects<M> {
+impl<M: Record> Objects<M> {
     pub fn new() -> Self {
         Self {0: vec![]}
     }
@@ -486,7 +500,7 @@ impl<M: Model> Objects<M> {
     }
 }
 
-impl<M: Model> IntoIterator for Objects<M> {
+impl<M: Record> IntoIterator for Objects<M> {
     type Item = M;
     type IntoIter = std::vec::IntoIter<M>;
     #[inline]
@@ -495,14 +509,14 @@ impl<M: Model> IntoIterator for Objects<M> {
     }
 }
 
-impl<M: Model> Deref for Objects<M> {
+impl<M: Record> Deref for Objects<M> {
     type Target = Vec<M>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<M: Model> DerefMut for Objects<M> {
+impl<M: Record> DerefMut for Objects<M> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
@@ -531,18 +545,19 @@ mod private {
     impl Sealed for DateTime {}
     impl<const N: u16> Sealed for VarChar<N> {}
     impl<'a, const N: u16> Sealed for &'a VarChar<N> {}
-    impl<M: Model, O: OnDelete> Sealed for ForeignKey<M, O> {}
+    impl<M: Record, O: OnDelete> Sealed for ForeignKey<M, O> {}
     impl Sealed for i64 {}
     impl Sealed for bool {}
     impl Sealed for String {}
+    impl Sealed for &String {}
     impl<'a> Sealed for &'a str {}
     impl<const N: u16> Sealed for Option<VarChar<N>> {}
     impl Sealed for Option<Text> {}
-    impl<M: Model, O: OnDelete> Sealed for Option<ForeignKey<M, O>> {}
+    impl<M: Record, O: OnDelete> Sealed for Option<ForeignKey<M, O>> {}
 }
 
 #[derive(Clone)]
-pub struct ModelField {
+pub struct RecordField {
     ty: String,
     primary_key: bool,
     unique: bool,
@@ -550,7 +565,7 @@ pub struct ModelField {
     constraints: Vec<String>,
 }
 
-impl ModelField {
+impl RecordField {
     pub fn new(ty: String) -> Self {
         Self {ty, primary_key: false, unique: false, null: false, constraints: vec![]}
     }
@@ -643,6 +658,12 @@ impl ToSql for String {
     }
 }
 
+impl ToSql for &String {
+    fn to_sql(&self) -> String {
+        escape(self)
+    }
+}
+
 pub trait DataType: Clone + ToSql + private::Sealed {
     type T;
     fn from_val(t: Self::T) -> Result<Self> where Self: Sized;
@@ -653,13 +674,13 @@ pub trait ToSql: private::Sealed {
 }
 
 #[async_trait]
-pub trait FromParams: Model {
+pub trait FromParams: Record {
     fn pk_from_params(params: &Parameters) -> Result<BigInt>;
     async fn from_params(params: &Parameters) -> Result<Whose<Self>> where Self: Sized;
 }
 
 #[async_trait]
-pub trait ModelTuple<B: BaseRequest> {
+pub trait RecordTuple<B: BaseRequest> {
     async fn check(object_namespace: Text, object_key: BigInt, object_predicate: Text, req: &B) -> Result<()>;
 }
 
@@ -678,7 +699,7 @@ pub trait ToUrl {
 }
 
 #[async_trait]
-pub trait Model: Sized {
+pub trait Record: Sized {
     type Pk: DataType;
     const NAME: &'static str;
     const PK_NAME: &'static str;

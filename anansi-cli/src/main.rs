@@ -90,7 +90,7 @@ fn make_view(args: &Vec<String>) {
         let parsed = format!("{}/templates/.parsed", arg);
         fs::create_dir(&parsed).expect("Failed to create path");
         let upper = uppercase(arg);
-        make_file(arg, "views", ".rs", format!("use crate::prelude::*;\nuse super::super::models::{{{}}};\n\n#[base_view]\nfn base<R: Request>(_req: R) -> Result<Response> {{}}\n\n#[checker]\nimpl<R: Request> {0}View<R> {{\n    #[check(Group::is_visitor)]\n    pub async fn index(req: R) -> Result<Response> {{\n        let title = \"Title\";\n    }}\n}}", upper));
+        make_file(arg, "views", ".rs", format!("use crate::prelude::*;\nuse super::super::records::{{{}}};\n\n#[base_view]\nfn base<R: Request>(_req: R) -> Result<Response> {{}}\n\n#[record_view]\nimpl<R: Request> {0}View<R> {{\n    #[view(Group::is_visitor)]\n    pub async fn index(req: R) -> Result<Response> {{\n        let title = \"Title\";\n    }}\n}}", upper));
         make_file(arg, "mod", ".rs", "pub mod views;".to_string());
         cp_as!(format!("{}/index.rs.html", temp), "templates/index.rs.html");
         cp_as!(format!("{}/base.rs.html", temp), "templates/base.rs.html");
@@ -134,11 +134,11 @@ fn app(args: &Vec<String>) {
     fs::create_dir(name).expect("Failed to create app directory");
     fs::create_dir(&format!("{}/migrations", name)).expect("Failed to create migrations directory");
     make(name, "init", format!("pub const APP_NAME: &'static str = \"{}\";", name));
-    make(name, "mod", "pub mod init;\npub mod urls;\npub mod models;\npub mod migrations;\n".to_string());
+    make(name, "mod", "pub mod init;\npub mod urls;\npub mod records;\npub mod migrations;\n".to_string());
     make(name, "urls", "use anansi::web::prelude::*;\n\nroutes! {}".to_string());
     make(name, "migrations/mod", "pub mod init;".to_string());
     make(name, "migrations/init", "use anansi::migrations::prelude::*;\n\nlocal_migrations! {}".to_string());
-    cp!(name, "models.rs");
+    cp!(name, "records.rs");
     println!("Created app \"{name}\"");
 }
 
@@ -263,17 +263,13 @@ impl Parser {
         } else {
             let mut view = String::from("{let mut _c = String::new();");
             view.push_str(&self.process(content));
-            view.push_str("Ok(Response::new(\"HTTP/1.1 200 OK\", _c.into_bytes()))}");
+            view.push_str("Ok(anansi::web::Response::new(\"HTTP/1.1 200 OK\", _c.into_bytes()))}");
             view
         };
         let out = &temp[..temp.find('.').unwrap()];
 
         if !self.blocks.is_empty() || base {
-            let bname = match name.rsplit_once('/') {
-                Some((_, n)) => n.split_once('.').unwrap().0,
-                None => name,
-            };
-            let mut s = format!("pub struct {}Args {{", uppercase(bname));
+            let mut s = "pub struct Args {".to_string();
             for block in &self.blocks {
                 s.push_str(&format!("pub _{}: String,", block));
             }
@@ -330,8 +326,8 @@ impl Parser {
                 break;
             }
         }
-        let args = format!("{}Args", uppercase(&basename));
-        let mut ext = format!("{}(req, {}{{", basename, args);
+        let args = format!("{}::Args", basename);
+        let mut ext = format!("{}::base(req, {}{{", basename, args);
         let mut s = String::from("{");
         for (name, src) in blocks {
             s.push_str(&format!("let _{} = {{{}}};", name, src));

@@ -9,15 +9,15 @@
 	</div>
 	<div>
 		<div class="auth">
-			Authorization
+			Authentication and Authorization
 		</div>
 		<div class="box">
-			@link req, AuthAdminView::model_index::<Group>, class="link" {Groups}
-			@link req, AuthAdminView::model_new::<Group>, class="add" {Add}
+			@link req, AuthAdminView::record_index::<Group>, class="link" {Groups}
+			@link req, AuthAdminView::record_new::<Group>, class="add" {Add}
 		</div>
 		<div class="box">
-			@link req, AuthAdminView::model_index::<User>, class="link" {Users}
-			@link req, AuthAdminView::model_new::<User>, class="add" {Add}
+			@link req, AuthAdminView::record_index::<User>, class="link" {Users}
+			@link req, AuthAdminView::record_new::<User>, class="add" {Add}
 		</div>
 		@if req.admin().lock().unwrap().admin_entries().len() > 1 {
 		@for admin_entry in &req.admin().lock().unwrap().admin_entries()[1..] {

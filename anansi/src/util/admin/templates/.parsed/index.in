@@ -1,18 +1,18 @@
-{let _title = {{let mut _c = String::new();_c.push_str("");_c.push_str(&anansi::web::html_escape(&format!("{}", title)));_c.push_str(""); _c}};let _content = {{let mut _c = String::new();_c.push_str("<div class=\"site\">
+{let _content = {{let mut _c = String::new();_c.push_str("<div class=\"site\">
 	<div class=\"sub\">
 		");_c.push_str(&anansi::web::html_escape(&format!("{}", title)));_c.push_str("
 	</div>
 	<div>
 		<div class=\"auth\">
-			Authorization
+			Authentication and Authorization
 		</div>
 		<div class=\"box\">
-			");_c.push_str(&format!("<a href=\"{}\"  class=\"link\" >", anansi::url!(req,  AuthAdminView::model_index::<Group>)));_c.push_str("Groups");_c.push_str("</a>
-			");_c.push_str(&format!("<a href=\"{}\"  class=\"add\" >", anansi::url!(req,  AuthAdminView::model_new::<Group>)));_c.push_str("Add");_c.push_str("</a>
+			");_c.push_str(&format!("<a href=\"{}\"  class=\"link\" >", anansi::url!(req,  AuthAdminView::record_index::<Group>)));_c.push_str("Groups");_c.push_str("</a>
+			");_c.push_str(&format!("<a href=\"{}\"  class=\"add\" >", anansi::url!(req,  AuthAdminView::record_new::<Group>)));_c.push_str("Add");_c.push_str("</a>
 		</div>
 		<div class=\"box\">
-			");_c.push_str(&format!("<a href=\"{}\"  class=\"link\" >", anansi::url!(req,  AuthAdminView::model_index::<User>)));_c.push_str("Users");_c.push_str("</a>
-			");_c.push_str(&format!("<a href=\"{}\"  class=\"add\" >", anansi::url!(req,  AuthAdminView::model_new::<User>)));_c.push_str("Add");_c.push_str("</a>
+			");_c.push_str(&format!("<a href=\"{}\"  class=\"link\" >", anansi::url!(req,  AuthAdminView::record_index::<User>)));_c.push_str("Users");_c.push_str("</a>
+			");_c.push_str(&format!("<a href=\"{}\"  class=\"add\" >", anansi::url!(req,  AuthAdminView::record_new::<User>)));_c.push_str("Add");_c.push_str("</a>
 		</div>
 		");if req.admin().lock().unwrap().admin_entries().len() > 1 {_c.push_str("
 		");for admin_entry in &req.admin().lock().unwrap().admin_entries()[1..] {_c.push_str("
@@ -30,4 +30,4 @@
 		");}_c.push_str("
 		");}_c.push_str("
 	</div>
-</div>"); _c}};base(req, BaseArgs{_title, _content, })}
+</div>"); _c}};let _title = {{let mut _c = String::new();_c.push_str("");_c.push_str(&anansi::web::html_escape(&format!("{}", title)));_c.push_str(""); _c}};base::base(req, base::Args{_content, _title, })}

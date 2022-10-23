@@ -9,7 +9,7 @@ use syn::Fields::Named;
 use syn::Attribute;
 use sqlx::Row;
 use crate::db::{DbPool, unescape};
-use crate::models::ModelField;
+use crate::records::RecordField;
 
 #[macro_export]
 macro_rules! apps {
@@ -43,7 +43,7 @@ pub type AppMigration = (&'static str, Vec<Migration>);
 pub type Migration = (&'static str, Vec<Box<dyn fmt::Display>>);
 
 pub mod prelude {
-    pub use anansi::{models, migrations, local_migrations};
+    pub use anansi::{records, migrations, local_migrations};
 }
 
 #[derive(Clone)]
@@ -64,13 +64,13 @@ impl fmt::Display for RunSql {
 }
 
 #[derive(Clone)]
-pub struct CreateModel {
+pub struct CreateRecord {
     pub prefix: &'static str,
     pub name: &'static str,
-    pub fields: Vec<(&'static str, ModelField)>,
+    pub fields: Vec<(&'static str, RecordField)>,
 }
 
-impl fmt::Display for CreateModel {
+impl fmt::Display for CreateRecord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut s = format!("CREATE TABLE \"{}_{}\" (", self.prefix, self.name);
         let mut v = vec![];
@@ -92,7 +92,7 @@ impl fmt::Display for CreateModel {
     }
 }
 
-impl IsMigration for CreateModel {}
+impl IsMigration for CreateRecord {}
 
 pub trait IsMigration: fmt::Display {}
 
@@ -156,14 +156,14 @@ pub async fn make_migrations(app_dir: &str, pool: &DbPool) {
     let mut v = vec![];
     let s: Vec<&str> = app_dir.split('/').collect();
     let app_name = &s[s.len()-2];
-    let mfile = format!("{}models.rs", app_dir);
+    let mfile = format!("{}records.rs", app_dir);
     let content = fs::read_to_string(&mfile).expect(&format!("could not open {}", mfile));
     process_syntax(app_name, content, &mut v);
 
     let mut syntaxes = Vec::new();
-    let mut new_models = Vec::new();
+    let mut new_records = Vec::new();
     for (prefix, name, syntax) in v {
-        let val = String::from(format!("SELECT schema FROM models WHERE name = '{}';\n", name));
+        let val = String::from(format!("SELECT schema FROM records WHERE name = '{}';\n", name));
         if let Ok(row) = sqlx::query(&val).fetch_one(&pool.0).await {
             let s: &str = row.try_get("schema").unwrap();
             if unescape(&s) == syntax {
@@ -172,12 +172,12 @@ pub async fn make_migrations(app_dir: &str, pool: &DbPool) {
                 syntaxes.push((prefix, name, syntax));
             }
         } else {
-            new_models.push((prefix, name, syntax));
+            new_records.push((prefix, name, syntax));
         }
     }
-    if !(new_models.is_empty() && syntaxes.is_empty()) {
+    if !(new_records.is_empty() && syntaxes.is_empty()) {
         let mut sql = String::from("anansi::operations! {\n");
-        new_syntax(&mut sql, new_models);
+        new_syntax(&mut sql, new_records);
         add_syntax(&mut sql, syntaxes);
         
         sql.push_str("}");
@@ -199,9 +199,9 @@ pub async fn make_migrations(app_dir: &str, pool: &DbPool) {
     }
 }
 
-pub fn new_syntax(sql: &mut String, new_models: Vec<(String, String, String)>) {
-    for (prefix, name, syntax) in new_models {
-            sql.push_str(&format!("    migrations::CreateModel {{\n        prefix: \"{}\",\n        name: \"{}\",\n        fields: vec![\n", prefix, name));
+pub fn new_syntax(sql: &mut String, new_records: Vec<(String, String, String)>) {
+    for (prefix, name, syntax) in new_records {
+            sql.push_str(&format!("    migrations::CreateRecord {{\n        prefix: \"{}\",\n        name: \"{}\",\n        fields: vec![\n", prefix, name));
             sql.push_str(&syntax);
             sql.push_str("        ],\n    },\n");
         }
@@ -210,7 +210,7 @@ pub fn new_syntax(sql: &mut String, new_models: Vec<(String, String, String)>) {
 pub fn add_syntax(sql: &mut String, syntaxes: Vec<(String, String, String)>) {
     for (prefix, name, syntax) in syntaxes {
         let temp_prefix = format!("_{}", prefix);
-        sql.push_str(&format!("    migrations::CreateModel {{\n        prefix: \"{}\",\n        name: \"{}\",\n        fields: vec![\n", temp_prefix, name));
+        sql.push_str(&format!("    migrations::CreateRecord {{\n        prefix: \"{}\",\n        name: \"{}\",\n        fields: vec![\n", temp_prefix, name));
         sql.push_str(&syntax);
         sql.push_str("        ],\n    },\n");
         let temp_name = format!("{}_{}", temp_prefix, name);
@@ -251,14 +251,14 @@ pub fn process_syntax(db: &str, content: String, v: &mut Vec<(String, String, St
                 } else {
                     format!("_{}", db)
                 };
-                let mut is_model = false;
+                let mut is_record = false;
                 for attr in item.attrs {
-                    if attr.path.segments.last().unwrap().ident.to_string() == "model" {
-                        is_model = true;
+                    if attr.path.segments.last().unwrap().ident.to_string() == "record" {
+                        is_record = true;
                         break;
                     }
                 }
-                if !is_model {
+                if !is_record {
                     continue;
                 }
                 match item.fields {
@@ -267,14 +267,14 @@ pub fn process_syntax(db: &str, content: String, v: &mut Vec<(String, String, St
                         for field in named.named {
                             let fieldname = field.ident.as_ref().unwrap().to_string();
                             if let Some(ty) = get_type(&fieldname, &field, &mut meta, db) {
-                                sql.push_str(&format!("            (\n                \"{}\",\n                models::{}\n            ),\n", fieldname, ty));
+                                sql.push_str(&format!("            (\n                \"{}\",\n                records::{}\n            ),\n", fieldname, ty));
                             }
                         }
                         if !sql.contains("PRIMARY KEY") {
-                            sql = "            (\n                \"id\",\n                models::BigInt::field().primary_key()\n            ),\n".to_string() + &sql;
+                            sql = "            (\n                \"id\",\n                records::BigInt::field().primary_key()\n            ),\n".to_string() + &sql;
                         }
                         v.push((prefix.to_string(), name.to_string(), sql));
-                        v.push((prefix.to_string(), format!("{}tuple", name), "            (\n                \"id\",\n                models::BigInt::field().primary_key()\n            ),\n            (\n                \"subject_namespace\",\n                models::Text::field()\n            ),\n            (\n                \"subject_key\",\n                models::BigInt::field()\n            ),\n            (\n                \"subject_predicate\",\n                models::Text::field().null()\n            ),\n            (\n                \"object_key\",\n                models::BigInt::field()\n            ),\n            (\n                \"object_predicate\",\n                models::Text::field()\n            ),\n".to_string()));
+                        v.push((prefix.to_string(), format!("{}tuple", name), "            (\n                \"id\",\n                records::BigInt::field().primary_key()\n            ),\n            (\n                \"subject_namespace\",\n                records::Text::field()\n            ),\n            (\n                \"subject_key\",\n                records::BigInt::field()\n            ),\n            (\n                \"subject_predicate\",\n                records::Text::field().null()\n            ),\n            (\n                \"object_key\",\n                records::BigInt::field()\n            ),\n            (\n                \"object_predicate\",\n                records::Text::field()\n            ),\n".to_string()));
 
                         if !alter {
                             key_table(meta, v, &prefix, &name);
@@ -370,9 +370,9 @@ fn key_table(m2: Vec<Vec<String>>, v: &mut Vec<(String, String, String)>, prefix
             "ManyToMany" => {
                 let other = m[2].to_lowercase();
                 let mut sql = String::new();
-                sql.push_str(&format!("            (\n                \"{}\",\n                models::BigInt::field()", name));
+                sql.push_str(&format!("            (\n                \"{}\",\n                records::BigInt::field()", name));
                 sql.push_str(&format!(".foreign_key(\"{}\", \"{}\", \"id\")\n            ),\n", prefix, name));
-                sql.push_str(&format!("            (\n                \"{}\",\n                models::BigInt::field()", other));
+                sql.push_str(&format!("            (\n                \"{}\",\n                records::BigInt::field()", other));
                 sql.push_str(&format!(".foreign_key(\"{}\", \"{}\", \"id\")\n            ),\n", prefix, other));
                 v.push((prefix.to_string(), format!("{}_{}", name, other), sql));
             },

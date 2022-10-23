@@ -4,10 +4,10 @@ use serde_json::map::Map;
 use anansi::server::Rng;
 use anansi::web::{Result, BaseRequest, Reverse, RawRequest, View, Response, TokenRef};
 use anansi::db::{invalid, DbPool};
-use anansi::models::{Model, VarChar, Text, DateTime, Relate, generate_id};
-use anansi::{model};
+use anansi::records::{Record, VarChar, Text, DateTime, Relate, generate_id};
+use anansi::{record};
 
-#[model]
+#[record]
 #[derive(Debug, Clone)]
 pub struct Session {
     pub data: Text,

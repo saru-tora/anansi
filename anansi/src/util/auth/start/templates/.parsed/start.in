@@ -10,4 +10,4 @@
 		<p><small>Anansi ");_c.push_str(&anansi::web::html_escape(&format!("{}", VERSION)));_c.push_str(" (Debug)</small></p>
 	</body>
 </html>
-");Ok(Response::new("HTTP/1.1 200 OK", _c.into_bytes()))}
+");Ok(anansi::web::Response::new("HTTP/1.1 200 OK", _c.into_bytes()))}

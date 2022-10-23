@@ -1,93 +1,149 @@
 anansi::operations! {
-    migrations::CreateModel {
+    migrations::CreateRecord {
         prefix: "auth",
         name: "user",
         fields: vec![
             (
                 "id",
-                models::BigInt::field().primary_key()
+                records::BigInt::field().primary_key()
             ),
             (
                 "username",
-                models::VarChar::<150>::field().unique()
+                records::VarChar::<150>::field().unique()
             ),
             (
                 "password",
-                models::VarChar::<150>::field()
+                records::VarChar::<150>::field()
             ),
         ],
     },
-    migrations::CreateModel {
+    migrations::CreateRecord {
         prefix: "auth",
         name: "usertuple",
         fields: vec![
             (
                 "id",
-                models::BigInt::field().primary_key()
+                records::BigInt::field().primary_key()
             ),
             (
                 "subject_namespace",
-                models::Text::field()
+                records::Text::field()
             ),
             (
                 "subject_key",
-                models::BigInt::field()
+                records::BigInt::field()
             ),
             (
                 "subject_predicate",
-                models::Text::field().null()
+                records::Text::field().null()
             ),
             (
                 "object_key",
-                models::BigInt::field()
+                records::BigInt::field()
             ),
             (
                 "object_predicate",
-                models::Text::field()
+                records::Text::field()
             ),
         ],
     },
-    migrations::CreateModel {
+    migrations::CreateRecord {
         prefix: "auth",
         name: "group",
         fields: vec![
             (
                 "id",
-                models::BigInt::field().primary_key()
+                records::BigInt::field().primary_key()
             ),
             (
                 "groupname",
-                models::VarChar::<150>::field()
+                records::VarChar::<150>::field()
             ),
         ],
     },
-    migrations::CreateModel {
+    migrations::CreateRecord {
         prefix: "auth",
         name: "grouptuple",
         fields: vec![
             (
                 "id",
-                models::BigInt::field().primary_key()
+                records::BigInt::field().primary_key()
             ),
             (
                 "subject_namespace",
-                models::Text::field()
+                records::Text::field()
             ),
             (
                 "subject_key",
-                models::BigInt::field()
+                records::BigInt::field()
             ),
             (
                 "subject_predicate",
-                models::Text::field().null()
+                records::Text::field().null()
             ),
             (
                 "object_key",
-                models::BigInt::field()
+                records::BigInt::field()
             ),
             (
                 "object_predicate",
-                models::Text::field()
+                records::Text::field()
+            ),
+        ],
+    },
+    migrations::CreateRecord {
+        prefix: "auth",
+        name: "filter",
+        fields: vec![
+            (
+                "id",
+                records::BigInt::field().primary_key()
+            ),
+            (
+                "table_name",
+                records::Text::field()
+            ),
+            (
+                "filter_name",
+                records::Text::field()
+            ),
+            (
+                "filter",
+                records::Text::field()
+            ),
+            (
+                "raw_query",
+                records::Text::field()
+            ),
+        ],
+    },
+    migrations::CreateRecord {
+        prefix: "auth",
+        name: "filtertuple",
+        fields: vec![
+            (
+                "id",
+                records::BigInt::field().primary_key()
+            ),
+            (
+                "subject_namespace",
+                records::Text::field()
+            ),
+            (
+                "subject_key",
+                records::BigInt::field()
+            ),
+            (
+                "subject_predicate",
+                records::Text::field().null()
+            ),
+            (
+                "object_key",
+                records::BigInt::field()
+            ),
+            (
+                "object_predicate",
+                records::Text::field()
             ),
         ],
     },
