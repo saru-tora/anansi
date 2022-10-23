@@ -23,14 +23,14 @@ Anansi also allows web applications to run asynchronously with Rust's speed.
 
 Anansi handles many of the repetitive parts of web development, letting you work on the important parts of your app more quickly.
 
-Models
-======
+Records
+=======
 
 Work with databases in Rust instead of SQL.
 
 ```rust
 // A topic in a forum.
-#[model]
+#[record]
 #[derive(Relate, FromParams, ToUrl)]
 pub struct Topic {
     pub title: VarChar<200>,
@@ -41,7 +41,7 @@ pub struct Topic {
 }
 
 // A comment in a topic.
-#[model]
+#[record]
 #[derive(Relate, FromParams)]
 pub struct Comment {
     pub topic: ForeignKey<Topic>,
@@ -66,10 +66,10 @@ routes! {
 ```
 
 ```rust
-#[checker]
+#[record_view]
 impl<R: Request> TopicView<R> {
     // A view of the last 25 topics.
-    #[check(Group::is_visitor)]
+    #[view(Group::is_visitor)]
     pub async fn index(req: R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
