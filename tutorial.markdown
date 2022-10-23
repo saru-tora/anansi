@@ -26,7 +26,7 @@ This will create the following a crate called `mini-forum` with the following fi
 
 - **http_errors/**: Includes http error pages.
 - **main.rs**: Has a list of apps.
-- **settings.rs**: Details project settings.
+- **project.rs**: Details project settings.
 - **urls.rs**: Manages the routing.
 
 <br>
@@ -58,8 +58,8 @@ This will make a `forum` directory with the following files:
 .
 ├── init.rs
 ├── migrations
-├── models.rs
 ├── mod.rs
+├── records.rs
 └── urls.rs
 ```
 
@@ -77,16 +77,16 @@ apps! {
 
 <br>
 
-Generating models
------------------
+Generating records
+------------------
 
-To generate models, edit `forum/models.rs`:
+To generate records, edit `forum/records.rs`:
 
 ```rust
-use anansi::models::{VarChar, DateTime, ForeignKey};
-use anansi::util::auth::models::User;
+use anansi::records::{VarChar, DateTime, ForeignKey};
+use anansi::util::auth::records::User;
 
-#[model]
+#[record]
 #[derive(Relate, FromParams)]
 pub struct Topic {
     pub title: VarChar<200>,
@@ -96,7 +96,7 @@ pub struct Topic {
     pub date: DateTime,
 }
 
-#[model]
+#[record]
 #[derive(Relate, FromParams)]
 pub struct Comment {
     pub topic: ForeignKey<Topic>,
@@ -107,14 +107,14 @@ pub struct Comment {
 }
 ```
 
-`#[model]` adds an `id` field by default, and functions that reference the model's fields (like `topic::date`), which can be used with methods like `order_by` to query the database.
+`#[record]` adds an `id` field by default, and functions that reference the record's fields (like `topic::date`), which can be used with methods like `order_by` to query the database.
 
-Both models have `ForeignKey` fields, which means that it has many-to-one relationships with `Topic` and `User`. For `user`, the app name (auth) is specified since it is from another app. Not including the app name will result in an error later on.
+Both records have `ForeignKey` fields, which means that it has many-to-one relationships with `Topic` and `User`. For `user`, the app name (auth) is specified since it is from another app. Not including the app name will result in an error later on.
 
 <br>
 
-Adding the models
-=================
+Adding the records
+==================
 
 To prepare the migration files (which are used to keep track of the database), run:
 
@@ -173,8 +173,8 @@ $ ananc migrate
 
 <br>
 
-Showing the models
-==================
+Showing the records
+===================
 
 You can start creating views by going to `forum/` and running:
 
@@ -185,11 +185,11 @@ $ ananc make-view topic
 Now edit `forum/topic/views.rs`:
 
 ```rust
-use super::super::models::{Topic, topic::date};
+use super::super::records::{Topic, topic::date};
 
-#[checker]
+#[record_view]
 impl<R: Request> TopicView<R> {
-    #[check(Group::is_visitor)]
+    #[view(Group::is_visitor)]
     pub async fn index(req: R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
@@ -290,13 +290,13 @@ Views handle what will happen when a url is visited.
 Adding more views
 =================
 
-Update `forum/models.rs` to add more helper methods.
+Update `forum/records.rs` to add more helper methods.
 
 ```rust
 use anansi::db::OrderBy;
 use anansi::ToUrl;
 
-#[model]
+#[record]
 #[derive(Relate, FromParams, ToUrl)]
 pub struct Topic {
     pub title: VarChar<200>,
@@ -334,10 +334,10 @@ Update `forum/topic/views.rs`:
 use anansi::get_or_404;
 use anansi::humanize::ago;
 
-#[checker]
+#[record_view]
 impl<R: Request> TopicView<R> {
     // --snip--
-    #[check(Group::is_visitor)]
+    #[view(Group::is_visitor)]
     pub async fn show(req: R) -> Result<Response> {
         let topic = get_or_404!(Topic, req);
         let title = &topic.title;
@@ -396,17 +396,17 @@ To log in, we can reuse the admin page's user login form in `forum/topic/views.r
 
 ```rust
 use anansi::handle;
-use anansi::forms::ToModel;
+use anansi::forms::ToRecord;
 use anansi::util::auth::forms::UserLogin;
 
-#[checker]
+#[record_view]
 impl<R: Request> TopicView<R> {
     // --snip--
-    #[check(Group::is_visitor)]
+    #[view(Group::is_visitor)]
     pub async fn login(mut req: R) -> Result<Response> {
         let title = "Log in";
         let button = "Log in";
-        let form = handle!(UserLogin, ToModel<R>, req, user, {
+        let form = handle!(UserLogin, ToRecord<R>, req, user, {
             req.auth(&user).await?;
     	    req.session().set_and_redirect(&req, Self::index)
         })?;
@@ -470,9 +470,9 @@ To add topics, we can start by creating a form in the file `forum/forms.rs`:
 
 ```rust
 use crate::prelude::*;
-use anansi::models::{DateTime, ForeignKey};
-use anansi::forms::{VarChar, ToModel};
-use super::models::Topic;
+use anansi::records::{DateTime, ForeignKey};
+use anansi::forms::{VarChar, ToRecord};
+use super::records::Topic;
 
 #[form(Topic)]
 pub struct TopicForm {
@@ -481,7 +481,7 @@ pub struct TopicForm {
 }
 
 #[async_trait]
-impl<R: Request> ToModel<R> for TopicForm {
+impl<R: Request> ToRecord<R> for TopicForm {
     async fn on_post(&mut self, data: TopicFormData, req: &R) -> Result<Topic> {
         let now = DateTime::now();
         let user_fk = ForeignKey::from_data(req.user().pk())?;
@@ -491,7 +491,7 @@ impl<R: Request> ToModel<R> for TopicForm {
 }
 ```
 
-`#[form(Topic)]` generates a `TopicFormData` struct, which holds the data for the form, and associates the form with `Topic`. `on_post` will try to convert the form to a model. `form_error` will simply create a `FormError`, which can be accessed with the form's `errors` method.
+`#[form(Topic)]` generates a `TopicFormData` struct, which holds the data for the form, and associates the form with `Topic`. `on_post` will try to convert the form to a record. `form_error` will simply create a `FormError`, which can be accessed with the form's `errors` method.
 
 Update `forum/mod.rs`:
 
@@ -502,23 +502,25 @@ pub mod forms;
 Now use it in `forum/topic/views.rs`:
 
 ```rust
+use anansi::{check, render};
 use crate::forum::forms::TopicForm;
 
-#[checker]
+#[record_view]
 impl<R: Request> TopicView<R> {
     // --snip--
     #[check(Group::is_auth)]
     pub async fn new(mut req: R) -> Result<Response> {
         let title = "New Topic";
         let button = "Create";
-        let form = handle!(TopicForm, ToModel<R>, req, |topic| {
+        let form = handle!(TopicForm, ToRecord<R>, req, |topic| {
     	    Ok(redirect!(req, Self::show, topic))
         })?;
+        render!("login")
     }
 }
 ```
 
-`Group::is_auth` will redirect the visitor if they aren't authenticated. This time, for `handle`, a closure is passed this time since redirection isn't async. For the template `forum/topic/templates/new.rs.html`, in this simple case, you can just copy `login.rs.html`, though for an actual site, you'd probably write a custom one. You can also have a link to the page added in `index.rs.html` if the user is authenticated:
+`Group::is_auth` will redirect the visitor if they aren't authenticated. This time, for `handle`, a closure is passed this time since redirection isn't async. For the template `forum/topic/templates/new.rs.html`, in this simple case, you can just reuse `login.rs.html` by using the `check` and `render` macros, though for an actual site, you'd probably write a custom template. You can also have a link to the page added in `index.rs.html` if the user is authenticated:
 
 ```html
 @block content {
@@ -551,30 +553,13 @@ Updating
 To edit topics, we can first add some traits to `forum/forms.rs`:
 
 ```rust
-use anansi::web::FormMap;
-use anansi::forms::{GetData, ToEdit};
+use anansi::{GetData, ToEdit};
 
-#[async_trait]
-impl<R: Request> GetData<R> for TopicForm {
-    fn from_map(form_map: FormMap) -> Result<TopicFormData> {
-        let title = form_map.get("title")?.parse()?;
-        let content = form_map.get("content")?.parse()?;
-        Ok(TopicFormData::new(title, content))
-    }
-    async fn from_model(topic: Topic, _req: &R) -> Result<TopicFormData> {
-        Ok(TopicFormData::new(topic.title, topic.content))
-    }
-}
-
-#[async_trait]
-impl<R: Request> ToEdit<R> for TopicForm {
-    async fn on_post(&mut self, data: TopicFormData, req: &R) -> Result<Topic> {
-	let mut topic: Topic = req.get_model().await?;
-        topic.title = data.title;
-        topic.content = data.content;
-        topic.update(req).await?;
-        Ok(topic)
-    }
+#[form(Topic)]
+#[derive(GetData, ToEdit)]
+pub struct TopicForm {
+    pub title: VarChar<200>,
+    pub content: VarChar<40000>,
 }
 ```
 
@@ -584,7 +569,7 @@ And add a view to `forum/topic/views.rs`:
 use anansi::handle_or_404;
 use anansi::forms::ToEdit;
 
-#[checker]
+#[record_view]
 impl<R: Request> TopicView<R> {
     // --snip--
     #[check(Topic::owner)]
@@ -594,11 +579,12 @@ impl<R: Request> TopicView<R> {
         let form = handle_or_404!(TopicForm, ToEdit<R>, req, |topic| {
     	    Ok(redirect!(req, Self::show, topic))
         })?;
+        render!("login")
     }
 }
 ```
 
-`Topic::owner` checks if the user owns the topic. `handle_or_404!` is like `handle!`, but returns a 404 error if the model can't be found. Like before, for `edit.rs.html`, you can just copy `login.rs.html`. You can also have the link for it added in `show.rs.html` if the topic is the user's:
+`Topic::owner` checks if the user owns the topic. `handle_or_404!` is like `handle!`, but returns a 404 error if the record can't be found. Like before, for `edit.rs.html`, you can just reuse `login.rs.html`. You can also have the link for it added in `show.rs.html` if the topic is the user's:
 
 ```html
 @block content {
@@ -628,17 +614,21 @@ routes! {
 Admin
 -----
 
-At this point, you can add the `Topic` model to the admin page. First, create `forum/admin.rs`:
+At this point, you can add the `Topic` record to the admin page. First, create `forum/admin.rs`:
 
 ```rust
-use anansi::{init_admin, register, model_admin};
-use super::models::Topic;
+use anansi::{init_admin, register, record_admin};
+use super::records::Topic;
 
 init_admin! {
     register!(Topic),
 }
 
-model_admin!(Topic {});
+record_admin! {
+    record: Topic,
+    // You can specify which fields (if any) should be searchable
+    search_fields: [title, content, date],
+}
 ```
 
 Add it to `forum/mod.rs`:
@@ -668,10 +658,10 @@ Deleting
 To delete topics edit `forum/topic/views.rs`:
 
 ```rust
-#[checker]
+#[record_view]
 impl<R: Request> TopicView<R> {
     // --snip--
-    #[check(Topic::owner)]
+    #[view(Topic::owner)]
     pub async fn destroy(mut req: R) -> Result<Response> {
         let title = "Delete topic";
         let topic = get_or_404!(Topic, req);
