@@ -16,7 +16,7 @@ $ ananc --version
 Creating a basic site
 ---------------------
 
-Let's create a simple forum. The full  In a terminal, go to the directory where you want to create the project, and run:
+Let's create a simple forum. In a terminal, go to the directory where you want to create the project, and run:
 
 ```shell
 $ ananc new mini-forum
