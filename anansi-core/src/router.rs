@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use tokio::fs;
 use std::collections::HashMap;
 use crate::db::invalid;
@@ -25,13 +26,13 @@ impl<B: BaseRequest> Router<B> {
             match route {
                 Route::Path((url, f)) => {
                     v.push(((*url).to_string(), f));
-                },
+                }
                 Route::Import((url, r)) => {
                     for rt in r {
                         match rt {
                             Route::Path((u, f)) => {
                                 v.push((format!("{}/{}", url, *u), *f));
-                            },
+                            }
                             _ => unimplemented!(),
                         }
                     }
@@ -63,9 +64,10 @@ impl<B: BaseRequest> Router<B> {
         if let Some(f) = self.files.get(url) {
             return self.serve_content(url, f.to_vec());
         };
-        let mut base = String::new();
+        let mut base = PathBuf::new();
         BASE_DIR.with(|b| base = b.clone());
-        let full = format!("{}{}", base, url);
+        let mut full = base.clone();
+        full.push(url);
         let path = fs::canonicalize(&full).await?;
         if path.starts_with(base) {
             self.serve_content(url, fs::read(full).await?)

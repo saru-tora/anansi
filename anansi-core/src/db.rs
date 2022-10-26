@@ -1,4 +1,4 @@
-use std::{str, thread};
+use std::{str, thread, path::PathBuf};
 use std::io::{self, Read, ErrorKind};
 use std::marker::PhantomData;
 use std::borrow::Cow;
@@ -61,14 +61,16 @@ pub struct DbPool(pub(in crate) sqlx::Pool<Db>);
 
 impl DbPool {
     pub async fn new() -> Result<Self> {
-        let mut dir = String::new();
-        BASE_DIR.with(|base| dir = format!("{}/{}", base, "database.db"));
-        match Self::connect(&dir).await {
+        let mut dir = PathBuf::new();
+        BASE_DIR.with(|base| dir = base.clone());
+        dir.push("database.db");
+        let ds = dir.to_str().unwrap();
+        match Self::connect(ds).await {
             Ok(p) => Ok(Self {0: p}),
             Err(e) => {
-                Self::init_db(&dir).await;
+                Self::init_db(ds).await;
                 Err(e)
-            },
+            }
         }
     }
     async fn connect(dir: &str) -> Result<sqlx::Pool<Db>> {
@@ -753,10 +755,10 @@ impl<I: Record> Insert<I> {
         match sqlx::query(&val).execute(&pool.0).await {
             Ok(_) => {
                 Ok(())
-            },
+            }
             Err(e) => {
                 Err(Box::new(e))
-            },
+            }
         }
     }
 }
@@ -791,11 +793,11 @@ impl<M: Record> Limit<M> {
         match sqlx::query(&val).fetch_all(&pool.0).await {
             Ok(rows) => {
                 M::from(DbRowVec {rows})
-            },
+            }
             Err(e) => {
                 println!("{}", e);
                 Err(invalid())
-            },
+            }
         }
     }
 }
@@ -822,7 +824,7 @@ impl<M: Record> LimitCount<M> {
                     v.push(row.try_get("count")?);
                 }
                 Ok(v)
-            },
+            }
             Err(_) => Err(invalid()),
         }
     }

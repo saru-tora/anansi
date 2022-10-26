@@ -236,7 +236,7 @@ impl Group {
         Ok(())
     }
     pub async fn is_auth<B: BaseRequest>(req: &B) -> Result<()> {
-        if req.user().pk() != 0 {
+        if req.user().is_auth() {
             Ok(())
         } else {
             Err(Box::new(WebError::from(WebErrorKind::Unauthenticated)))

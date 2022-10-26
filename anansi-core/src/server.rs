@@ -1,4 +1,4 @@
-use std::{fmt, env, str};
+use std::{fmt, env, str, path::PathBuf};
 use std::thread::LocalKey;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
@@ -70,10 +70,10 @@ impl<B: BaseRequest + fmt::Debug + Clone> Server<B> {
 
             let args: Vec<String> = env::args().collect();
 
-            let mut base = String::new();
+            let mut base = PathBuf::new();
             BASE_DIR.with(|b| base = b.clone());
-            let dir = format!("{}/{}", base, "settings.toml");
-            let settings = fs::read_to_string(&dir).await.expect("Could not find settings.toml");
+            base.push("settings.toml");
+            let settings = fs::read_to_string(&base).await.expect(&format!("Could not find {}", base.to_str().unwrap()));
             let settings: Map<String, Value> = toml::from_str(&settings).expect("Could not parse settings.toml");
 
             let pool = match DbPool::new().await {
@@ -82,7 +82,7 @@ impl<B: BaseRequest + fmt::Debug + Clone> Server<B> {
                     let p = DbPool::new().await.expect("Database connection reattempt failed");
                     migrate(migrations, &p).await;
                     p
-                },
+                }
             };
 
             if args.len() > 1 {
@@ -93,20 +93,20 @@ impl<B: BaseRequest + fmt::Debug + Clone> Server<B> {
                         } else {
                             eprintln!("expected app name");
                         }
-                    },
+                    }
                     "sql-migrate" => {
                         if args.len() >= 3 {
                             sql_migrate(migrations, &args[2], &args[3]).await;
                         } else{
                             eprintln!("expected app name");
                         }
-                    },
+                    }
                     "migrate" => {
                         migrate(migrations, &pool).await;
-                    },
+                    }
                     "admin" => {
                         admin(pool.clone()).await.expect("Could not create admin");
-                    },
+                    }
                     _ => eprintln!("Unrecognized argument"),
                 }
             } else {
@@ -135,14 +135,14 @@ impl<B: BaseRequest + fmt::Debug + Clone> Server<B> {
                     Some(key) => {
                         seed += key.as_str().expect("Could not get secret");
                         Rng::new(&seed)
-                    },
+                    }
                     None => {
                         let rng = Rng::new(&seed);
-                        let s = format!("\nsecret = \"{}\"", rng.secret_string());
-                        append(&dir, s.as_bytes()).await;
+                        let s = format!("\n\nsecret = \"{}\"", rng.secret_string());
+                        append(&base, s.as_bytes()).await;
                         println!("Created new secret");
                         rng
-                    },
+                    }
                 };
                 let sem = Arc::new(Semaphore::new(10000000));
                 let timer = Arc::new(Mutex::new(DateTime::now()));
@@ -178,13 +178,13 @@ impl<B: BaseRequest + fmt::Debug + Clone> Server<B> {
     }
 }
 
-async fn append(dir_name: &str, content: &[u8]) {
+async fn append(dir_name: &PathBuf, content: &[u8]) {
    let mut file = fs::OpenOptions::new()
       .write(true)
       .append(true)
       .open(dir_name)
       .await
-      .expect(&format!("error with {}", dir_name));
+      .expect(&format!("error with {}", dir_name.to_str().unwrap()));
    file.write_all(content).await.unwrap();
 }
 
@@ -242,7 +242,7 @@ pub async fn handle_connection<B: BaseRequest + 'static + fmt::Debug>(mut stream
                         match route_request(dirs, req, &router.routes).await {
                             Ok(res) => {
                                 res
-                            },
+                            }
                             Err(error) => {
                                 if let Some(web_error) = error.downcast_ref::<WebError>() {
                                     if web_error.kind() == &WebErrorKind::Unauthenticated {
@@ -260,7 +260,7 @@ pub async fn handle_connection<B: BaseRequest + 'static + fmt::Debug>(mut stream
                                 }
                             }
                         }
-                    },
+                    }
                     Err(error) => {
                         if let Ok(web_error) = error.downcast::<WebError>() {
                             match web_error.kind() {
@@ -268,12 +268,12 @@ pub async fn handle_connection<B: BaseRequest + 'static + fmt::Debug>(mut stream
                                     match B::handle_no_session(Response::redirect(&url), pool, std_rng).await {
                                         Ok(r) => {
                                             r
-                                        },
+                                        }
                                         Err(_) => {
                                             router.internal_error.clone()
-                                        },
+                                        }
                                     }
-                                },
+                                }
                                 WebErrorKind::Unauthenticated => {
                                     Response::redirect(&router.login_url)
                                 }

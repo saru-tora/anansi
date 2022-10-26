@@ -1,4 +1,4 @@
-use std::{str, fs, fmt};
+use std::{str, fs, fmt, path::PathBuf};
 use std::thread::LocalKey;
 use std::collections::HashMap;
 use quote::quote;
@@ -148,16 +148,12 @@ pub async fn sql_migrate(app_migrations: &'static [LocalKey<AppMigration>], app_
 }
 
 pub async fn make_migrations(app_dir: &str, pool: &DbPool) {
-    let app_dir = if app_dir.chars().last().unwrap() == '/' {
-        app_dir.to_string()
-    } else {
-        format!("{}/", app_dir)
-    };
+    let app_dir = PathBuf::from(app_dir);
     let mut v = vec![];
-    let s: Vec<&str> = app_dir.split('/').collect();
-    let app_name = &s[s.len()-2];
-    let mfile = format!("{}records.rs", app_dir);
-    let content = fs::read_to_string(&mfile).expect(&format!("could not open {}", mfile));
+    let app_name = app_dir.file_name().unwrap().to_str().unwrap();
+    let mut mfile = app_dir.clone();
+    mfile.push("records.rs");
+    let content = fs::read_to_string(&mfile).expect(&format!("could not open {}", mfile.to_str().unwrap()));
     process_syntax(app_name, content, &mut v);
 
     let mut syntaxes = Vec::new();
@@ -184,11 +180,14 @@ pub async fn make_migrations(app_dir: &str, pool: &DbPool) {
         let row = sqlx::query("SELECT COUNT(*) as count FROM anansi_migrations WHERE app = ?").bind(app_name).fetch_one(&pool.0).await.unwrap();
         let n: u16 = row.try_get("count").unwrap();
         let mname = format!("{:04}", n+1);
-        let mdir = format!("{}migrations/", app_dir);
-        let s = format!("{}{}", mdir, mname);
+        let mut mdir = app_dir.clone();
+        mdir.push("migrations");
+        let mut s = mdir.clone();
+        s.push(&mname);
         fs::write(&s, sql).unwrap();
-        println!("Created \"{}\"", s);
-        let idir = format!("{}init.rs", mdir);
+        println!("Created \"{}\"", s.to_str().unwrap());
+        let mut idir = mdir.clone();
+        idir.push("init.rs");
         let original = fs::read_to_string(&idir).unwrap();
         if original.trim() == "use anansi::migrations::prelude::*;\n\nlocal_migrations! {}" {
             fs::write(idir, format!("use anansi::migrations::prelude::*;\n\nlocal_migrations! {{\n    \"{}\",\n}}", mname)).unwrap();
@@ -279,11 +278,11 @@ pub fn process_syntax(db: &str, content: String, v: &mut Vec<(String, String, St
                         if !alter {
                             key_table(meta, v, &prefix, &name);
                         }
-                    },
+                    }
                     _ => unimplemented!(),
                 }
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 }
@@ -304,7 +303,7 @@ fn get_type(fieldname: &String, field: &Field, meta: &mut Vec<Vec<String>>, db: 
                             }
                         }
                         s
-                    },
+                    }
                     "ManyToMany" => {
                         let mut v = Vec::new();
                         v.push(fieldname.clone());
@@ -313,7 +312,7 @@ fn get_type(fieldname: &String, field: &Field, meta: &mut Vec<Vec<String>>, db: 
                         v.push(s);
                         meta.push(v);
                         return None;
-                    },
+                    }
                     "ForeignKey" => {
                         let mut s = String::new();
                         s.push_str("BigInt::field()");
@@ -329,29 +328,29 @@ fn get_type(fieldname: &String, field: &Field, meta: &mut Vec<Vec<String>>, db: 
                         let parent_name = parent.last().unwrap().trim().to_string();
                         s.push_str(&format!(".foreign_key({}, \"{}\", \"id\")", parent_app, parent_name));
                         s
-                    },
+                    }
                     "DateTime" => {
                         format!("DateTime::field()")
-                    },
+                    }
                     "Boolean" => {
                         format!("Boolean::field()")
-                    },
+                    }
                     "VarChar" => {
                         let n: u16 = parse_type(ty).parse().unwrap();
                         format!("VarChar::<{}>::field()", n)
-                    },
+                    }
                     "Text" => {
                         format!("Text::field()")
-                    },
+                    }
                     _ => {
                         unimplemented!()
-                    },
+                    }
                 };
                 if let Some(_) = attrs.get("unique") {
                     ty.push_str(".unique()");
                 }
                 ty
-            },
+            }
             _ => unimplemented!(),
         }
     )
@@ -375,7 +374,7 @@ fn key_table(m2: Vec<Vec<String>>, v: &mut Vec<(String, String, String)>, prefix
                 sql.push_str(&format!("            (\n                \"{}\",\n                records::BigInt::field()", other));
                 sql.push_str(&format!(".foreign_key(\"{}\", \"{}\", \"id\")\n            ),\n", prefix, other));
                 v.push((prefix.to_string(), format!("{}_{}", name, other), sql));
-            },
+            }
             _ => panic!("error populating table"),
         }
     }

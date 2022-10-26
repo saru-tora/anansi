@@ -8,6 +8,7 @@ use std::result;
 use std::fmt;
 use std::pin::Pin;
 use std::future::Future;
+use std::path::PathBuf;
 
 use crate::server::Rng;
 use crate::router::Routes;
@@ -29,32 +30,36 @@ pub const LEFT_BRACE: u8 = 123;
 pub const GET: Method = Method::Get;
 pub const POST: Method = Method::Post;
 
-fn find_base(dir: &str) -> String {
-    let files = std::fs::read_dir(dir).unwrap();
+fn find_base(dir: &mut PathBuf) -> &mut PathBuf {
+    let files = std::fs::read_dir(&dir).unwrap();
     for f in files {
         let f = f.unwrap();
         if f.file_type().unwrap().is_file() && f.file_name() == "Cargo.toml" {
-            return dir.to_string();
+            return dir;
         }
     }
-    if dir != "/" {
-        return find_base(&format!("{}/..", dir));
+    if dir.pop() {
+        return dir;
     }
-    unimplemented!()
+    panic!("Could not find Cargo.toml");
 }
 
 
 thread_local!{
-    pub static BASE_DIR: String = {
-        let cwd = std::env::current_dir().unwrap().into_os_string().to_str().unwrap().to_string();
-        let base = find_base(&cwd);
-        let base = std::fs::canonicalize(base).unwrap().into_os_string().to_str().unwrap().to_string();
-        match std::fs::canonicalize(format!("{}/src", base)) {
-            Ok(_) => base,
+    pub static BASE_DIR: PathBuf = {
+        let cwd = std::env::current_dir().unwrap();
+        let mut dir = cwd.clone();
+        find_base(&mut dir);
+        let mut orig = dir.clone();
+        match std::fs::canonicalize(&dir) {
+            Ok(_) => {
+                dir
+            }
             Err(_) => {
-                let name: Vec<&str> = cwd.split('/').collect();
-                format!("{}/{}", base, name.last().unwrap())
-            },
+                let name = cwd.as_path().file_name().unwrap();
+                orig.push(name);
+                orig
+            }
         }
     }
 }
@@ -164,7 +169,7 @@ macro_rules! raw_transact {
 #[macro_export]
 macro_rules! render {
     ($name:literal) => {
-        include!(concat!("templates/.parsed/", $name, ".in"))
+        include!(concat!("templates", anansi::main_separator!(), ".parsed", anansi::main_separator!(), $name, ".in"))
     }
 }
 
@@ -178,10 +183,22 @@ macro_rules! app_statics {
 }
 
 #[macro_export]
+#[cfg(not(target_os = "windows"))]
+macro_rules! main_separator {
+    () => {r"/"}
+}
+
+#[macro_export]
+#[cfg(target_os = "windows")]
+macro_rules! main_separator {
+    () => {r"\"}
+}
+
+#[macro_export]
 macro_rules! statics {
-    ($($name:literal,)*) => {
+    ($($name:expr,)*) => {
         pub static STATICS: &[anansi::web::Static] = &[
-            $((concat!("/static/", $name), include_bytes!(concat!("static/", $name))),)*
+            $((concat!(anansi::main_separator!(), "static", anansi::main_separator!(), $name), include_bytes!(concat!("static", anansi::main_separator!(), $name))),)*
         ];
     }
 }
@@ -553,7 +570,7 @@ pub fn html_escape(s: &str) -> String {
             _ => {
                 escaped.push(c);
                 continue;
-            },
+            }
         };
         escaped.push_str(html);
     }
@@ -694,10 +711,10 @@ pub async fn route_request<B: BaseRequest + fmt::Debug + 'static>(dirs: Vec<&str
                     } else {
                         b = false;
                         break;
-                    },
+                    }
                     LEFT_BRACE => {
                         params.insert(pattern[1..].to_string(), dir[1..].to_string());
-                    },
+                    }
                     _ => return Err(invalid()),
                 }
             }
@@ -728,11 +745,11 @@ macro_rules! request_derive {
                     match pattern.as_bytes()[0] {
                         anansi::web::SLASH => {
                             s.push_str(pattern);
-                        },
+                        }
                         anansi::web::LEFT_BRACE => {
                             let d = format!("/{}", disp.next().expect("too few arguments to reverse url").to_string());
                             s.push_str(&d);
-                        },
+                        }
                         _ => panic!("could not reverse url"),
                     }
                 }

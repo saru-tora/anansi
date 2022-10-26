@@ -59,12 +59,12 @@ macro_rules! _handle {
                                 if r.is_ok() {
                                     return r;
                                 }
-                            },
+                            }
                             Err(error) => {
                                 if let Ok(fe) = error.downcast::<anansi::forms::SimpleError>() {
                                     form.add_error(fe);
                                 }
-                            },
+                            }
                         }
                         form.set_data(Some(data));
                     }
@@ -93,7 +93,7 @@ macro_rules! _handle_or_404 {
                 };
                 form.post(&$req.token()?);
                 Ok(form)
-            },
+            }
             anansi::web::POST => {
                 use anansi::forms::Form;
                 let res = <$form>::from_post(&mut $req);
@@ -119,7 +119,7 @@ macro_rules! _handle_or_404 {
                 } else {
                     res
                 }
-            },
+            }
         }
     }
 }
@@ -133,10 +133,10 @@ macro_rules! base_handle {
                     async {
                         $on_get
                     }.await
-                },
+                }
                 anansi::web::POST => {
                     $on_post
-                },
+                }
             }
         }
     }

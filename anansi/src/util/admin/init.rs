@@ -1,8 +1,8 @@
-use anansi::statics;
+use anansi::{path_literal, statics};
 
 pub const APP_NAME: &'static str = "admin";
 
 statics! {
-    "admin/style.css",
-    "admin/login.css",
+    path_literal!("admin", "style.css"),
+    path_literal!("admin", "login.css"),
 }

@@ -1,7 +1,7 @@
 use anansi::{check, render};
 use anansi::web::{View, Response, Result, BaseRequest};
 pub use anansi::admin_site::{RecordAdmin, RecordEntry, AdminSite, AdminRef, AdminEntry};
-use super::super::auth::admin::{base, Request, AuthAdminView};//, if_admin};
+use super::super::auth::admin::{base, Request, AuthAdminView};
 use super::super::auth::records::{User, Group};
 
 pub trait HasAdmin: BaseRequest {

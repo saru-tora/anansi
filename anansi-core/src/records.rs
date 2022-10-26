@@ -23,7 +23,7 @@ macro_rules! get_or_404 {
             Ok(m) => m,
             Err(_) => {
                 return Err(Box::new(anansi::web::Http404::from($req)))
-            },
+            }
         }
     }
 }

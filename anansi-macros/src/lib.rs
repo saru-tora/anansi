@@ -919,6 +919,16 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+macro_rules! main_separator {
+    () => {r"/"}
+}
+
+#[cfg(target_os = "windows")]
+macro_rules! main_separator {
+    () => {r"\"}
+}
+
 #[proc_macro_attribute]
 pub fn base_view(_args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as ItemFn);
@@ -926,8 +936,8 @@ pub fn base_view(_args: proc_macro::TokenStream, input: proc_macro::TokenStream)
     let generics = &sig.generics;
     let fname = &sig.ident;
     let fnargs = &sig.inputs;
-    let name = String::from("/.parsed/") + &sig.ident.to_string() + ".in";
-    let args_name = String::from("/.parsed/") + &sig.ident.to_string() + "_args.in";
+    let name = String::from(concat!(main_separator!(), ".parsed", main_separator!())) + &sig.ident.to_string() + ".in";
+    let args_name = format!("{}.parsed{0}", main_separator!()) + &sig.ident.to_string() + "_args.in";
     let stmts = input.block.stmts;
     let rty = match &input.sig.output {
         syn::ReturnType::Type(_, ty) => match &**ty {
@@ -959,7 +969,7 @@ pub fn view(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> pr
     let vars = args.vars;
     let vis = input.vis;
     let sig = input.sig;
-    let name = String::from("/.parsed/") + &sig.ident.to_string() + ".in";
+    let name = format!("{}.parsed{0}", main_separator!()) + &sig.ident.to_string() + ".in";
 
     let stmts = input.block.stmts;
     let q = quote! {
@@ -1273,6 +1283,24 @@ impl Parse for UrlArgs {
         }
         Ok(Self {req, first, exprs})
     }
+}
+
+#[proc_macro]
+pub fn path_literal(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as SchemaArgs);
+    let mut l = 1;
+    let mut qv = vec![];
+    for arg in &input.vars {
+        qv.push(if l >= input.vars.len() {
+            quote! {#arg}
+        } else {
+            quote! {#arg, anansi::main_separator!(),}
+        });
+        l += 1;
+    }
+    quote! {
+        concat!(#(#qv)*)
+    }.into()
 }
 
 #[proc_macro]

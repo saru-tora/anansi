@@ -41,7 +41,7 @@ pub fn decode(s: &str) -> Result<BigInt> {
             Some(o) => {
                 n += o * m;
                 Ok(())
-            },
+            }
             None => return Err(invalid()),
         })?;
         c += 1;

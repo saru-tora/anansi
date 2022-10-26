@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
-use std::fmt;//::{self, Display};
+use std::fmt;
 use anansi::db::Whose;
-use anansi::web::{BaseRequest, View, GetRecord};//, CheckModel};
-use anansi::records::{Record, FromParams};//CheckModel};//FromParams};
+use anansi::web::{BaseRequest, View, GetRecord};
+use anansi::records::{Record, FromParams};
 use anansi::forms::{Form, ToRecord, ToEdit, HasRecord};
 
 pub type AdminRef<B> = Arc<Mutex<dyn AdminSite<B>>>;

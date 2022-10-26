@@ -1,6 +1,6 @@
 [package]
 name = "anansi-core"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 authors = ["sarutora"]
 license = "MIT"
@@ -12,7 +12,7 @@ categories = ["web-programming", "asynchronous"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anansi-macros = { path = "../anansi-macros" , version = "0.4.0" }
+anansi-macros = { path = "../anansi-macros" , version = "0.4.1" }
 syn = { version = "1.0", features = [ "full", "fold" ]}
 quote = "1.0"
 sqlx = { version = "0.5", features = [ "runtime-tokio-native-tls", "sqlite" ] }

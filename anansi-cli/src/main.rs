@@ -1,6 +1,6 @@
 use std::fs::{self, read_dir};
 use std::time::SystemTime;
-use std::path::PathBuf;
+use std::path::{PathBuf, Component, MAIN_SEPARATOR};
 use std::io::Write;
 use std::str::Chars;
 use std::env;
@@ -19,11 +19,11 @@ pub fn main() {
             "run" => {
                 template(&args, false, "");
                 cargo(&args);
-            },
+            }
             "check" => {
                 template(&args, false, "");
                 cargo(&args);
-            },
+            }
             "force-check" => {
                 template(&args, true, "");
                 args[1] = "check".to_string();
@@ -32,26 +32,26 @@ pub fn main() {
             "new" => {
                 cargo(&args);
                 new(&args);
-            },
+            }
             "app" => {
                 if args.len() > 2 {
                     app(&args);
                 } else {
                     eprintln!("Expected name");
                 }
-            },
+            }
             "migrate" => {
                 cargo_run(&mut args);
-            },
+            }
             "make-view" => {
                 make_view(&mut args);
-            },
+            }
             "sql-migrate" => {
                 cargo_run(&mut args);
             }
             "make-migrations" => {
                 cargo_run(&mut args);
-            },
+            }
             "admin" => {
                 cargo_run(&mut args);
             }
@@ -61,9 +61,21 @@ pub fn main() {
     }
 }
 
+#[cfg(not(host_family = "windows"))]
+macro_rules! main_separator {
+    () => {r"/"}
+}
+
+#[cfg(host_family = "windows")]
+macro_rules! main_separator {
+    () => {r"\"}
+}
+
 macro_rules! cp {
     ($name:expr, $file:expr) => {
-        fs::write(format!("{}/{}", $name.to_owned(), $file), include_bytes!(concat!("skeleton/", $file))).expect("Error copying file");
+        let mut n = $name.clone();
+        n.push($file);
+        fs::write(&n, include_bytes!(concat!("skeleton", main_separator!(), $file))).expect(&format!("Error copying to {}", n.to_str().unwrap()));
     };
     ($name:expr, $($file:expr),*) => {
         $(cp!($name, $file);)*
@@ -72,7 +84,7 @@ macro_rules! cp {
 
 macro_rules! cp_as {
     ($name:expr, $file:expr) => {
-        fs::write($name.to_owned(), include_bytes!(concat!("skeleton/", $file))).expect("Error copying file");
+        fs::write($name.to_owned(), include_bytes!(concat!("skeleton", main_separator!(), $file))).expect("Error copying file");
     };
 }
 
@@ -85,15 +97,21 @@ fn make_view(args: &Vec<String>) {
     for arg in &args[2..] {
         let mview = format!("{}", arg);
         fs::create_dir(&mview).expect("Failed to create path");
-        let temp = format!("{}/templates", arg);
+        let mut temp = PathBuf::from(arg);
+        temp.push("templates");
         fs::create_dir(&temp).expect("Failed to create path");
-        let parsed = format!("{}/templates/.parsed", arg);
+        let parsed = format!("{}{MAIN_SEPARATOR}templates{MAIN_SEPARATOR}.parsed", arg);
         fs::create_dir(&parsed).expect("Failed to create path");
         let upper = uppercase(arg);
-        make_file(arg, "views", ".rs", format!("use crate::prelude::*;\nuse super::super::records::{{{}}};\n\n#[base_view]\nfn base<R: Request>(_req: R) -> Result<Response> {{}}\n\n#[record_view]\nimpl<R: Request> {0}View<R> {{\n    #[view(Group::is_visitor)]\n    pub async fn index(req: R) -> Result<Response> {{\n        let title = \"Title\";\n    }}\n}}", upper));
-        make_file(arg, "mod", ".rs", "pub mod views;".to_string());
-        cp_as!(format!("{}/index.rs.html", temp), "templates/index.rs.html");
-        cp_as!(format!("{}/base.rs.html", temp), "templates/base.rs.html");
+        let arg_path = PathBuf::from(arg);
+        make_file(&arg_path, "views", ".rs", format!("use crate::prelude::*;\nuse super::super::records::{{{}}};\n\n#[base_view]\nfn base<R: Request>(_req: R) -> Result<Response> {{}}\n\n#[record_view]\nimpl<R: Request> {0}View<R> {{\n    #[view(Group::is_visitor)]\n    pub async fn index(req: R) -> Result<Response> {{\n        let title = \"Title\";\n    }}\n}}", upper));
+        make_file(&arg_path, "mod", ".rs", "pub mod views;".to_string());
+        let mut t2 = temp.clone();
+        let mut t3 = temp.clone();
+        t2.push("index.rs.html");
+        t3.push("base.rs.html");
+        cp_as!(&t2, concat!("templates", main_separator!(), "index.rs.html"));
+        cp_as!(&t3, concat!("templates", main_separator!(), "base.rs.html"));
         append(".", "mod.rs", &format!("pub mod {};\n", arg).into_bytes());
         println!("Created view \"{}\"", arg);
     }
@@ -105,48 +123,63 @@ fn usage() {
 
 fn new(args: &Vec<String>) {
     let name = &args[2];
-    let src = &format!("{}/src/", args[2]);
-    cp!(args[2], "settings.toml");
+    let arg_path = PathBuf::from(&name);
+    let mut src = PathBuf::from(&name);
+    src.push("src");
+    cp!(arg_path, "settings.toml");
     cp!(src, "project.rs", "urls.rs", "main.rs");
     append(name, ".gitignore", b"/settings.toml\n/database.db*");
     append(name, "Cargo.toml", &format!("anansi = \"{}\"\nasync-trait = \"0.1.57\"", VERSION).into_bytes());
-    fs::create_dir(format!("{}/src/http_errors", name)).unwrap();
-    cp!(src, "http_errors/500.html");
-    cp!(src, "http_errors/views.rs");
-    cp!(src, "http_errors/mod.rs");
-    fs::create_dir(format!("{}/http_errors/templates", src)).unwrap();
-    cp!(src, "http_errors/templates/not_found.rs.html");
-    fs::create_dir(format!("{}/http_errors/templates/.parsed", src)).unwrap();
-    template(args, false, &format!("/{name}"));
+    fs::create_dir(format!("{}{MAIN_SEPARATOR}src{MAIN_SEPARATOR}http_errors", name)).unwrap();
+    cp!(src, concat!("http_errors", main_separator!(), "500.html"));
+    cp!(src, concat!("http_errors", main_separator!(), "views.rs"));
+    cp!(src, concat!("http_errors", main_separator!(), "mod.rs"));
+    let mut s2 = src.clone();
+    s2.push("http_errors");
+    s2.push("templates");
+    fs::create_dir(&s2).unwrap();
+    cp!(src, concat!("http_errors", main_separator!(), "templates", main_separator!(), "not_found.rs.html"));
+    s2.push(".parsed");
+    fs::create_dir(s2).unwrap();
+    template(args, false, &format!("{name}"));
 }
 
 fn append(dir_name: &str, file_name: &str, content: &[u8]) {
     let mut file = fs::OpenOptions::new()
       .write(true)
       .append(true)
-      .open(format!("{}/{}", dir_name, file_name))
-      .expect(&format!("error with {}/{}", dir_name, file_name));
+      .open(format!("{}{}{}", dir_name, MAIN_SEPARATOR, file_name))
+      .expect(&format!("error with {}{}{}", dir_name, MAIN_SEPARATOR, file_name));
    file.write_all(content).unwrap();
 }
 
 fn app(args: &Vec<String>) {
-    let name = &args[2];
-    fs::create_dir(name).expect("Failed to create app directory");
-    fs::create_dir(&format!("{}/migrations", name)).expect("Failed to create migrations directory");
-    make(name, "init", format!("pub const APP_NAME: &'static str = \"{}\";", name));
-    make(name, "mod", "pub mod init;\npub mod urls;\npub mod records;\npub mod migrations;\n".to_string());
-    make(name, "urls", "use anansi::web::prelude::*;\n\nroutes! {}".to_string());
-    make(name, "migrations/mod", "pub mod init;".to_string());
-    make(name, "migrations/init", "use anansi::migrations::prelude::*;\n\nlocal_migrations! {}".to_string());
+    let name = PathBuf::from(&args[2]);
+    fs::create_dir(&name).expect("Failed to create app directory");
+    let mut migrations = name.clone();
+    migrations.push("migrations");
+    fs::create_dir(migrations).expect("Failed to create migrations directory");
+    make(&name, "init", format!("pub const APP_NAME: &'static str = \"{}\";", args[2]));
+    make(&name, "mod", "pub mod init;\npub mod urls;\npub mod records;\npub mod migrations;\n".to_string());
+    make(&name, "urls", "use anansi::web::prelude::*;\n\nroutes! {}".to_string());
+    let mut m = format!("{}{}migrations{1}", args[2], main_separator!());
+    let mut init = m.clone();
+    m.push_str("mod");
+    init.push_str("init");
+    make(&name, &m, "pub mod init;".to_string());
+    make(&name, &init, "use anansi::migrations::prelude::*;\n\nlocal_migrations! {}".to_string());
     cp!(name, "records.rs");
-    println!("Created app \"{name}\"");
+    println!("Created app \"{}\"", args[2]);
 }
 
-fn make_file(dir: &str, name: &str, ext: &str, content: String) {
-    fs::write(format!("{}/{}{}", dir, name, ext), content).unwrap();
+fn make_file(dir: &PathBuf, name: &str, ext: &str, content: String) {
+    let mut f = dir.clone();
+    f.push(name);
+    f.push(ext);
+    fs::write(&f, content).expect(&format!("Could not create {}", f.to_str().expect("Could not convert file to string")));
 }
 
-fn make(dir: &str, name: &str, content: String) {
+fn make(dir: &PathBuf, name: &str, content: String) {
     make_file(dir, name, ".rs", content);
 }
 
@@ -156,59 +189,65 @@ fn template(args: &Vec<String>, mut force: bool, extra: &str) {
         Err(_) => which(&args[0]).unwrap(),
     };
     let date = fs::metadata(path).unwrap().modified().unwrap();
-    let cwd = env::current_dir().unwrap();
-    let cs = cwd.clone().into_os_string().into_string().unwrap() + extra;
-    let dir = match cs.rfind("/src") {
-        Some(index) => {
-            let s = std::str::from_utf8(&cs.as_bytes()[..index]).unwrap().to_string() + "/src";
-            PathBuf::from(s)
-        },
-        None => PathBuf::from(cs),
-    };
+    let mut cwd = env::current_dir().unwrap();
+    cwd.push(extra);
+    let cs = cwd.clone();
+    let mut dir = &cs;
+    for component in cs.components().rev() {
+        if let Component::Normal(c) = component {
+            if c == "src" {
+                dir = &cwd;
+                break;
+            }
+        }
+        cwd.pop();
+    }
     search(&date, dir, &mut force);
 }
 
-fn search(date: &SystemTime, current: PathBuf, force: &mut bool) {
+fn search(date: &SystemTime, current: &PathBuf, force: &mut bool) {
     let dirs = read_dir(current).unwrap();
     for f in dirs {
         let f = f.unwrap();
         if f.file_type().unwrap().is_dir() {
             if f.file_name() == "templates" {
-                let parent = f.path().into_os_string().into_string().unwrap();
+                let parent = f.path();
                 let dirs = read_dir(f.path()).unwrap();
                 for f in dirs {
                     let f = f.unwrap();
-                    let name = f.path().into_os_string().into_string().unwrap();
+                    let name = f.path();
                     if name.ends_with(".rs.html") {
-                        let b = check_template(f, &parent, name, *date, *force);
+                        let b = check_template(f, &parent, &name, *date, *force);
                         if b {
                             *force = true;
                         }
                     } else if f.file_type().unwrap().is_dir() {
-                        let parent = f.path().into_os_string().into_string().unwrap();
+                        let parent = f.path();
                         let dirs = read_dir(f.path()).unwrap();
                         for f in dirs {
                             let f = f.unwrap();
-                            let name = f.path().into_os_string().into_string().unwrap();
+                            let name = f.path();
                             if name.ends_with(".rs.html") {
-                                check_template(f, &parent, name, *date, *force);
+                                check_template(f, &parent, &name, *date, *force);
                             }
                         }
                     }
                 }
             } else {
-                search(date, f.path(), force);
+                search(date, &f.path(), force);
             }
         }
     }
 }
 
-fn check_template(f: std::fs::DirEntry, parent: &String, name: String, date: std::time::SystemTime, force: bool) -> bool {
+fn check_template(f: std::fs::DirEntry, parent: &PathBuf, name: &PathBuf, date: std::time::SystemTime, force: bool) -> bool {
     let template = f.metadata().unwrap().modified().unwrap();
     let n = f.file_name().into_string().unwrap();
     let (n, _) = n.split_once('.').unwrap();
-    let p = format!("{}/.parsed/{}.in", parent, n);
-    let prs = format!("{}/.parsed", parent);
+    let mut prs = parent.clone();
+    prs.push(".parsed");
+    let mut p = prs.clone();
+    p.push(format!("{}.in", n));
     let mut parser = Parser::new();
     if std::path::Path::new(&prs).exists() {
         let parsed = fs::metadata(p);
@@ -222,7 +261,7 @@ fn check_template(f: std::fs::DirEntry, parent: &String, name: String, date: std
             }
         }
     } else {
-        eprintln!("{} was not parsed", name);
+        eprintln!("{} was not parsed", name.clone().into_os_string().into_string().unwrap());
     }
     false
 }
@@ -249,11 +288,12 @@ impl Parser {
     fn new() -> Self {
         Self {blocks: vec![]}
     }
-    fn parse(&mut self, name: &str) {
+    fn parse(&mut self, name: &PathBuf) {
         let content = fs::read_to_string(name).unwrap();
         let mut chrs = content.chars();
         let e = collect(&mut chrs, ' ');
-        let (dir, temp) = name.rsplit_once('/').unwrap();
+        let mut dir: Vec<Component> = name.components().collect();
+        let temp = dir.pop().unwrap();
         let mut base = false;
         let view = if e == "@extend" {
             self.extend(&mut chrs)
@@ -266,7 +306,16 @@ impl Parser {
             view.push_str("Ok(anansi::web::Response::new(\"HTTP/1.1 200 OK\", _c.into_bytes()))}");
             view
         };
-        let out = &temp[..temp.find('.').unwrap()];
+        let out = if let Component::Normal(temp) = temp {
+            let temp = temp.to_str().unwrap();
+            temp[..temp.find('.').unwrap()].to_string()
+        } else {
+            panic!("Could not get output file name");
+        };
+
+        let mut n2 = name.clone();
+        n2.pop();
+        n2.push(".parsed");
 
         if !self.blocks.is_empty() || base {
             let mut s = "pub struct Args {".to_string();
@@ -274,11 +323,14 @@ impl Parser {
                 s.push_str(&format!("pub _{}: String,", block));
             }
             s.push_str("}");
-            let mut f = fs::File::create(format!("{}/.parsed/{}_args.in", dir, out)).unwrap();
+            let mut n3 = n2.clone();
+            n3.push(format!("{}_args.in", out));
+            let mut f = fs::File::create(n3).unwrap();
             write!(f, "{}", s).unwrap();
         }
 
-        let mut f = fs::File::create(format!("{}/.parsed/{}.in", dir, out)).unwrap();
+        n2.push(format!("{}.in", out));
+        let mut f = fs::File::create(n2).unwrap();
         write!(f, "{}", view).unwrap();
     }
     fn process(&mut self, content: String) -> String {
@@ -294,10 +346,10 @@ impl Parser {
                 }
                 '@' => {
                     self.at(&mut view, &mut chars);
-                },
+                }
                 _ => {
                     view.push(c);
-                },
+                }
             }
         }
         view.push_str("\");");
@@ -360,14 +412,14 @@ fn collect_paren(chars: &mut Chars) -> String {
                         break;
                     }
                     n -= 1;
-                },
+                }
                 '(' => {
                     n += 1;
-                },
+                }
                 '"' => {
                     quote = true;
                 }
-                _ => {},
+                _ => {}
             }
         } else {
             match c {
@@ -377,11 +429,11 @@ fn collect_paren(chars: &mut Chars) -> String {
                     } else {
                         break;
                     }
-                },
+                }
                 '"' => {
                     quote = false;
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
     }
@@ -402,13 +454,13 @@ fn collect_name(chars: &mut Chars) -> (String, char) {
     loop {
         if let Some(c) = chars.next() {
             match c {
-                ' ' => {},
-                '<' => {},
-                '\n' => {},
+                ' ' => {}
+                '<' => {}
+                '\n' => {}
                 _ => {
                     name.push(c);
                     continue;
-                },
+                }
             }
             break (name, c);
         }
@@ -434,7 +486,7 @@ fn get_block(chars: &mut Chars, block: &mut String) {
                             return;
                         }
                         n -= 1;
-                    },
+                    }
                     '"' => quote = true,
                     '\n' => {
                         if let Some(d) = chars.next() {
@@ -450,7 +502,7 @@ fn get_block(chars: &mut Chars, block: &mut String) {
                             continue;
                         }
                     }
-                    _ => {},
+                    _ => {}
                 }
             } else {
                 if c == '"' {
@@ -502,10 +554,10 @@ impl Parser {
         let keyword = s.clone();
         let mut find_brace = true;
         match s.as_str() {
-            "if" => {},
-            "for" => {},
-            "loop" => {},
-            "while" => {},
+            "if" => {}
+            "for" => {}
+            "loop" => {}
+            "while" => {}
             "block" => {
                 let (name, ex) = collect_name(chars);
                 self.blocks.push(name.clone());
@@ -518,12 +570,12 @@ impl Parser {
                 if ex == '{' {
                     find_brace = false;
                 }
-            },
+            }
             "unescape" => {
                 let (name, ex) = collect_name(chars);
                 view.push_str(&format!("_c.push_str(&format!(\"{{}}\", {}));_c.push_str(\"{}", name, ex));
                 return;
-            },
+            }
             "link" => {
                 s.clear();
                 let line = collect(chars, '{');
@@ -545,12 +597,12 @@ impl Parser {
                 let blk = collect(chars, '}');
                 view.push_str(&self.process(blk));
                 return view.push_str("_c.push_str(\"</a>");
-            },
+            }
             "url!" => {
                 s = "anansi::url!".to_string();
                 variable(&extra, &mut s, chars, view);
                 return;
-            },
+            }
             _ => {
                 let mut c = s.chars();
                 if c.next().unwrap() == '{' {
@@ -564,7 +616,7 @@ impl Parser {
                     variable(&extra, &mut s, chars, view);
                 }
                 return;
-            },
+            }
         }
         s.push_str(&extra);
         if find_brace {
@@ -597,10 +649,10 @@ impl Parser {
                 }
                 '@' => {
                     self.at(view, chars);
-                },
+                }
                 _ => {
                     view.push(c);
-                },
+                }
             }
         }
         view.push_str("_c.push_str(\"");
