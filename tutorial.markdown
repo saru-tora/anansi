@@ -29,6 +29,16 @@ This will create the following a crate called `mini-forum` with the following fi
 - **project.rs**: Details project settings.
 - **urls.rs**: Manages the routing.
 
+The default database is Sqlite. If you want to use Postgresql, in `Cargo.toml`, change `features = ["sqlite"]` to `features = ["postgres"]`. In `project.rs`, change `database!(sqlite)` to `database!(postgres)`. Finally, in `settings.toml`, change `[databases.default]` to:
+
+```toml
+engine = "postgresql"
+name = "mydatabase"
+user = "myuser"
+password = "mypassword"
+address = "127.0.0.1:5432"
+```
+
 <br>
 
 Starting the server
@@ -128,41 +138,40 @@ If you want to view the SQL for this migration, you can run:
 $ ananc sql-migrate forum 0001
 ```
 
-You should see something like:
+If you chose to use Postgresql, you should see something like:
 
 ```sql
-BEGIN;
-
 CREATE TABLE "forum_topic" (
 	"id" bigint NOT NULL PRIMARY KEY,
-	"user" bigint NOT NULL,
 	"title" varchar(200) NOT NULL,
+	"user" bigint NOT NULL
+		REFERENCES "auth_user" ("id")
+		ON DELETE CASCADE
+		DEFERRABLE INITIALLY DEFERRED,
 	"content" varchar(40000) NOT NULL,
-	"date" datetime NOT NULL,
-	FOREIGN KEY ("user")
-	REFERENCES "auth_user" ("id")
-	ON DELETE CASCADE
+	"date" timestamp NOT NULL
 );
+CREATE INDEX "forum_topic_user_index" ON "forum_topic" ("user");
 
 --snip--
 
 CREATE TABLE "forum_comment" (
 	"id" bigint NOT NULL PRIMARY KEY,
-	"topic" bigint NOT NULL,
-	"user" bigint NOT NULL,
+	"topic" bigint NOT NULL
+		REFERENCES "forum_topic" ("id")
+		ON DELETE CASCADE
+		DEFERRABLE INITIALLY DEFERRED,
+	"user" bigint NOT NULL
+		REFERENCES "auth_user" ("id")
+		ON DELETE CASCADE
+		DEFERRABLE INITIALLY DEFERRED,
 	"content" varchar(40000) NOT NULL,
-	"date" datetime NOT NULL,
-	FOREIGN KEY ("topic")
-	REFERENCES "forum_topic" ("id")
-	ON DELETE CASCADE,
-	FOREIGN KEY ("user")
-	REFERENCES "auth_user" ("id")
-	ON DELETE CASCADE
+	"date" timestamp NOT NULL
 );
+CREATE INDEX "forum_comment_topic_index" ON "forum_comment" ("topic");
+CREATE INDEX "forum_comment_user_index" ON "forum_comment" ("user");
 
 --snip--
-
-COMMIT;
 ```
 
 To apply the migrations, run:
@@ -624,8 +633,7 @@ init_admin! {
     register!(Topic),
 }
 
-record_admin! {
-    record: Topic,
+record_admin! {Topic,
     // You can specify which fields (if any) should be searchable
     search_fields: [title, content, date],
 }
