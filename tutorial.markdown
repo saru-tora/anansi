@@ -87,10 +87,10 @@ apps! {
 
 <br>
 
-Generating records
+Setting up records
 ------------------
 
-To generate records, edit `forum/records.rs`:
+To set up records, edit `forum/records.rs`:
 
 ```rust
 use anansi::records::{VarChar, DateTime, ForeignKey};
@@ -117,7 +117,7 @@ pub struct Comment {
 }
 ```
 
-`#[record]` adds an `id` field by default, and functions that reference the record's fields (like `topic::date`), which can be used with methods like `order_by` to query the database.
+`#[record]` adds an `id` field by default, and functions that reference the record's fields (like `topic::date`), which can be used with methods like `order_by` to query the database. `Relate` handles access control between records, and `FromParams` will allow you to get a record from a request's parameters.
 
 Both records have `ForeignKey` fields, which means that it has many-to-one relationships with `Topic` and `User`. For `user`, the app name (auth) is specified since it is from another app. Not including the app name will result in an error later on.
 
