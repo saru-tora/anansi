@@ -29,7 +29,7 @@ This will create a crate called `mini-forum` with the following files:
 - **project.rs**: Details project settings.
 - **urls.rs**: Manages the routing.
 
-The default database is Sqlite. If you want to use Postgresql, in `Cargo.toml`, change `features = ["sqlite"]` to `features = ["postgres"]`. In `project.rs`, change `database!(sqlite)` to `database!(postgres)`. Finally, in `settings.toml`, change `[databases.default]` to:
+The default database is Sqlite. If you want to use PostgreSQL, in `Cargo.toml`, change `features = ["sqlite"]` to `features = ["postgres"]`. In `project.rs`, change `database!(sqlite)` to `database!(postgres)`. Finally, in `settings.toml`, change `[databases.default]` to:
 
 ```toml
 engine = "postgresql"
@@ -138,7 +138,7 @@ If you want to view the SQL for this migration, you can run:
 $ ananc sql-migrate forum 0001
 ```
 
-If you chose to use Postgresql, you should see something like:
+The output will depend on which database you chose. For PostgreSQL, you should see something like:
 
 ```sql
 CREATE TABLE "forum_topic" (
