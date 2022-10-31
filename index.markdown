@@ -59,9 +59,9 @@ Mapping requests to views is simple.
 
 ```rust
 routes! {
-    path("", TopicView::index),
-    path("new", TopicView::new),
-    path("{topic_id}", TopicView::show),
+    path!("", TopicView::index),
+    path!("new", TopicView::new),
+    path!("{topic_id}", TopicView::show),
 }
 ```
 
@@ -70,10 +70,10 @@ routes! {
 impl<R: Request> TopicView<R> {
     // A view of the last 25 topics.
     #[view(Group::is_visitor)]
-    pub async fn index(req: R) -> Result<Response> {
+    pub async fn index(req: &mut R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
-    	    .limit(25).query(&req).await?;
+    	    .limit(25).query(req).await?;
     }
 }
 ```

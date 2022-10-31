@@ -29,6 +29,16 @@ This will create the following a crate called `mini-forum` with the following fi
 - **project.rs**: Details project settings.
 - **urls.rs**: Manages the routing.
 
+The default database is Sqlite. If you want to use Postgresql, in `Cargo.toml`, change `features = ["sqlite"]` to `features = ["postgres"]`. In `project.rs`, change `database!(sqlite)` to `database!(postgres)`. Finally, in `settings.toml`, change `[databases.default]` to:
+
+```toml
+engine = "postgresql"
+name = "mydatabase"
+user = "myuser"
+password = "mypassword"
+address = "127.0.0.1:5432"
+```
+
 <br>
 
 Starting the server
@@ -77,10 +87,10 @@ apps! {
 
 <br>
 
-Generating records
+Setting up records
 ------------------
 
-To generate records, edit `forum/records.rs`:
+To set up records, edit `forum/records.rs`:
 
 ```rust
 use anansi::records::{VarChar, DateTime, ForeignKey};
@@ -107,7 +117,7 @@ pub struct Comment {
 }
 ```
 
-`#[record]` adds an `id` field by default, and functions that reference the record's fields (like `topic::date`), which can be used with methods like `order_by` to query the database.
+`#[record]` adds an `id` field by default, and functions that reference the record's fields (like `topic::date`), which can be used with methods like `order_by` to query the database. `Relate` handles access control between records, and `FromParams` will allow you to get a record from a request's parameters.
 
 Both records have `ForeignKey` fields, which means that it has many-to-one relationships with `Topic` and `User`. For `user`, the app name (auth) is specified since it is from another app. Not including the app name will result in an error later on.
 
@@ -128,41 +138,40 @@ If you want to view the SQL for this migration, you can run:
 $ ananc sql-migrate forum 0001
 ```
 
-You should see something like:
+If you chose to use Postgresql, you should see something like:
 
 ```sql
-BEGIN;
-
 CREATE TABLE "forum_topic" (
 	"id" bigint NOT NULL PRIMARY KEY,
-	"user" bigint NOT NULL,
 	"title" varchar(200) NOT NULL,
+	"user" bigint NOT NULL
+		REFERENCES "auth_user" ("id")
+		ON DELETE CASCADE
+		DEFERRABLE INITIALLY DEFERRED,
 	"content" varchar(40000) NOT NULL,
-	"date" datetime NOT NULL,
-	FOREIGN KEY ("user")
-	REFERENCES "auth_user" ("id")
-	ON DELETE CASCADE
+	"date" timestamp NOT NULL
 );
+CREATE INDEX "forum_topic_user_index" ON "forum_topic" ("user");
 
 --snip--
 
 CREATE TABLE "forum_comment" (
 	"id" bigint NOT NULL PRIMARY KEY,
-	"topic" bigint NOT NULL,
-	"user" bigint NOT NULL,
+	"topic" bigint NOT NULL
+		REFERENCES "forum_topic" ("id")
+		ON DELETE CASCADE
+		DEFERRABLE INITIALLY DEFERRED,
+	"user" bigint NOT NULL
+		REFERENCES "auth_user" ("id")
+		ON DELETE CASCADE
+		DEFERRABLE INITIALLY DEFERRED,
 	"content" varchar(40000) NOT NULL,
-	"date" datetime NOT NULL,
-	FOREIGN KEY ("topic")
-	REFERENCES "forum_topic" ("id")
-	ON DELETE CASCADE,
-	FOREIGN KEY ("user")
-	REFERENCES "auth_user" ("id")
-	ON DELETE CASCADE
+	"date" timestamp NOT NULL
 );
+CREATE INDEX "forum_comment_topic_index" ON "forum_comment" ("topic");
+CREATE INDEX "forum_comment_user_index" ON "forum_comment" ("user");
 
 --snip--
-
-COMMIT;
 ```
 
 To apply the migrations, run:
@@ -190,10 +199,10 @@ use super::super::records::{Topic, topic::date};
 #[record_view]
 impl<R: Request> TopicView<R> {
     #[view(Group::is_visitor)]
-    pub async fn index(req: R) -> Result<Response> {
+    pub async fn index(req: &mut R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
-            .limit(25).query(&req).await?;
+            .limit(25).query(req).await?;
     }
 }
 ```
@@ -225,7 +234,7 @@ To add this view to the routes, change `urls.rs` to the following:
 use crate::forum::{self, topic::views::TopicView};
 
 routes! {
-    path("/", TopicView::index),
+    path!("/", TopicView::index),
     import!("/topic", forum),
 }
 ```
@@ -322,7 +331,7 @@ use super::topic::views::TopicView;
 
 routes! {
     // e.g. /topic/ixNr1-tGUe9
-    path("{topic_id}", TopicView::show),
+    path!("{topic_id}", TopicView::show),
 }
 ```
 
@@ -338,12 +347,12 @@ use anansi::humanize::ago;
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(Group::is_visitor)]
-    pub async fn show(req: R) -> Result<Response> {
+    pub async fn show(req: &mut R) -> Result<Response> {
         let topic = get_or_404!(Topic, req);
         let title = &topic.title;
-        let poster = topic.user.get(&req).await?.username;
-        let comments = topic.recent_comments().limit(25).query(&req).await?;
-        let users = comments.parents(&req, |c| &c.user).await?;
+        let poster = topic.user.get(req).await?.username;
+        let comments = topic.recent_comments().limit(25).query(req).await?;
+        let users = comments.parents(req, |c| &c.user).await?;
     }
 }
 ```
@@ -403,12 +412,12 @@ use anansi::util::auth::forms::UserLogin;
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(Group::is_visitor)]
-    pub async fn login(mut req: R) -> Result<Response> {
+    pub async fn login(req: &mut R) -> Result<Response> {
         let title = "Log in";
         let button = "Log in";
         let form = handle!(UserLogin, ToRecord<R>, req, user, {
             req.auth(&user).await?;
-    	    req.session().set_and_redirect(&req, Self::index)
+    	    req.session().set_and_redirect(req, Self::index)
         })?;
     }
 }
@@ -453,9 +462,9 @@ To include everything, update `urls.rs`:
 
 ```rust
 routes! {
-    path("/", TopicView::index),
+    path!("/", TopicView::index),
     import!("/topic", forum),
-    path("/login", TopicView::login),
+    path!("/login", TopicView::login),
 }
 ```
 
@@ -509,7 +518,7 @@ use crate::forum::forms::TopicForm;
 impl<R: Request> TopicView<R> {
     // --snip--
     #[check(Group::is_auth)]
-    pub async fn new(mut req: R) -> Result<Response> {
+    pub async fn new(req: &mut R) -> Result<Response> {
         let title = "New Topic";
         let button = "Create";
         let form = handle!(TopicForm, ToRecord<R>, req, |topic| {
@@ -520,7 +529,7 @@ impl<R: Request> TopicView<R> {
 }
 ```
 
-`Group::is_auth` will redirect the visitor if they aren't authenticated. This time, for `handle`, a closure is passed this time since redirection isn't async. For the template `forum/topic/templates/new.rs.html`, in this simple case, you can just reuse `login.rs.html` by using the `check` and `render` macros, though for an actual site, you'd probably write a custom template. You can also have a link to the page added in `index.rs.html` if the user is authenticated:
+`Group::is_auth` will redirect the visitor if they aren't authenticated. This time, for `handle`, a closure is passed this time since redirection isn't async. For the template, in this simple case, you can just reuse `login.rs.html` by using the `check` and `render` macros, though for an actual site, you'd probably write a custom one. You can also have a link to the page added in `index.rs.html` if the user is authenticated:
 
 ```html
 @block content {
@@ -540,8 +549,8 @@ To bring it all together, update `forum/urls.rs`:
 
 ```rust
 routes! {
-    path("new", TopicView::new),
-    path("{topic_id}", TopicView::show),
+    path!("new", TopicView::new),
+    path!("{topic_id}", TopicView::show),
 }
 ```
 
@@ -573,7 +582,7 @@ use anansi::forms::ToEdit;
 impl<R: Request> TopicView<R> {
     // --snip--
     #[check(Topic::owner)]
-    pub async fn edit(mut req: R) -> Result<Response> {
+    pub async fn edit(req: &mut R) -> Result<Response> {
         let title = "Update Topic";
         let button = "Update";
         let form = handle_or_404!(TopicForm, ToEdit<R>, req, |topic| {
@@ -584,7 +593,7 @@ impl<R: Request> TopicView<R> {
 }
 ```
 
-`Topic::owner` checks if the user owns the topic. `handle_or_404!` is like `handle!`, but returns a 404 error if the record can't be found. Like before, for `edit.rs.html`, you can just reuse `login.rs.html`. You can also have the link for it added in `show.rs.html` if the topic is the user's:
+`Topic::owner` checks if the user owns the topic. `handle_or_404!` is like `handle!`, but returns a 404 error if the record can't be found. Like before, for the template, you can just reuse `login.rs.html`. You can also have the link for it added in `show.rs.html` if the topic is the user's:
 
 ```html
 @block content {
@@ -605,9 +614,9 @@ As always, update `forum/urls.rs`:
 
 ```rust
 routes! {
-    path("new", TopicView::new),
-    path("{topic_id}", TopicView::show),
-    path("{topic_id}/edit", TopicView::edit),
+    path!("new", TopicView::new),
+    path!("{topic_id}", TopicView::show),
+    path!("{topic_id}/edit", TopicView::edit),
 }
 ```
 
@@ -624,8 +633,7 @@ init_admin! {
     register!(Topic),
 }
 
-record_admin! {
-    record: Topic,
+record_admin! {Topic,
     // You can specify which fields (if any) should be searchable
     search_fields: [title, content, date],
 }
@@ -662,11 +670,11 @@ To delete topics edit `forum/topic/views.rs`:
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(Topic::owner)]
-    pub async fn destroy(mut req: R) -> Result<Response> {
+    pub async fn destroy(req: &mut R) -> Result<Response> {
         let title = "Delete topic";
         let topic = get_or_404!(Topic, req);
         let form = handle!(req, R, {
-            topic.delete(&req).await?;
+            topic.delete(req).await?;
             Ok(redirect!(req, Self::index))
         })?;
     }
@@ -711,10 +719,10 @@ And finally, update `forum/urls.rs`:
 
 ```rust
 routes! {
-    path("new", TopicView::new),
-    path("{topic_id}", TopicView::show),
-    path("{topic_id}/edit", TopicView::edit),
-    path("{topic_id}/destroy", TopicView::destroy),
+    path!("new", TopicView::new),
+    path!("{topic_id}", TopicView::show),
+    path!("{topic_id}/edit", TopicView::edit),
+    path!("{topic_id}/destroy", TopicView::destroy),
 }
 ```
 
