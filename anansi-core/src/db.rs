@@ -1,102 +1,65 @@
-use std::{str, thread, path::PathBuf};
+use std::str;
 use std::io::{self, Read, ErrorKind};
 use std::marker::PhantomData;
 use std::borrow::Cow;
 use std::future::Future;
-use tokio::process::Command;
 
-use sqlx::{Decode, Type};
+use sqlx::{Database, Type};
 
+use async_trait::async_trait;
+
+use crate::server::Settings;
 use crate::records::{Record, DataType, BigInt, Objects, ToSql};
-use crate::web::{Result, BaseRequest, BASE_DIR};
+use crate::web::{Result, BaseRequest};
 
-pub type Db = sqlx::Sqlite;
-pub type DbTypeInfo = sqlx::sqlite::SqliteTypeInfo;
-type RawRow = sqlx::sqlite::SqliteRow;
-
-pub struct DbRow {
-    row: sqlx::sqlite::SqliteRow,
+#[macro_export]
+macro_rules! database {
+    (sqlite) => {
+        type Pool = anansi::sql::sqlite::SqliteDbPool;
+    };
+    (postgres) => {
+        type Pool = anansi::sql::postgres::PgDbPool;
+    };
 }
 
-impl DbRow {
-    pub fn try_get<'r, T>(&'r self, index: &str) -> Result<T>
-        where T: Decode<'r, Db> + Type<Db>
-    {
-        use sqlx::Row;
-        self.row.try_get(index).or(Err(invalid()))
-    }
+pub trait Db {
+    type SqlDb: sqlx::Database;
+    fn db_type_info<T: Type<Self::SqlDb>>() -> <<Self as Db>::SqlDb as Database>::TypeInfo;
 }
 
-pub struct DbRowVec {
-    rows: Vec<sqlx::sqlite::SqliteRow>,
+pub trait DbRow {
+    type SqlDb: sqlx::Database;
+    type RawRow;
+    fn new(row: Self::RawRow) -> Self;
+    fn try_bool(&self, index: &str) -> Result<bool>;
+    fn try_i64(&self, index: &str) -> Result<i64>;
+    fn try_count(&self) -> Result<i64>;
+    fn try_option_string(&self, index: &str) -> Result<Option<String>>;
+    fn try_string(&self, index: &str) -> Result<String>;
+    fn try_date_time(&self, index: &str) -> Result<String>;
 }
 
-impl IntoIterator for DbRowVec {
-    type Item = DbRow;
-    type IntoIter = DbRowIntoIter;
-    
-    fn into_iter(self) -> Self::IntoIter {
-        DbRowIntoIter {
-            row_into_iter: self.rows.into_iter(),
-        }
-    }
+pub trait DbRowVec: IntoIterator<Item = Self::Row> {
+    type Row: DbRow;
+    type Rows;
+    fn from(rows: Self::Rows) -> Self;
 }
 
-pub struct DbRowIntoIter {
-    row_into_iter: std::vec::IntoIter<RawRow>,
+#[async_trait]
+pub trait DbPool: Clone + Send + Sync + DbType {
+    type SqlRow: DbRow;
+    type SqlRowVec: DbRowVec;
+    async fn new(settings: &Settings) -> Result<Self> where Self: Sized;
+    async fn transact<F: Future<Output = Result<O>> + Send, O: Send>(&self, future: F) -> F::Output;
+    async fn query(&self, val: &str) -> Result<Self::SqlRowVec>;
+    async fn raw_fetch_one(&self, val: &str) -> Result<Self::SqlRow>;
+    async fn raw_fetch_all(&self, val: &str) -> Result<Self::SqlRowVec>;
+    async fn raw_execute(&self, val: &str) -> Result<()>;
+    fn now() -> &'static str;
 }
 
-impl<'a> Iterator for DbRowIntoIter {
-    type Item = DbRow;
-    fn next(&mut self) -> Option<DbRow> {
-        match self.row_into_iter.next() {
-            Some(row) => Some(DbRow {row}),
-            None => None,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct DbPool(pub(in crate) sqlx::Pool<Db>);
-
-impl DbPool {
-    pub async fn new() -> Result<Self> {
-        let mut dir = PathBuf::new();
-        BASE_DIR.with(|base| dir = base.clone());
-        dir.push("database.db");
-        let ds = dir.to_str().unwrap();
-        match Self::connect(ds).await {
-            Ok(p) => Ok(Self {0: p}),
-            Err(e) => {
-                Self::init_db(ds).await;
-                Err(e)
-            }
-        }
-    }
-    async fn connect(dir: &str) -> Result<sqlx::Pool<Db>> {
-        sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(thread::available_parallelism().unwrap().get() as u32)
-            .connect(&dir).await.or(Err(invalid()))
-    }
-    async fn init_db(dir: &str) {
-        let mut cmd = Command::new("sqlite3");
-        cmd.arg(dir);
-        cmd.arg("CREATE TABLE \"anansi_records\"(\n\t\"name\" text NOT NULL,\n\t\"schema\" text NOT NULL\n);\nCREATE TABLE anansi_migrations(\n\t\"id\" INT PRIMARY KEY,\n\t\"app\" TEXT NOT NULL,\n\t\"name\" TEXT NOT NULL,\n\t\"applied\" DATETIME NOT NULL\n);\n");
-        let mut child = cmd.spawn().expect("Failed to start cargo");
-        child.wait().await.expect("failed to wait on child");
-        println!("Initialized database");
-    }
-    pub async fn transact<F: Future<Output = Result<O>>, O>(&self, future: F) -> F::Output {
-        let tran = self.0.begin().await?;
-        let res = future.await;
-        if res.is_ok() {
-            tran.commit().await?;
-        }
-        res
-    }
-    pub async fn query(&self, val: &str) -> Result<DbRowVec> {
-        Ok(DbRowVec {rows: sqlx::query(val).fetch_all(&self.0).await?})
-    }
+pub trait DbType {
+    fn db_type(ty: &str) -> String;
 }
 
 const NEWLINE: u8 = 10;
@@ -275,7 +238,7 @@ impl<B: Record> Builder<B> {
         Self {start, join: String::new(), val: String::new(), m: PhantomData}
     }
     pub fn count(database: &str) -> Self {
-        let start = format!("SELECT COUNT(*) as count FROM {}", database);
+        let start = format!("SELECT COUNT(*) FROM {}", database);
         Self::from(start)
     }
     pub fn select(columns: &[&str], database: &str) -> Self {
@@ -289,10 +252,10 @@ impl<B: Record> Builder<B> {
         Self::from(start)
     }
     pub fn insert_into(database: &str, columns: &[&str])  -> Self {
-        let mut start = format!("INSERT INTO {} ({}", database, columns[0]);
+        let mut start = format!("INSERT INTO {} (\"{}\"", database, columns[0]);
         if columns.len() > 1 {
             for column in &columns[1..] {
-                start.push_str(&format!(", {}", column));
+                start.push_str(&format!(", \"{}\"", column));
             }
         }
         start.push_str(") VALUES (");
@@ -407,10 +370,10 @@ impl<M: Record> WhoseCount<M>  {
     pub fn and(self, arg: WhoseArg<M>) -> Self {
         Self{stmt: self.stmt.and(arg.b)}
     }
-    pub async fn raw_get(self, pool: &DbPool) -> Result<u32> {
+    pub async fn raw_get<D: DbPool>(self, pool: &D) -> Result<i64> {
         self.stmt.raw_get_count(pool).await
     }
-    pub async fn get<B: BaseRequest>(self, req: &B) -> Result<u32> {
+    pub async fn get<B: BaseRequest>(self, req: &B) -> Result<i64> {
         self.stmt.get_count(req).await
     }
     pub fn limit(self, n: u32) -> LimitCount<M> {
@@ -433,10 +396,7 @@ impl<M: Record> DeleteWhose<M>  {
         let mut val = self.stmt.val.val();
         val.push_str(";\n");
        
-        match sqlx::query(&val).execute(&req.raw().pool().0).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(Box::new(e)),
-        }
+        req.raw().pool().raw_execute(&val).await
     }
 }
 
@@ -457,7 +417,7 @@ impl<M: Record> Whose<M>  {
     pub fn or(self, arg: WhoseArg<M>) -> Self {
         Self{stmt: self.stmt.or(arg.b)}
     }
-    pub async fn raw_get(self, pool: &DbPool) -> Result<M> {
+    pub async fn raw_get<D: DbPool>(self, pool: &D) -> Result<M> {
         self.stmt.raw_get(pool).await
     }
     pub async fn get<B: BaseRequest>(self, req: &B) -> Result<M> {
@@ -508,7 +468,7 @@ impl<M: Record> GroupByCount<M> {
     pub fn order_by(self, arg: OrderByArg<M>) -> OrderByCount<M> {
         self.stmt.order_by_count(arg)
     }
-    pub async fn get<B: BaseRequest>(self, req: &B) -> Result<u32> {
+    pub async fn get<B: BaseRequest>(self, req: &B) -> Result<i64> {
         self.stmt.get_count(req).await
     }
     pub fn limit(self, n: u32) -> LimitCount<M> {
@@ -524,7 +484,7 @@ impl<M: Record> OrderByCount<M> {
     pub fn from(b: Builder<M>) -> Self {
         Self {stmt: Statement::from(b)}
     }
-    pub async fn get<B: BaseRequest>(self, req: &B) -> Result<u32> {
+    pub async fn get<B: BaseRequest>(self, req: &B) -> Result<i64> {
         self.stmt.get_count(req).await
     }
     pub fn limit(self, n: u32) -> LimitCount<M> {
@@ -557,26 +517,29 @@ impl<S: Record> Statement<S> {
         self.val.join.push_str(&val.join);
         self
     }
-    pub async fn raw_get_count(self, pool: &DbPool) -> Result<u32> {
-        use sqlx::Row;
+    pub async fn raw_get_count<'r, D: DbPool>(self, pool: &D) -> Result<i64> {
         let mut val = self.val.val();
         val.push_str(";\n");
 
-        match sqlx::query(&val).fetch_one(&pool.0).await {
-            Ok(row) => Ok(row.try_get("count")?),
+        match pool.raw_fetch_one(&val).await {
+            Ok(row) => Ok(row.try_count()?),
             Err(_) => Err(invalid()),
         }
     }
-    async fn get_count<B: BaseRequest>(self, req: &B) -> Result<u32> {
+    async fn get_count<B: BaseRequest>(self, req: &B) -> Result<i64> {
         self.raw_get_count(req.raw().pool()).await
     }
-    async fn raw_get(self, pool: &DbPool) -> Result<S> {
+    async fn raw_get<D: DbPool>(self, pool: &D) -> Result<S> {
         let mut val = self.val.val();
         val.push_str(";\n");
 
-        match sqlx::query(&val).fetch_one(&pool.0).await {
-            Ok(row) => S::get(DbRow{row}),
-            Err(_) => Err(invalid()),
+        match pool.raw_fetch_one(&val).await {
+            Ok(row) => {
+                S::get(row)
+            }
+            Err(_) => {
+                Err(invalid())
+            }
         }
     }
     async fn get<B: BaseRequest>(self, req: &B) -> Result<S> {
@@ -696,9 +659,9 @@ impl<U: Record> Update<U> {
         let s = data.to_sql();
         self.count += 1;
         let val = if self.count > 1 {
-            self.val.push_str(&format!(", {} = {}", name, s))
+            self.val.push_str(&format!(", \"{}\" = {}", name, s))
         } else {
-            self.val.push_str(&format!(" {} = {}", name, s))
+            self.val.push_str(&format!(" \"{}\" = {}", name, s))
         };
         Self {val, count: self.count}
     }
@@ -712,13 +675,10 @@ impl<U: Record> Update<U> {
         }
         self.raw_update(req.raw().pool()).await
     }
-    pub async fn raw_update(self, pool: &DbPool) -> Result<()> {
+    pub async fn raw_update<D: DbPool>(self, pool: &D) -> Result<()> {
         let mut val = self.val.val();
         val.push_str(";\n");
-        match sqlx::query(&val).execute(&pool.0).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(Box::new(e)),
-        }
+        pool.raw_execute(&val).await
     }
 }
 
@@ -749,15 +709,16 @@ impl<I: Record> Insert<I> {
             Err(invalid())
         }
     }
-    pub async fn raw_save(self, pool: &DbPool) -> Result<()> {
+    pub async fn raw_save<D: DbPool>(self, pool: &D) -> Result<()> {
         let mut val = self.val.val();
         val.push_str(");\n");
-        match sqlx::query(&val).execute(&pool.0).await {
+
+        match pool.raw_execute(&val).await {
             Ok(_) => {
                 Ok(())
             }
-            Err(e) => {
-                Err(Box::new(e))
+            Err(_) => {
+                Err(invalid())
             }
         }
     }
@@ -769,10 +730,7 @@ pub async fn delete_from<B: BaseRequest>(table: &str, table_id: &str, id: BigInt
     }
     let val = format!("DELETE FROM {} WHERE {} = {};\n", table, table_id, id);
    
-    match sqlx::query(&val).execute(&req.raw().pool().0).await {
-        Ok(_) => Ok(()),
-        Err(e) => Err(Box::new(e)),
-    }
+    req.raw().pool().raw_execute(&val).await
 }
 
 pub struct Limit<M: Record> {
@@ -786,16 +744,15 @@ impl<M: Record> Limit<M> {
     pub async fn query<B: BaseRequest>(self, req: &B) -> Result<Objects<M>> {
         self.raw_query(req.raw().pool()).await
     }
-    async fn raw_query(self, pool: &DbPool) -> Result<Objects<M>> {
+    async fn raw_query<D: DbPool>(self, pool: &D) -> Result<Objects<M>> {
         let mut val = self.val.val();
         val.push_str(";\n");
 
-        match sqlx::query(&val).fetch_all(&pool.0).await {
+        match pool.raw_fetch_all(&val).await {
             Ok(rows) => {
-                M::from(DbRowVec {rows})
+                M::from(rows)
             }
-            Err(e) => {
-                println!("{}", e);
+            Err(_) => {
                 Err(invalid())
             }
         }
@@ -810,18 +767,17 @@ impl<M: Record> LimitCount<M> {
     pub fn from(val: Builder<M>) -> Self {
         Self {val}
     }
-    pub async fn query<B: BaseRequest>(self, req: &B) -> Result<Vec<u32>> {
+    pub async fn query<B: BaseRequest>(self, req: &B) -> Result<Vec<i64>> where <<<B as BaseRequest>::SqlPool as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow {
         self.raw_query(req.raw().pool()).await
     }
-    async fn raw_query(self, pool: &DbPool) -> Result<Vec<u32>> {
-        use sqlx::Row;
+    async fn raw_query<D: DbPool>(self, pool: &D) -> Result<Vec<i64>> where <D::SqlRowVec as IntoIterator>::Item: DbRow {
         let mut val = self.val.val();
         val.push_str(";\n");
         let mut v = vec![];
-        match sqlx::query(&val).fetch_all(&pool.0).await {
+        match pool.raw_fetch_all(&val).await {
             Ok(rows) => {
                 for row in rows {
-                    v.push(row.try_get("count")?);
+                    v.push(row.try_count()?);
                 }
                 Ok(v)
             }

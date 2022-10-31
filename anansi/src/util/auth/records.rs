@@ -124,19 +124,20 @@ pub struct BaseRelation {
 }
 
 impl BaseRelation {
-    pub fn from(rows: DbRowVec) -> Result<Vec<Self>> {
+    pub fn from<V: DbRowVec>(rows: V) -> Result<Vec<Self>> {
         let mut v = vec![];
         for row in rows {
-            let subject_namespace = row.try_get("subject_namespace")?;
-            let subject_key = row.try_get("subject_key")?;
-            let subject_predicate = row.try_get("subject_predicate")?;
+            use anansi::db::DbRow;
+            let subject_namespace = row.try_string("subject_namespace")?;
+            let subject_key = row.try_i64("subject_key")?;
+            let subject_predicate = row.try_option_string("subject_predicate")?;
             v.push(Self {subject_namespace, subject_key, subject_predicate})
         }
         Ok(v)
     }
     pub fn search(object_namespace: &str, object_key: i64, object_predicate: &str) -> String {
         use anansi::records::ToSql;
-        let q = format!("SELECT * FROM {} WHERE object_key = {} AND object_predicate = {};", format!("{}tuple", object_namespace).to_sql(), object_key, object_predicate.to_sql());
+        let q = format!("SELECT * FROM \"{}\" WHERE object_key = {} AND object_predicate = {};", format!("{}tuple", object_namespace), object_key, object_predicate.to_sql());
         q
     }
     #[async_recursion]
@@ -163,7 +164,7 @@ impl BaseRelation {
 impl User {
     pub const KEY: &'static str = "_user_id";
     
-    pub async fn validate_username(username: &str, pool: &DbPool) -> result::Result<VarChar<150>, UsernameFeedback> {
+    pub async fn validate_username<D: DbPool>(username: &str, pool: &D) -> result::Result<VarChar<150>, UsernameFeedback> {
         let username = username.trim();
         if username.is_empty() {
             return Err(UsernameFeedback::from(username.to_string()));
@@ -174,10 +175,11 @@ impl User {
             }
         }
         if let Ok(username) = VarChar::from(username.to_string()) {
-            if let Ok(n) = Self::count().whose(user::username().eq(&username)).raw_get(pool).await {
-                if n == 0 {
+            match Self::count().whose(user::username().eq(&username)).raw_get(pool).await {
+                Ok(n) => if n == 0 {
                     return Ok(username);
                 }
+                Err(_) => {}
             }
         }
         Err(UsernameFeedback::from(username.to_string()))

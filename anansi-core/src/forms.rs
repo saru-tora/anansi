@@ -43,17 +43,17 @@ macro_rules! _handle {
         anansi::base_handle! {$form, $trait, $req, $post, $b,
             {
                 use anansi::forms::Form;
-                let mut form = <$form as $trait>::on_get(&$req).await?;
+                let mut form = <$form as $trait>::on_get($req).await?;
                 form.post(&$req.token()?);
                 Ok(form)
             },
             {
                 use anansi::forms::Form;
-                let res = <$form>::from_post(&mut $req);
+                let res = <$form>::from_post($req);
                 if let Ok(mut form) = res {
                     if let Ok(data) = form.validate() {
                         let d = data.clone();
-                        match <$form as $trait>::on_post(&mut form, d, &$req).await {
+                        match <$form as $trait>::on_post(&mut form, d, $req).await {
                             Ok($post) => {
                                 let r: Result<anansi::web::Response> = $b;
                                 if r.is_ok() {
@@ -87,7 +87,7 @@ macro_rules! _handle_or_404 {
         match *$req.method() {
             anansi::web::GET => {
                 use anansi::forms::Form;
-                let mut form = match <$form as $trait>::on_get(&$req).await {
+                let mut form = match <$form as $trait>::on_get($req).await {
                     Ok(form) => form,
                     Err(_) => return Err(anansi::db::invalid()),
                 };
@@ -96,18 +96,18 @@ macro_rules! _handle_or_404 {
             }
             anansi::web::POST => {
                 use anansi::forms::Form;
-                let res = <$form>::from_post(&mut $req);
+                let res = <$form>::from_post($req);
                 if let Ok(mut form) = res {
                     if let Ok(data) = form.validate() {
                         let d = data.clone();
-                        let r0 = <$form as $trait>::on_post(&mut form, d, &$req).await;
+                        let r0 = <$form as $trait>::on_post(&mut form, d, $req).await;
                         if let Ok($post) = r0 {
                             let r: Result<anansi::web::Response> = $b;
                             if r.is_ok() {
                                 return r;
                             }
                         } else {
-                            return Err(Box::new(anansi::web::Http404::from($req)));
+                            return Err(Box::new(anansi::web::Http404 {}))
                         }
                         form.set_data(Some(data));
                     }

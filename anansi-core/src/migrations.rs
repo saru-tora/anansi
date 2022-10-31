@@ -1,5 +1,4 @@
-use std::{str, fs, fmt, path::PathBuf};
-use std::thread::LocalKey;
+use std::{str, fs, path::PathBuf};
 use std::collections::HashMap;
 use quote::quote;
 use syn::Type;
@@ -7,26 +6,28 @@ use syn::Field;
 use syn::Item::Struct;
 use syn::Fields::Named;
 use syn::Attribute;
-use sqlx::Row;
-use crate::db::{DbPool, unescape};
+use anansi::raw_transact;
+use crate::db::{DbPool, DbType, unescape, DbRow};
 use crate::records::RecordField;
 
 #[macro_export]
 macro_rules! apps {
     ($($name:ident,)*) => {
-        static APP_MIGRATIONS: &[std::thread::LocalKey<anansi::migrations::AppMigration>] = &[
-            $($name::migrations::init::MIGRATIONS,)*
-        ];
+        fn app_migrations<D: anansi::db::DbPool>() -> Vec<anansi::migrations::AppMigration<D>> {
+            vec![$($name::migrations::init::migrations(),)*]
+        }
     }
 }
 
 #[macro_export]
 macro_rules! local_migrations {
     ($($name:literal,)*) => {
-        thread_local!(pub static MIGRATIONS: anansi::migrations::AppMigration = (
-            super::super::init::APP_NAME, vec![
-            $(($name, include!($name)),)*
-        ]));
+        pub fn migrations<D: anansi::db::DbPool>() -> anansi::migrations::AppMigration<D> {
+            (
+                super::super::init::APP_NAME.to_string(),
+                vec![$(($name.to_string(), include!($name)),)*]
+            )
+        }
     }
 }
 
@@ -39,8 +40,8 @@ macro_rules! operations {
     }
 }
 
-pub type AppMigration = (&'static str, Vec<Migration>);
-pub type Migration = (&'static str, Vec<Box<dyn fmt::Display>>);
+pub type AppMigration<D> = (String, Vec<Migration<D>>);
+pub type Migration<D> = (String, Vec<Box<dyn ToQuery<D>>>);
 
 pub mod prelude {
     pub use anansi::{records, migrations, local_migrations};
@@ -57,9 +58,9 @@ impl RunSql {
     }
 }
 
-impl fmt::Display for RunSql {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}\n\n", self.s)
+impl<D: DbType> ToQuery<D> for RunSql {
+    fn to_query(&self) -> String {
+        format!("{}\n\n", self.s)
     }
 }
 
@@ -70,84 +71,94 @@ pub struct CreateRecord {
     pub fields: Vec<(&'static str, RecordField)>,
 }
 
-impl fmt::Display for CreateRecord {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl<D: DbType> ToQuery<D> for CreateRecord {
+    fn to_query(&self) -> String {
         let mut s = format!("CREATE TABLE \"{}_{}\" (", self.prefix, self.name);
         let mut v = vec![];
         for (field_name, field) in &self.fields {
-            let (syn, con) = field.to_syntax();
-            s.push_str(&format!("\n\t\"{}\" {},", field_name, syn));
+            let (syn, con, index) = field.to_syntax::<D>();
+            s.push_str(&format!("\n\t\"{}\" {}", field_name, syn));
             if !con.is_empty() {
-                v.push(con);
-            }
-        }
-        for con in v {
-            for c in con {
-                s.push_str(&format!("\n\t{}", c));
+                for c in con {
+                    s.push_str(&format!("\n\t\t{}", c));
+                }
             }
             s.push(',');
+            if let Some(idx) = index {
+                v.push(idx);
+            }
         }
         s.pop().unwrap();
-        write!(f, "{}\n);\n\n", s)
+        s.push_str("\n);");
+        for idx in v {
+            s.push_str(&format!("\n{}", idx));
+        }
+        s.push_str("\n\n");
+        s
     }
 }
 
-impl IsMigration for CreateRecord {}
+pub trait ToQuery<D: DbType> {
+    fn to_query(&self) -> String;
+}
 
-pub trait IsMigration: fmt::Display {}
-
-fn to_migration(v: &Vec<Box<dyn fmt::Display>>) -> String {
-    let mut s = "BEGIN;\n\n".to_string();
+fn to_migration<D: DbPool>(v: &Vec<Box<dyn ToQuery<D>>>) -> String {
+    let mut s = String::new();
     for d in v {
-        s.push_str(&d.to_string());
+        s.push_str(&d.to_query());
     }
-    s.push_str("COMMIT;");
     s
 }
 
-pub async fn migrate(app_migrations: &'static [LocalKey<AppMigration>], pool: &DbPool) {
+pub async fn migrate<D: DbPool>(app_migrations: Vec<AppMigration<D>>, pool: &D) where <D::SqlRowVec as IntoIterator>::Item: DbRow {
     for app_migration in app_migrations {
-        let mut app = "";
         let mut migrations = vec![];
-        app_migration.with(|am| {
-            app = am.0;
-            for migration in &am.1 {
-                migrations.push((migration.0, to_migration(&migration.1)));
-            }
-        });
+        let am = app_migration;
+        let app = &am.0;
+        for migration in &am.1 {
+            migrations.push((migration.0.clone(), to_migration(&migration.1)));
+        }
         println!("Checking {}", app);
-        let rows = sqlx::query("SELECT name FROM anansi_migrations WHERE app = ?").bind(app).fetch_all(&pool.0).await.unwrap();
+        let val = format!("SELECT name FROM anansi_migrations WHERE app = '{}'", app);
+        let rows = pool.raw_fetch_all(&val).await.unwrap();
         let mut names = vec![];
         for row in rows {
-            let name: String = row.try_get("name").unwrap();
+            let name = row.try_string("name").unwrap();
             names.push(name);
         }
         for (n, q) in migrations {
             if !names.contains(&n.to_string()) {
                 println!("    Applying migration \"{}\"", n);
-                sqlx::query(&q).execute(&pool.0).await.unwrap();
-                sqlx::query("INSERT INTO anansi_migrations (app, name, applied) VALUES(?, ?, strftime('%Y-%m-%d %H-%M-%f','now'))").bind(app).bind(n).execute(&pool.0).await.unwrap();
+                let qs: Vec<&str> = q.split(';').collect();
+                raw_transact! (pool, {
+                    for s in qs {
+                        pool.raw_execute(&format!("{};", s)).await?
+                    }
+                    Ok(())
+                }).unwrap();
+                
+                let i = format!("INSERT INTO anansi_migrations (app, name, applied) VALUES('{app}', '{n}', {})", D::now());
+                pool.raw_execute(&i).await.unwrap();
             }
         }
     }
 }
 
-pub async fn sql_migrate(app_migrations: &'static [LocalKey<AppMigration>], app_name: &str, migration_name: &str) {
+pub async fn sql_migrate<D: DbPool>(app_migrations: Vec<AppMigration<D>>, app_name: &str, migration_name: &str) {
     for app_migration in app_migrations {
-        app_migration.with(|am| {
-            if am.0 == app_name {
-                for migration in &am.1 {
-                    if migration.0 == migration_name {
-                        println!("{}", to_migration(&migration.1));
-                        return;
-                    }
+        let am = app_migration;
+        if am.0 == app_name {
+            for migration in &am.1 {
+                if migration.0 == migration_name {
+                    println!("{}", to_migration(&migration.1));
+                    return;
                 }
             }
-        });
+        }
     }
 }
 
-pub async fn make_migrations(app_dir: &str, pool: &DbPool) {
+pub async fn make_migrations<D: DbPool>(app_dir: &str, pool: &D) {
     let app_dir = PathBuf::from(app_dir);
     let mut v = vec![];
     let app_name = app_dir.file_name().unwrap().to_str().unwrap();
@@ -160,8 +171,8 @@ pub async fn make_migrations(app_dir: &str, pool: &DbPool) {
     let mut new_records = Vec::new();
     for (prefix, name, syntax) in v {
         let val = String::from(format!("SELECT schema FROM records WHERE name = '{}';\n", name));
-        if let Ok(row) = sqlx::query(&val).fetch_one(&pool.0).await {
-            let s: &str = row.try_get("schema").unwrap();
+        if let Ok(row) = pool.raw_fetch_one(&val).await {
+            let s = row.try_string("schema").unwrap();
             if unescape(&s) == syntax {
                 continue;
             } else {
@@ -177,8 +188,8 @@ pub async fn make_migrations(app_dir: &str, pool: &DbPool) {
         add_syntax(&mut sql, syntaxes);
         
         sql.push_str("}");
-        let row = sqlx::query("SELECT COUNT(*) as count FROM anansi_migrations WHERE app = ?").bind(app_name).fetch_one(&pool.0).await.unwrap();
-        let n: u16 = row.try_get("count").unwrap();
+        let row = pool.raw_fetch_one(&format!("SELECT COUNT(*) FROM anansi_migrations WHERE app = '{app_name}'")).await.unwrap();
+        let n = row.try_count().unwrap();
         let mname = format!("{:04}", n+1);
         let mut mdir = app_dir.clone();
         mdir.push("migrations");
@@ -265,7 +276,7 @@ pub fn process_syntax(db: &str, content: String, v: &mut Vec<(String, String, St
                         let mut meta = Vec::new();
                         for field in named.named {
                             let fieldname = field.ident.as_ref().unwrap().to_string();
-                            if let Some(ty) = get_type(&fieldname, &field, &mut meta, db) {
+                            if let Some(ty) = get_type(&fieldname, &field, &mut meta, db, &name) {
                                 sql.push_str(&format!("            (\n                \"{}\",\n                records::{}\n            ),\n", fieldname, ty));
                             }
                         }
@@ -287,7 +298,7 @@ pub fn process_syntax(db: &str, content: String, v: &mut Vec<(String, String, St
     }
 }
 
-fn get_type(fieldname: &String, field: &Field, meta: &mut Vec<Vec<String>>, db: &str) -> Option<String> {
+fn get_type(fieldname: &String, field: &Field, meta: &mut Vec<Vec<String>>, db: &str, name: &str) -> Option<String> {
     let ty = &field.ty;
     Some(
         match ty {
@@ -326,7 +337,7 @@ fn get_type(fieldname: &String, field: &Field, meta: &mut Vec<Vec<String>>, db: 
                             format!("\"{}\"", db)
                         };
                         let parent_name = parent.last().unwrap().trim().to_string();
-                        s.push_str(&format!(".foreign_key({}, \"{}\", \"id\")", parent_app, parent_name));
+                        s.push_str(&format!(".foreign_key({}, \"{}\", \"id\")\n                    .index(\"{}_{}\", \"{}\")", parent_app, parent_name, db, name, fieldname));
                         s
                     }
                     "DateTime" => {

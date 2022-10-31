@@ -120,10 +120,10 @@ pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
             fn limit(n: u32) -> anansi::db::Limit<Self> {
                 anansi::db::Limit::from(anansi::db::Builder::select(&[#(#members),*], #table).limit(n))
             }
-            fn get(row: anansi::db::DbRow) -> anansi::web::Result<Self> {
+            fn get<R: anansi::db::DbRow>(row: R) -> anansi::web::Result<Self> {
                 Ok(Self {#init})
             }
-            fn from(rows: anansi::db::DbRowVec) -> anansi::web::Result<anansi::records::Objects<Self>> {
+            fn from<V: anansi::db::DbRowVec>(rows: V) -> anansi::web::Result<anansi::records::Objects<Self>> {
                 let mut mv = anansi::records::Objects::new();
                 for row in rows {
                     mv.push(Self::get(row)?);
@@ -139,7 +139,7 @@ pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
             async fn update<B: anansi::web::BaseRequest>(&mut self, req: &B) -> anansi::web::Result<()> {
                                                                                                 self.raw_update(req.raw().pool()).await
             }
-            async fn raw_update(&mut self, pool: &anansi::db::DbPool) -> anansi::web::Result<()> {
+            async fn raw_update<D: anansi::db::DbPool>(&mut self, pool: &D) -> anansi::web::Result<()> {
                 let u: anansi::db::Update<Self> = anansi::db::Update::new(#table)
                     #(#sets)*.pk(Self::PK_NAME, #primary);
                 u.raw_update(pool).await
@@ -158,7 +158,7 @@ pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
                     self.raw_save(req.raw().pool()).await
                 })
             }
-            async fn raw_save(self, pool: &anansi::db::DbPool) -> anansi::web::Result<Self> {
+            async fn raw_save<D: anansi::db::DbPool>(self, pool: &D) -> anansi::web::Result<Self> {
                 let i: anansi::db::Insert<Self> = anansi::db::Insert::new(#table, &[#(#members),*])
                     #(#saves)*;
                 i.raw_save(pool).await?;
@@ -800,7 +800,7 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                                         fv2.push(q2);
                                         members.push(member);
                                         quote_spanned! {f.span() =>
-                                            #name: <anansi::records::BigInt as anansi::records::DataType>::from_val(row.try_get(#m2)?)?,
+                                            #name: <anansi::records::BigInt as anansi::records::DataType>::from_val(row.try_i64(#m2)?)?,
                                         }
                                     },
                                     "ForeignKey" => {
@@ -818,13 +818,13 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                                             pkd.fkv.push((name.as_ref().unwrap().clone(), ts));
                                             let qs = if !null {
                                                 quote_spanned! {f.span() =>
-                                                    #name: <anansi::records::#fty as anansi::records::DataType>::from_val(row.try_get(#m2)?)?,
+                                                    #name: <anansi::records::#fty as anansi::records::DataType>::from_val(row.try_i64(#m2)?)?,
                                                 }
                                             } else {
                                                 quote_spanned! {f.span() =>
                                                     #name: {
-                                                        let o: Option<i64> = row.try_get(#m2)?;
-                                                        if let Some(n) = o {
+                                                        let o = row.try_i64(#m2);
+                                                        if let Ok(n) = o {
                                                             Some(<anansi::records::#fty as anansi::records::DataType>::from_val(n)?)
                                                         } else {
                                                             None
@@ -844,7 +844,7 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                                         fv2.push(q2);
                                         members.push(member);
                                         quote_spanned! {f.span() =>
-                                            #name: <anansi::records::DateTime as anansi::records::DataType>::from_val(row.try_get(#m2)?)?,
+                                            #name: <anansi::records::DateTime as anansi::records::DataType>::from_val(row.try_date_time(#m2)?)?,
                                         }
                                     },
                                     "Boolean" => {
@@ -854,7 +854,7 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                                         fv2.push(q2);
                                         members.push(member);
                                         quote_spanned! {f.span() =>
-                                            #name: <anansi::records::Boolean as anansi::records::DataType>::from_val(row.try_get(#m2)?)?,
+                                            #name: <anansi::records::Boolean as anansi::records::DataType>::from_val(row.try_bool(#m2)?)?,
                                         }
                                     },
                                     "VarChar" => {
@@ -865,13 +865,13 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                                         members.push(member);
                                         if !null {
                                             quote_spanned! {f.span() =>
-                                                #name: <anansi::records::#fty as anansi::records::DataType>::from_val(row.try_get(#m2)?)?,
+                                                #name: <anansi::records::#fty as anansi::records::DataType>::from_val(row.try_string(#m2)?)?,
                                             }
                                         } else {
                                             quote_spanned! {f.span() =>
                                                 #name: {
-                                                    let o: Option<String> = row.try_get(#m2)?;
-                                                    if let Some(s) = o {
+                                                    let o = row.try_string(#m2);
+                                                    if let Ok(s) = o {
                                                         Some(<anansi::records::#fty as anansi::records::DataType>::from_val(s)?)
                                                     } else {
                                                         None
@@ -889,13 +889,17 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                                         members.push(member);
                                         if !null {
                                             quote_spanned! {f.span() =>
-                                                #name: anansi::records::Text::from(row.try_get(#m2)?),
+                                                #name: anansi::records::Text::from(row.try_string(#m2)?),
                                             }
                                         } else {
                                             quote_spanned! {f.span() =>
                                                 #name: {
-                                                    let o: Option<String> = row.try_get(#m2)?;
-                                                    o.map(|s| anansi::records::Text::from(s))
+                                                    let o = row.try_option_string(#m2)?;
+                                                    if let Some(s) = o {
+                                                        Some(anansi::records::Text::from(s))
+                                                    } else {
+                                                        None
+                                                    }
                                                 },
                                             }
                                         }
@@ -1000,12 +1004,8 @@ pub fn check(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> p
                 Pat::Ident(id) => id,
                 _ => panic!("Could not get request"),
             };
-            let ty = match &*pat.ty {
-                Type::Path(path) => {
-                    &path.path.segments
-                },
-                _ => panic!("Could not get type"),
-            };
+            let ty = &pat.ty;
+            let ty = quote! {#ty};
             (req, ty)
         },
         _ => panic!("Not type"),
@@ -1044,10 +1044,10 @@ pub fn check(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> p
     };
     let q = quote! {
         async fn #_sig_ident #generics (#req: #ty) -> #rty #where_clause {
-            #(#vars(&#req).await?;)*
+            #(#vars(#req).await?;)*
             #(#stmts)*
         }
-        #vis fn #sig_ident #generics (_raw: #ty) -> std::pin::Pin<Box<dyn std::future::Future<Output = #rty> + Send>> #where_clause {
+        #vis fn #sig_ident #generics (_raw: #ty) -> std::pin::Pin<Box<dyn std::future::Future<Output = #rty> + Send + '_>> #where_clause {
             Box::pin(Self::#_sig_ident #generic_idents(_raw))
         }
     };
@@ -1220,11 +1220,14 @@ impl Parse for ViewerArgs {
 }
 
 struct RecordAdminArgs {
+    record: Type,
     hm: HashMap<String, Expr>,
 }
 
 impl Parse for RecordAdminArgs {
     fn parse(input: ParseStream) -> Result<Self> {
+        let record = input.parse().unwrap();
+        let _comma = input.parse::<Comma>().unwrap();
         let vars = Punctuated::<FieldValue, Token![,]>::parse_terminated(input)?;
         let mut hm = HashMap::new();
         for v in vars {
@@ -1236,6 +1239,7 @@ impl Parse for RecordAdminArgs {
             hm.insert(name.to_string(), v.expr);
         }
         Ok(Self {
+            record,
             hm,
         })
     }
@@ -1307,7 +1311,7 @@ pub fn path_literal(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 pub fn record_admin(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut input = parse_macro_input!(input as RecordAdminArgs);
     let hm = &mut input.hm;
-    let path = hm.remove("record").unwrap();
+    let path = input.record;
     let ps = quote! {#path}.to_string();
     let name = if let Some((_, n)) = ps.rsplit_once("::") {
         n.trim().to_string()
