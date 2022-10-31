@@ -29,7 +29,7 @@ This will create a crate called `mini-forum` with the following files:
 - **project.rs**: Details project settings.
 - **urls.rs**: Manages the routing.
 
-The default database is Sqlite. If you want to use PostgreSQL, in `Cargo.toml`, change `features = ["sqlite"]` to `features = ["postgres"]`. In `project.rs`, change `database!(sqlite)` to `database!(postgres)`. Finally, in `settings.toml`, change `[databases.default]` to:
+The default database is Sqlite. If you want to use PostgreSQL, in `Cargo.toml`, change `features = ["sqlite"]` to `features = ["postgres"]`. In `src/project.rs`, change `database!(sqlite)` to `database!(postgres)`. Finally, in `settings.toml`, change `[databases.default]` to:
 
 ```toml
 engine = "postgresql"
