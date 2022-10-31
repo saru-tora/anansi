@@ -59,12 +59,18 @@ impl Session  {
     pub fn to_data(&self) -> Result<SessionData> {
         Ok(SessionData {data_map: serde_json::from_str(&self.data)?})
     }
-    pub async fn gen(pool: &DbPool, rng: &Rng) -> Result<Self> {
+    pub async fn gen<D: DbPool>(pool: &D, rng: &Rng) -> Result<Self> {
         Self::from_guest(rng).raw_save(pool).await
     }
-    pub async fn from_raw(raw: &mut RawRequest) -> Result<Self> {
+    pub async fn from_raw<D: DbPool>(raw: &mut RawRequest<D>) -> Result<Self> {
         let st = raw.cookies_mut().remove("st")?;
-        let session = Self::whose(session::secret().eq(st)).raw_get(raw.pool()).await?;
+        let session = Self::whose(session::secret().eq(st)).raw_get(raw.pool()).await;
+        let session = match session {
+            Ok(s) => s,
+            Err(e) => {
+                return Err(e);
+            }
+        };
         if session.expires > DateTime::now() {
             Ok(session)
         } else {

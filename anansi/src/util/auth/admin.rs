@@ -16,28 +16,25 @@ use super::super::admin::site::{HasAdmin, BasicAdminSite};
 use super::records::{User, Group, Filter, filter};
 use crate::util::admin::site::RecordAdmin;
 
-pub trait Request: BaseRequest + Auth + HasAdmin + Reverse + CsrfDefense + Sessions + GetRecord + 'static + Debug {}
+pub trait Request: BaseRequest + Auth + HasAdmin + Reverse + CsrfDefense + Sessions + GetRecord + Debug {}
 
 #[base_view]
-fn base<R: Request>(req: R) -> Result<Response> {}
+fn base<R: Request>(req: &mut R) -> Result<Response> {}
 
-record_admin! {
-    record: auth::records::User,
+record_admin! {auth::records::User,
     form: auth::forms::UserForm,
     add_form: auth::forms::UserNew,
     fields: [username],
     search_fields: [username],
 }
 
-record_admin! {
-    record: auth::records::Group,
+record_admin! {auth::records::Group,
     form: auth::forms::GroupForm,
     add_form: auth::forms::GroupForm,
     fields: [groupname],
 }
 
-record_admin! {
-    record: auth::records::Filter,
+record_admin! {auth::records::Filter,
     form: auth::forms::FilterForm,
     add_form: auth::forms::FilterForm,
     fields: [filter_name, filter],
@@ -57,35 +54,35 @@ pub fn initialize_admin<R: Request>(site: AdminRef<R>) {
 #[record_view]
 impl<R: Request> AuthAdminView<R> {
     #[check(Group::is_visitor)]
-    pub async fn login(mut req: R) -> Result<Response> {
+    pub async fn login(req: &mut R) -> Result<Response> {
         let form = handle!(UserLogin, ToRecord<R>, req, user, {
             req.auth_admin(&user).await?;
-            req.session().set_and_redirect(&req, BasicAdminSite::index)
+            req.session().set_and_redirect(req, BasicAdminSite::index)
         })?.class("cred");
         render!("login")
     }
 
     #[check(Group::is_admin)]
-    pub async fn logout(mut req: R) -> Result<Response> {
+    pub async fn logout(req: &mut R) -> Result<Response> {
         let title = "Log out";
         let form = handle!(req, R, {
-            req.session().delete(&req).await?;
+            req.session().delete(req).await?;
             Ok(redirect!())
         })?;
         render!("logout")
     }
 
     #[check(Group::is_admin)]
-    pub async fn record_index<M: RecordAdmin<R> + Send + ToUrl + 'static>(req: R) -> Result<Response>
+    pub async fn record_index<M: RecordAdmin<R> + Send + ToUrl + 'static>(req: &mut R) -> Result<Response>
 where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams, <M as Record>::Pk: std::fmt::Display
     {
         let title = M::NAME;
-        let records = Some(M::limit(100).query(&req).await?);
+        let records = Some(M::limit(100).query(req).await?);
         let field_names = <M as RecordAdmin<R>>::field_names();
         let m_edit = Self::record_edit::<M>;
-        let filters = Filter::whose(filter::table_name().eq(M::table_name())).limit(25).query(&req).await?;
+        let filters = Filter::whose(filter::table_name().eq(M::table_name())).limit(25).query(req).await?;
         let search = if M::searchable() {
-            Some(AdminSearch::new().action(&req, Self::record_search::<M>))
+            Some(AdminSearch::new().action(req, Self::record_search::<M>))
         } else {
             None
         };
@@ -93,11 +90,11 @@ where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams, <M as R
     }
 
     #[check(Group::is_admin)]
-    pub async fn record_search<M: RecordAdmin<R> + Send + ToUrl + 'static>(mut req: R) -> Result<Response>
+    pub async fn record_search<M: RecordAdmin<R> + Send + ToUrl + 'static>(req: &mut R) -> Result<Response>
 where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams, <M as Record>::Pk: std::fmt::Display
     {
         let title = M::NAME;
-        let mut search = if let Ok(f) = AdminSearch::from_get(&mut req) {
+        let mut search = if let Ok(f) = AdminSearch::from_get(req) {
             f
         } else {
             AdminSearch::new()
@@ -113,23 +110,23 @@ where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams, <M as R
             search.fill()?;
             let mut q = M::search(&terms);
             for (key, _) in req.params().iter() {
-                if let Ok(f) = Filter::whose(filter::filter_name().eq(key as &str)).get(&req).await {
+                if let Ok(f) = Filter::whose(filter::filter_name().eq(key as &str)).get(req).await {
                     q = q.and(WhoseArg::from(Builder::new().push_str(&format!("({})", f.raw_query))));
                 }
             }
-            Some(q.limit(25).query(&req).await?)
+            Some(q.limit(25).query(req).await?)
         } else {
             None
         };
         let field_names = <M as RecordAdmin<R>>::field_names();
         let m_edit = Self::record_edit::<M>;
-        let filters = Filter::whose(filter::table_name().eq(M::table_name())).limit(25).query(&req).await?;
-        let search = Some(search.action(&req, Self::record_search::<M>));
+        let filters = Filter::whose(filter::table_name().eq(M::table_name())).limit(25).query(req).await?;
+        let search = Some(search.action(req, Self::record_search::<M>));
         render!("record_index")
     }
 
     #[check(Group::is_admin)]
-    pub async fn filter_new<M: RecordAdmin<R> + 'static>(mut req: R) -> Result<Response>
+    pub async fn filter_new<M: RecordAdmin<R> + 'static>(req: &mut R) -> Result<Response>
 where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams
     {
         let title = "Add filter".to_string();
@@ -154,7 +151,7 @@ where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams
     }
 
     #[check(Group::is_admin)]
-    pub async fn record_new<M: RecordAdmin<R> + Send + Sync + anansi::records::ToUrl + 'static>(mut req: R) -> Result<Response>
+    pub async fn record_new<M: RecordAdmin<R> + Send + Sync + anansi::records::ToUrl + 'static>(req: &mut R) -> Result<Response>
 where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams, <M as anansi_core::records::Record>::Pk: std::fmt::Display
     {
         let title = format!("Add {}", M::NAME);
@@ -164,7 +161,7 @@ where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams, <M as a
     }
 
     #[check(Group::is_admin)]
-    pub async fn record_edit<M: RecordAdmin<R> + 'static>(mut req: R) -> Result<Response>
+    pub async fn record_edit<M: RecordAdmin<R> + 'static>(req: &mut R) -> Result<Response>
 where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams
     {
         let title = format!("Edit {}", M::NAME);

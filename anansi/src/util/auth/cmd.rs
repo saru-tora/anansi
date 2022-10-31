@@ -6,7 +6,7 @@ use anansi::web::Result;
 use anansi::records::{Record, Text};
 use super::records::{User, Group, group::groupname, GroupTuple, hash_password};
 
-pub fn admin(pool: DbPool) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
+pub fn admin<D: DbPool + 'static>(pool: D) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
     Box::pin(_admin(pool))
 }
 
@@ -16,7 +16,7 @@ fn prints(s: &str) {
     std::io::stdout().flush().unwrap();
 }
 
-async fn _admin(pool: DbPool) -> Result<()> {
+async fn _admin<D: DbPool>(pool: D) -> Result<()> {
     let mut input = String::new();
     let name = loop {
         prints("Username: ");

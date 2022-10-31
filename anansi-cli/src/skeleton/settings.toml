@@ -1,7 +1,7 @@
+login_url = "/login"
+
 [databases]
 
 [databases.default]
 engine = "sqlite3"
 name = "database.db"
-
-login_url = "/login"

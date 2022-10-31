@@ -8,11 +8,11 @@ use std::ops::Deref;
 use std::error::Error;
 use async_trait::async_trait;
 
-use sqlx::{Type, Decode, Database, database::HasValueRef};
+use sqlx::{Decode, Database, database::HasValueRef};
 use rand::Rng;
 
 use crate::web::{BaseRequest, Parameters, Result};
-use crate::db::{Db, DbRow, DbRowVec, DbPool, DbTypeInfo, invalid, escape, Count, Whose, WhoseArg, DeleteWhose, OrderBy, OrderByArg, Limit};
+use crate::db::{DbRow, DbRowVec, DbPool, DbType, invalid, escape, Count, Whose, WhoseArg, DeleteWhose, OrderBy, OrderByArg, Limit};
 use crate::admin_site::AdminField;
 pub use crate::datetime::DateTime;
 
@@ -22,24 +22,7 @@ macro_rules! get_or_404 {
         match $req.get_record::<$record>().await {
             Ok(m) => m,
             Err(_) => {
-                return Err(Box::new(anansi::web::Http404::from($req)))
-            }
-        }
-    }
-}
-
-macro_rules! impl_decode {
-    ($d:ty, $t:ty) => {
-        impl Type<Db> for $d {
-            fn type_info() -> DbTypeInfo {
-                <$t as Type<Db>>::type_info()
-            }
-        }
-        impl<'r, DB: Database> Decode<'r, DB> for $d
-        where $t: Decode<'r, DB> {
-            fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<$d, Box<dyn Error + 'static + Send + Sync>> {
-                let value = <$t as Decode<DB>>::decode(value)?;
-                Ok(Self::from_val(value).unwrap())
+                return Err(Box::new(anansi::web::Http404{}))
             }
         }
     }
@@ -107,8 +90,6 @@ impl ToSql for Boolean {
     }
 }
 
-impl_decode!(Boolean, bool);
-
 #[derive(Clone, PartialEq, Copy, Debug)]
 pub struct BigInt {
     n: i64,
@@ -152,12 +133,6 @@ impl DataType for BigInt {
 impl ToSql for BigInt {
     fn to_sql(&self) -> String {
         format!("{}", self.n)
-    }
-}
-
-impl Type<Db> for BigInt {
-    fn type_info() -> DbTypeInfo {
-        <i64 as Type<Db>>::type_info()
     }
 }
 
@@ -238,12 +213,6 @@ impl Deref for Text {
     #[inline]
     fn deref(&self) -> &str {
         &self.s
-    }
-}
-
-impl Type<Db> for Text {
-    fn type_info() -> DbTypeInfo {
-        <String as Type<Db>>::type_info()
     }
 }
 
@@ -342,12 +311,6 @@ impl<const N: u16> Deref for VarChar<N> {
     }
 }
 
-impl<const N: u16> Type<Db> for VarChar<N> {
-    fn type_info() -> DbTypeInfo {
-        <String as Type<Db>>::type_info()
-    }
-}
-
 impl<'r, DB: Database, const N: u16> Decode<'r, DB> for VarChar<N>
 where String: Decode<'r, DB> {
     fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<VarChar<N>, Box<dyn Error + 'static + Send + Sync>> {
@@ -387,7 +350,7 @@ impl<M: Record, O: OnDelete> ForeignKey<M, O> {
     pub async fn get<B: BaseRequest>(&self, req: &B) -> Result<M> {
         M::find(self.pk()).get(req).await
     }
-    pub async fn raw_get(&self, pool: &DbPool) -> Result<M> {
+    pub async fn raw_get<D: DbPool>(&self, pool: &D) -> Result<M> {
         M::find(self.pk()).raw_get(pool).await
     }
 }
@@ -431,13 +394,6 @@ impl<M: Record, O: OnDelete> ToSql for Option<ForeignKey<M, O>> where M::Pk: std
 impl<M: Record, O: OnDelete> fmt::Display for ForeignKey<M, O> where M::Pk: std::fmt::Display {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.pk)
-    }
-}
-
-impl<'r, M: Record, O: OnDelete> Type<Db> for ForeignKey<M, O>
-where <<M as Record>::Pk as DataType>::T: Decode<'r, Db> + Type<Db> {
-    fn type_info() -> DbTypeInfo {
-        <<<M as Record>::Pk as DataType>::T as Type<Db>>::type_info()
     }
 }
 
@@ -563,11 +519,12 @@ pub struct RecordField {
     unique: bool,
     null: bool,
     constraints: Vec<String>,
+    index: Option<String>,
 }
 
 impl RecordField {
     pub fn new(ty: String) -> Self {
-        Self {ty, primary_key: false, unique: false, null: false, constraints: vec![]}
+        Self {ty, primary_key: false, unique: false, null: false, constraints: vec![], index: None}
     }
     pub fn primary_key(mut self) -> Self {
         self.primary_key = true;
@@ -582,13 +539,17 @@ impl RecordField {
         self
     }
     pub fn foreign_key(mut self, app_name: &'static str, other_name: &'static str, pk_name: &'static str) -> Self {
-        self.constraints.push(format!("FOREIGN KEY (\"{}\")", other_name));
         self.constraints.push(format!("REFERENCES \"{}_{}\" (\"{}\")", app_name, other_name, pk_name));
         self.constraints.push("ON DELETE CASCADE".to_string());
+        self.constraints.push("DEFERRABLE INITIALLY DEFERRED".to_string());
         self
     }
-    pub fn to_syntax(&self) -> (String, Vec<String>) {
-        let mut s = format!("{}", self.ty);
+    pub fn index(mut self, table_name: &'static str, name: &'static str) -> Self {
+        self.index = Some(format!("CREATE INDEX \"{}_{}_index\" ON \"{0}\" (\"{1}\");", table_name, name));
+        self
+    }
+    pub fn to_syntax<D: DbType>(&self) -> (String, Vec<String>, Option<String>) {
+        let mut s = D::db_type(&self.ty);
         if !self.null {
             s.push_str(" NOT NULL");
         }
@@ -598,7 +559,7 @@ impl RecordField {
         if self.unique {
             s.push_str(" UNIQUE");
         }
-        (s, self.constraints.clone())
+        (s, self.constraints.clone(), self.index.clone())
     }
 }
 
@@ -712,12 +673,12 @@ pub trait Record: Sized {
     fn whose(w: WhoseArg<Self>) -> Whose<Self> where Self: Sized;
     fn delete_whose(w: WhoseArg<Self>) -> DeleteWhose<Self> where Self: Sized;
     fn limit(n: u32) -> Limit<Self> where Self: Sized;
-    fn get(row: DbRow) -> Result<Self> where Self: Sized;
-    fn from(rows: DbRowVec) -> Result<Objects<Self>> where Self: Sized;
+    fn get<R: DbRow>(row: R) -> Result<Self> where Self: Sized;
+    fn from<V: DbRowVec>(rows: V) -> Result<Objects<Self>> where Self: Sized, <V as IntoIterator>::Item: DbRow;
     fn order_by(w: OrderByArg<Self>) -> OrderBy<Self> where Self: Sized;
     async fn update<B: BaseRequest>(&mut self, req: &B) -> Result<()> where Self: Sized;
-    async fn raw_update(&mut self, pool: &DbPool) -> Result<()> where Self: Sized;
+    async fn raw_update<D: DbPool>(&mut self, pool: &D) -> Result<()> where Self: Sized;
     async fn delete<B: BaseRequest>(&self, req: &B) -> Result<()> where Self: Sized;
     async fn save<B: BaseRequest>(self, req: &B) -> Result<Self> where Self: Sized;
-    async fn raw_save(self, pool: &DbPool) -> Result<Self> where Self: Sized;
+    async fn raw_save<D: DbPool>(self, pool: &D) -> Result<Self> where Self: Sized;
 }

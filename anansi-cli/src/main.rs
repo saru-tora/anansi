@@ -104,7 +104,7 @@ fn make_view(args: &Vec<String>) {
         fs::create_dir(&parsed).expect("Failed to create path");
         let upper = uppercase(arg);
         let arg_path = PathBuf::from(arg);
-        make_file(&arg_path, "views", ".rs", format!("use crate::prelude::*;\nuse super::super::records::{{{}}};\n\n#[base_view]\nfn base<R: Request>(_req: R) -> Result<Response> {{}}\n\n#[record_view]\nimpl<R: Request> {0}View<R> {{\n    #[view(Group::is_visitor)]\n    pub async fn index(req: R) -> Result<Response> {{\n        let title = \"Title\";\n    }}\n}}", upper));
+        make_file(&arg_path, "views", ".rs", format!("use crate::prelude::*;\nuse super::super::records::{{{}}};\n\n#[base_view]\nfn base<R: Request>(_req: &mut R) -> Result<Response> {{}}\n\n#[record_view]\nimpl<R: Request> {0}View<R> {{\n    #[view(Group::is_visitor)]\n    pub async fn index(req: &mut R) -> Result<Response> {{\n        let title = \"Title\";\n    }}\n}}", upper));
         make_file(&arg_path, "mod", ".rs", "pub mod views;".to_string());
         let mut t2 = temp.clone();
         let mut t3 = temp.clone();
@@ -129,7 +129,7 @@ fn new(args: &Vec<String>) {
     cp!(arg_path, "settings.toml");
     cp!(src, "project.rs", "urls.rs", "main.rs");
     append(name, ".gitignore", b"/settings.toml\n/database.db*");
-    append(name, "Cargo.toml", &format!("anansi = \"{}\"\nasync-trait = \"0.1.57\"", VERSION).into_bytes());
+    append(name, "Cargo.toml", &format!("anansi = {{ version = \"{}\", features = [\"sqlite\"] }}\nasync-trait = \"0.1.57\"", VERSION).into_bytes());
     fs::create_dir(format!("{}{MAIN_SEPARATOR}src{MAIN_SEPARATOR}http_errors", name)).unwrap();
     cp!(src, concat!("http_errors", main_separator!(), "500.html"));
     cp!(src, concat!("http_errors", main_separator!(), "views.rs"));
@@ -162,7 +162,7 @@ fn app(args: &Vec<String>) {
     make(&name, "init", format!("pub const APP_NAME: &'static str = \"{}\";", args[2]));
     make(&name, "mod", "pub mod init;\npub mod urls;\npub mod records;\npub mod migrations;\n".to_string());
     make(&name, "urls", "use anansi::web::prelude::*;\n\nroutes! {}".to_string());
-    let mut m = format!("{}{}migrations{1}", args[2], main_separator!());
+    let mut m = format!("migrations{}", main_separator!());
     let mut init = m.clone();
     m.push_str("mod");
     init.push_str("init");
@@ -174,8 +174,7 @@ fn app(args: &Vec<String>) {
 
 fn make_file(dir: &PathBuf, name: &str, ext: &str, content: String) {
     let mut f = dir.clone();
-    f.push(name);
-    f.push(ext);
+    f.push(format!("{name}{ext}"));
     fs::write(&f, content).expect(&format!("Could not create {}", f.to_str().expect("Could not convert file to string")));
 }
 
@@ -216,7 +215,7 @@ fn search(date: &SystemTime, current: &PathBuf, force: &mut bool) {
                 for f in dirs {
                     let f = f.unwrap();
                     let name = f.path();
-                    if name.ends_with(".rs.html") {
+                    if name.to_str().unwrap().ends_with(".rs.html") {
                         let b = check_template(f, &parent, &name, *date, *force);
                         if b {
                             *force = true;

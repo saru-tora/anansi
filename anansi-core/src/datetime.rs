@@ -3,10 +3,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::result;
 use std::error::Error;
 
-use crate::db::{invalid, Db, DbTypeInfo};
+use crate::db::invalid;
 use crate::web::Result;
 use crate::records::{DataType, RecordField, ToSql};
-use sqlx::{Type, Decode, Database, database::HasValueRef};
+use sqlx::{Decode, Database, database::HasValueRef};
 
 #[derive(PartialEq, PartialOrd, Clone, Copy, Debug)]
 pub struct Date {
@@ -187,7 +187,7 @@ impl DateTime {
         s -= hour*3600;
         let minute = s/60;
         s -= minute*60;
-        Self {date: Date {year, month, day: yday as u8 + 1}, time: Time {hour: hour as u8, minute: minute as u8, second: s as u8}}
+        Self {date: Date {year, month, day: yday as u8}, time: Time {hour: hour as u8, minute: minute as u8, second: s as u8}}
     }
     pub fn field() -> RecordField {
         RecordField::new("datetime".to_string())
@@ -218,11 +218,6 @@ impl ToSql for DateTime {
 impl fmt::Display for DateTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {}", self.date, self.time)
-    }
-}
-impl Type<Db> for DateTime {
-    fn type_info() -> DbTypeInfo {
-        <String as Type<Db>>::type_info()
     }
 }
 

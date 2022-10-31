@@ -45,7 +45,7 @@ impl<R: Request> AdminSite<R> for BasicAdminSite<R> {
 
 impl<R: Request> BasicAdminSite<R> {
     #[check(Group::is_admin)]
-    pub async fn index(req: R) -> Result<Response> {
+    pub async fn index(req: &mut R) -> Result<Response> {
         let title = "Site Administration";
         render!("index")
     }

@@ -16,7 +16,7 @@ use crate::records::{Record, FromParams, BigInt, DateTime};
 use crate::admin_site::AdminRef;
 
 pub type Result<T> = result::Result<T, Box<dyn Error + Send + Sync>>;
-pub type View<B> = fn(B) -> Pin<Box<dyn Future<Output = Result<Response>> + Send>>;
+pub type View<B> = fn(&mut B) -> Pin<Box<dyn Future<Output = Result<Response>> + Send + '_>>;
 pub type Static = (&'static str, &'static [u8]);
 
 const SPACE: u8 = 32;
@@ -30,16 +30,20 @@ pub const LEFT_BRACE: u8 = 123;
 pub const GET: Method = Method::Get;
 pub const POST: Method = Method::Post;
 
-fn find_base(dir: &mut PathBuf) -> &mut PathBuf {
+fn find_base(dir: &mut PathBuf) -> bool {
     let files = std::fs::read_dir(&dir).unwrap();
     for f in files {
         let f = f.unwrap();
         if f.file_type().unwrap().is_file() && f.file_name() == "Cargo.toml" {
-            return dir;
+            return true;
         }
     }
     if dir.pop() {
-        return dir;
+        if find_base(dir) {
+            return true;
+        }
+    } else {
+        return false;
     }
     panic!("Could not find Cargo.toml");
 }
@@ -65,8 +69,7 @@ thread_local!{
 }
 
 pub mod prelude {
-    pub use super::path;
-    pub use anansi::{import, routes};
+    pub use anansi::{import, routes, path};
 }
 
 #[macro_export]
@@ -74,7 +77,7 @@ macro_rules! middleware {
     () => {
         #[derive(Debug, Clone)]
         pub struct HttpRequest {
-            raw: anansi::web::RawRequest,
+            raw: anansi::web::RawRequest<Pool>,
             mid: Middleware,
             urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>,
             admin: anansi::util::admin::site::AdminRef<Self>,
@@ -86,7 +89,7 @@ macro_rules! middleware {
             session_data: anansi::util::sessions::records::SessionData,
         }
         impl Middleware {
-            pub async fn new(raw: &mut anansi::web::RawRequest) -> $crate::web::Result<Self> {
+            pub async fn new(raw: &mut anansi::web::RawRequest<Pool>) -> $crate::web::Result<Self> {
                 use anansi::records::{Record, DataType};
                 let session = match anansi::util::sessions::records::Session::from_raw(raw).await {
                     Ok(s) => s,
@@ -104,7 +107,7 @@ macro_rules! middleware {
         }
         impl anansi::web::BaseMiddleware for Middleware {}
         anansi::request_derive!();
-        pub trait Request: anansi::web::BaseRequest + anansi::util::sessions::middleware::Sessions + anansi::util::auth::middleware::Auth + anansi::util::admin::site::HasAdmin + anansi::web::CsrfDefense  + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetRecord + 'static {}
+        pub trait Request: anansi::web::BaseRequest + anansi::util::sessions::middleware::Sessions + anansi::util::auth::middleware::Auth + anansi::util::admin::site::HasAdmin + anansi::web::CsrfDefense  + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetRecord {}
         impl Request for HttpRequest {}
         impl anansi::util::admin::site::HasAdmin for HttpRequest {
             fn admin(&self) -> anansi::util::admin::site::AdminRef<Self> {
@@ -262,26 +265,15 @@ impl IntoIterator for Headers {
 }
 
 #[derive(Debug)]
-pub struct Http404<B: BaseRequest> {
-    req: B,
-}
+pub struct Http404 {}
 
-impl<B: BaseRequest> Http404<B> {
-    pub fn from(req: B) -> Self {
-        Self {req}
-    }
-    pub fn req(self) -> B {
-        self.req
-    }
-}
-
-impl<B: BaseRequest> fmt::Display for Http404<B> {
+impl fmt::Display for Http404 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "404 Not Found")
     }
 }
 
-impl<B: BaseRequest + fmt::Debug> Error for Http404<B> {}
+impl Error for Http404 {}
 
 #[derive(Debug)]
 pub struct WebError {
@@ -351,7 +343,7 @@ pub enum Route<B: BaseRequest + 'static> {
     Import((&'static str, &'static [Route<B>])),
 }
 
-pub const fn path<B: BaseRequest>(s: &'static str, f: View<B>) -> Route<B> {
+pub fn route_path<B: BaseRequest>(s: &'static str, f: View<B>) -> Route<B> {
     Route::Path((s, f))
 }
 
@@ -464,14 +456,14 @@ impl Cookies {
 }
 
 #[derive(Debug, Clone)]
-pub struct RawRequest {
+pub struct RawRequest<D: DbPool> {
     pub method: Method,
     pub url: String,
     pub headers: Headers,
     pub body: Option<Body>,
     pub cookies: Cookies,
     pub params: Parameters,
-    pool: DbPool,
+    pool: D,
     std_rng: Rng,
     valid_token: bool,
 }
@@ -648,8 +640,9 @@ pub trait GetRecord: BaseRequest {
 pub trait BaseRequest: Send + Sync {
     type Mid: BaseMiddleware;
     type Usr: BaseUser;
+    type SqlPool: DbPool;
 
-    async fn new(buffer: &[u8], request_line: RequestLine, url: Arc<HashMap<usize, Vec<String>>>, pool: DbPool, rng: Rng, admin: AdminRef<Self>) -> Result<Self> where Self: Sized;
+    async fn new(buffer: &[u8], request_line: RequestLine, url: Arc<HashMap<usize, Vec<String>>>, pool: Self::SqlPool, rng: Rng, admin: AdminRef<Self>) -> Result<Self> where Self: Sized;
     fn method(&self) -> &Method;
     fn url(&self) -> &String;
     fn headers(&self) -> &Headers;
@@ -657,14 +650,14 @@ pub trait BaseRequest: Send + Sync {
     fn cookies(&self) -> &Cookies;
     fn params(&self) -> &Parameters;
     fn params_mut(&mut self) -> &mut Parameters;
-    fn raw(&self) -> &RawRequest;
+    fn raw(&self) -> &RawRequest<Self::SqlPool>;
     fn mid(&self) -> &Self::Mid;
     fn to_form_map(&self) -> Result<FormMap>;
-    fn from(raw: RawRequest, mid: Self::Mid, urls: Arc<HashMap<usize, Vec<String>>>, admin: AdminRef<Self>) -> Self where Self: Sized;
+    fn from(raw: RawRequest<Self::SqlPool>, mid: Self::Mid, urls: Arc<HashMap<usize, Vec<String>>>, admin: AdminRef<Self>) -> Self where Self: Sized;
     fn user(&self) -> &Self::Usr;
     fn user_mut(&mut self) -> &mut Self::Usr;
-    fn to_raw(self) -> RawRequest;
-    async fn handle_no_session(response: Response, pool: DbPool, std_rng: Rng) -> Result<Response> where Self: Sized;
+    fn to_raw(self) -> RawRequest<Self::SqlPool>;
+    async fn handle_no_session(response: Response, pool: Self::SqlPool, std_rng: Rng) -> Result<Response> where Self: Sized;
 }
 
 fn parse_query_string(qs: &str) -> Option<Vec<(String, String)>> {
@@ -688,7 +681,7 @@ fn parse_query_string(qs: &str) -> Option<Vec<(String, String)>> {
     Some(queries)
 }
 
-pub async fn route_request<B: BaseRequest + fmt::Debug + 'static>(dirs: Vec<&str>, mut req: B, routes: &Routes<B>) -> Result<Response> {
+pub async fn route_request<B: BaseRequest + fmt::Debug + 'static>(dirs: Vec<&str>, req: &mut B, routes: &Routes<B>) -> Result<Response> {
     for (patterns, view) in routes {
         if patterns.len() == dirs.len() {
             let mut b = true;
@@ -724,12 +717,19 @@ pub async fn route_request<B: BaseRequest + fmt::Debug + 'static>(dirs: Vec<&str
             }
         }
     }
-    Err(Box::new(anansi::web::Http404 {req}))
+    Err(Box::new(anansi::web::Http404 {}))
 }
 
-impl<M, U> fmt::Debug for dyn BaseRequest<Mid = M, Usr = U> {
+impl<M, U, S> fmt::Debug for dyn BaseRequest<Mid = M, Usr = U, SqlPool = S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "BaseRequest")
+    }
+}
+
+#[macro_export]
+macro_rules! path {
+    ($s:literal, $f:path) => {
+        anansi::web::Route::Path(($s, $f))
     }
 }
 
@@ -762,8 +762,9 @@ macro_rules! request_derive {
         impl anansi::web::BaseRequest for HttpRequest {
             type Mid = Middleware;
             type Usr = anansi::util::auth::records::User;
+            type SqlPool = Pool;
 
-            async fn new(buffer: &[u8], request_line: $crate::web::RequestLine, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: $crate::db::DbPool, std_rng: $crate::server::Rng, admin: $crate::admin_site::AdminRef<Self>) -> $crate::web::Result<Self> where Self: Sized {
+            async fn new(buffer: &[u8], request_line: $crate::web::RequestLine, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: Self::SqlPool, std_rng: $crate::server::Rng, admin: $crate::admin_site::AdminRef<Self>) -> $crate::web::Result<Self> where Self: Sized {
                 let mut raw = $crate::web::RawRequest::new(buffer, request_line, pool, std_rng).await?;
                 let mid = Middleware::new(&mut raw).await?;
                 Ok(Self {raw, mid, urls, admin})
@@ -792,16 +793,16 @@ macro_rules! request_derive {
             fn mid(&self) -> &Self::Mid {
                 &self.mid
             }
-            fn raw(&self) -> &anansi::web::RawRequest {
+            fn raw(&self) -> &anansi::web::RawRequest<Pool> {
                 &self.raw
             }
             fn to_form_map(&self) -> anansi::web::Result<anansi::web::FormMap> {
                 self.raw().to_form_map()
             }
-            fn from(raw: anansi::web::RawRequest, mid: Middleware, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, admin: $crate::admin_site::AdminRef<Self>) -> Self {
+            fn from(raw: anansi::web::RawRequest<Pool>, mid: Middleware, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, admin: $crate::admin_site::AdminRef<Self>) -> Self {
                 Self{raw, mid, urls, admin}
             }
-            fn to_raw(self) -> anansi::web::RawRequest {
+            fn to_raw(self) -> anansi::web::RawRequest<Pool> {
                 self.raw
             }
             fn user(&self) -> &Self::Usr {
@@ -810,7 +811,7 @@ macro_rules! request_derive {
             fn user_mut(&mut self) -> &mut Self::Usr {
                 &mut self.mid.user
             }
-            async fn handle_no_session(response: anansi::web::Response, pool: anansi::db::DbPool, std_rng: anansi::server::Rng) -> anansi::web::Result<anansi::web::Response> {
+            async fn handle_no_session(response: anansi::web::Response, pool: Self::SqlPool, std_rng: anansi::server::Rng) -> anansi::web::Result<anansi::web::Response> {
                 let session = anansi::util::sessions::records::Session::gen(&pool, &std_rng).await?;
                 Ok(response.set_persistent("st", &session.secret, &session.expires))
             }
@@ -818,7 +819,7 @@ macro_rules! request_derive {
     }
 }
 
-impl RawRequest {
+impl<D: DbPool> RawRequest<D> {
     pub fn get_request_line(buffer: &[u8]) -> Result<(usize, RequestLine)> {
         let mut m = find_space(buffer, 0);
         let method = match &buffer[..m] {
@@ -875,7 +876,7 @@ impl RawRequest {
         }
         Err(invalid())
     }
-    pub async fn new(buffer: &[u8], request_line: RequestLine, pool: DbPool, std_rng: Rng) -> Result<Self> {
+    pub async fn new(buffer: &[u8], request_line: RequestLine, pool: D, std_rng: Rng) -> Result<Self> {
         let mut n = 0;
         let headers = get_headers(buffer, &mut n)?;
         n += 2;
@@ -901,7 +902,7 @@ impl RawRequest {
     pub fn cookies_mut(&mut self) -> &mut Cookies {
         &mut self.cookies
     }
-    pub fn pool(&self) -> &DbPool {
+    pub fn pool(&self) -> &D {
         &self.pool
     }
     pub fn rng(&self) -> &Rng {
@@ -916,7 +917,7 @@ impl RawRequest {
     pub fn url(&self) -> &String {
         &self.url
     }
-    pub async fn transact<F: Future<Output = Result<O>>, O>(&self, future: F) -> F::Output {
+    pub async fn transact<F: Future<Output = Result<O>> + Send, O: Send>(&self, future: F) -> F::Output {
         self.pool().transact(future).await
     }
 }
