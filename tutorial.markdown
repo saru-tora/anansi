@@ -199,10 +199,10 @@ use super::super::records::{Topic, topic::date};
 #[record_view]
 impl<R: Request> TopicView<R> {
     #[view(Group::is_visitor)]
-    pub async fn index(req: R) -> Result<Response> {
+    pub async fn index(req: &mut R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
-            .limit(25).query(&req).await?;
+            .limit(25).query(req).await?;
     }
 }
 ```
@@ -234,7 +234,7 @@ To add this view to the routes, change `urls.rs` to the following:
 use crate::forum::{self, topic::views::TopicView};
 
 routes! {
-    path("/", TopicView::index),
+    path!("/", TopicView::index),
     import!("/topic", forum),
 }
 ```
@@ -331,7 +331,7 @@ use super::topic::views::TopicView;
 
 routes! {
     // e.g. /topic/ixNr1-tGUe9
-    path("{topic_id}", TopicView::show),
+    path!("{topic_id}", TopicView::show),
 }
 ```
 
@@ -347,12 +347,12 @@ use anansi::humanize::ago;
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(Group::is_visitor)]
-    pub async fn show(req: R) -> Result<Response> {
+    pub async fn show(req: &mut R) -> Result<Response> {
         let topic = get_or_404!(Topic, req);
         let title = &topic.title;
-        let poster = topic.user.get(&req).await?.username;
-        let comments = topic.recent_comments().limit(25).query(&req).await?;
-        let users = comments.parents(&req, |c| &c.user).await?;
+        let poster = topic.user.get(req).await?.username;
+        let comments = topic.recent_comments().limit(25).query(req).await?;
+        let users = comments.parents(req, |c| &c.user).await?;
     }
 }
 ```
@@ -412,12 +412,12 @@ use anansi::util::auth::forms::UserLogin;
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(Group::is_visitor)]
-    pub async fn login(mut req: R) -> Result<Response> {
+    pub async fn login(req: &mut R) -> Result<Response> {
         let title = "Log in";
         let button = "Log in";
         let form = handle!(UserLogin, ToRecord<R>, req, user, {
             req.auth(&user).await?;
-    	    req.session().set_and_redirect(&req, Self::index)
+    	    req.session().set_and_redirect(req, Self::index)
         })?;
     }
 }
@@ -462,9 +462,9 @@ To include everything, update `urls.rs`:
 
 ```rust
 routes! {
-    path("/", TopicView::index),
+    path!("/", TopicView::index),
     import!("/topic", forum),
-    path("/login", TopicView::login),
+    path!("/login", TopicView::login),
 }
 ```
 
@@ -518,7 +518,7 @@ use crate::forum::forms::TopicForm;
 impl<R: Request> TopicView<R> {
     // --snip--
     #[check(Group::is_auth)]
-    pub async fn new(mut req: R) -> Result<Response> {
+    pub async fn new(req: &mut R) -> Result<Response> {
         let title = "New Topic";
         let button = "Create";
         let form = handle!(TopicForm, ToRecord<R>, req, |topic| {
@@ -529,7 +529,7 @@ impl<R: Request> TopicView<R> {
 }
 ```
 
-`Group::is_auth` will redirect the visitor if they aren't authenticated. This time, for `handle`, a closure is passed this time since redirection isn't async. For the template `forum/topic/templates/new.rs.html`, in this simple case, you can just reuse `login.rs.html` by using the `check` and `render` macros, though for an actual site, you'd probably write a custom template. You can also have a link to the page added in `index.rs.html` if the user is authenticated:
+`Group::is_auth` will redirect the visitor if they aren't authenticated. This time, for `handle`, a closure is passed this time since redirection isn't async. For the template, in this simple case, you can just reuse `login.rs.html` by using the `check` and `render` macros, though for an actual site, you'd probably write a custom one. You can also have a link to the page added in `index.rs.html` if the user is authenticated:
 
 ```html
 @block content {
@@ -549,8 +549,8 @@ To bring it all together, update `forum/urls.rs`:
 
 ```rust
 routes! {
-    path("new", TopicView::new),
-    path("{topic_id}", TopicView::show),
+    path!("new", TopicView::new),
+    path!("{topic_id}", TopicView::show),
 }
 ```
 
@@ -582,7 +582,7 @@ use anansi::forms::ToEdit;
 impl<R: Request> TopicView<R> {
     // --snip--
     #[check(Topic::owner)]
-    pub async fn edit(mut req: R) -> Result<Response> {
+    pub async fn edit(req: &mut R) -> Result<Response> {
         let title = "Update Topic";
         let button = "Update";
         let form = handle_or_404!(TopicForm, ToEdit<R>, req, |topic| {
@@ -593,7 +593,7 @@ impl<R: Request> TopicView<R> {
 }
 ```
 
-`Topic::owner` checks if the user owns the topic. `handle_or_404!` is like `handle!`, but returns a 404 error if the record can't be found. Like before, for `edit.rs.html`, you can just reuse `login.rs.html`. You can also have the link for it added in `show.rs.html` if the topic is the user's:
+`Topic::owner` checks if the user owns the topic. `handle_or_404!` is like `handle!`, but returns a 404 error if the record can't be found. Like before, for the template, you can just reuse `login.rs.html`. You can also have the link for it added in `show.rs.html` if the topic is the user's:
 
 ```html
 @block content {
@@ -614,9 +614,9 @@ As always, update `forum/urls.rs`:
 
 ```rust
 routes! {
-    path("new", TopicView::new),
-    path("{topic_id}", TopicView::show),
-    path("{topic_id}/edit", TopicView::edit),
+    path!("new", TopicView::new),
+    path!("{topic_id}", TopicView::show),
+    path!("{topic_id}/edit", TopicView::edit),
 }
 ```
 
@@ -670,11 +670,11 @@ To delete topics edit `forum/topic/views.rs`:
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(Topic::owner)]
-    pub async fn destroy(mut req: R) -> Result<Response> {
+    pub async fn destroy(req: &mut R) -> Result<Response> {
         let title = "Delete topic";
         let topic = get_or_404!(Topic, req);
         let form = handle!(req, R, {
-            topic.delete(&req).await?;
+            topic.delete(req).await?;
             Ok(redirect!(req, Self::index))
         })?;
     }
@@ -719,10 +719,10 @@ And finally, update `forum/urls.rs`:
 
 ```rust
 routes! {
-    path("new", TopicView::new),
-    path("{topic_id}", TopicView::show),
-    path("{topic_id}/edit", TopicView::edit),
-    path("{topic_id}/destroy", TopicView::destroy),
+    path!("new", TopicView::new),
+    path!("{topic_id}", TopicView::show),
+    path!("{topic_id}/edit", TopicView::edit),
+    path!("{topic_id}/destroy", TopicView::destroy),
 }
 ```
 
