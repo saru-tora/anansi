@@ -1,7 +1,11 @@
 login_url = "/login"
 
+[caches]
+
+[caches.default]
+location = ""
+
 [databases]
 
 [databases.default]
-engine = "sqlite3"
 name = "database.db"

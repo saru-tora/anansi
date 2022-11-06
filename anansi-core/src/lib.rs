@@ -5,7 +5,6 @@ pub use anansi_macros::*;
 pub mod server;
 pub mod web;
 pub mod db;
-pub mod sql;
 pub mod records;
 pub mod humanize;
 mod datetime;
@@ -13,6 +12,8 @@ pub mod router;
 pub mod forms;
 pub mod migrations;
 pub mod admin_site;
+pub mod cache;
+pub mod project;
 
 #[cfg(test)]
 mod tests {

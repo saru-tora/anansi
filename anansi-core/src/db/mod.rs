@@ -1,3 +1,9 @@
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+
+#[cfg(feature = "postgres")]
+pub mod postgres;
+
 use std::str;
 use std::io::{self, Read, ErrorKind};
 use std::marker::PhantomData;
@@ -15,10 +21,10 @@ use crate::web::{Result, BaseRequest};
 #[macro_export]
 macro_rules! database {
     (sqlite) => {
-        type Pool = anansi::sql::sqlite::SqliteDbPool;
+        type Pool = anansi::db::sqlite::SqliteDbPool;
     };
     (postgres) => {
-        type Pool = anansi::sql::postgres::PgDbPool;
+        type Pool = anansi::db::postgres::PgDbPool;
     };
 }
 

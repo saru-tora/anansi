@@ -17,6 +17,7 @@ use rand::SeedableRng;
 use sha2::{Digest, Sha256};
 
 use crate::db::{DbPool, DbRow};
+use crate::cache::BaseCache;
 use crate::records::{VarChar, DateTime, DataType};
 use crate::web::{BASE_DIR, Result, Static, Route, BaseRequest, RawRequest, Response, Http404, WebError, WebErrorKind, View, route_request, route_path};
 use crate::router::{Router, get_capture, split_url};
@@ -33,9 +34,10 @@ macro_rules! main {
         pub mod prelude {
             pub use async_trait::async_trait;
             pub use crate::project::Request;
-            pub use anansi::{form, import, record_view, base_view, view, redirect, transact, form_error};
+            pub use anansi::{form, import, viewer, base_view, view, redirect, transact, form_error};
             pub use anansi::web::{Result, Response, BaseUser};
             pub use anansi::forms::Form;
+            pub use anansi::cache::BaseCache;
             pub use anansi::records::Record;
             pub use anansi::util::auth::records::Group;
         }
@@ -60,7 +62,7 @@ pub struct Server<B: BaseRequest + 'static, D: DbPool> {
 
 pub type AdminInits<B> = &'static [fn(AdminRef<B>)];
 
-impl<B: BaseRequest<SqlPool = D> + fmt::Debug + Clone, D: DbPool + 'static> Server<B, D> {
+impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache + 'static, D: DbPool + 'static> Server<B, D> {
     pub fn new(statics: &'static [&'static [Static]], admin_inits: AdminInits<B>) -> Self {
         Self {statics, admin_inits, d: PhantomData}
     }
@@ -131,6 +133,8 @@ impl<B: BaseRequest<SqlPool = D> + fmt::Debug + Clone, D: DbPool + 'static> Serv
                 let login_url = settings.get("login_url").expect("Could not get login url").as_str().expect("Expected string for login url").to_string();
                 let router = Arc::new(Router::new(rv, handle_404, internal_error, login_url, files).unwrap());
                 let urls = Arc::new(url_map);
+                let c_settings = settings.get("caches").expect("Could not get cache settings").as_table().expect("Expected table for cache settings");
+                let cache = C::new(&c_settings).await.expect("Could not start cache");
 
                 let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs().to_string();
                 let std_rng = match settings.get("secret_key") {
@@ -166,6 +170,7 @@ impl<B: BaseRequest<SqlPool = D> + fmt::Debug + Clone, D: DbPool + 'static> Serv
                     let (stream, _) = listener.accept().await.unwrap();
                     let urls = urls.clone();
                     let pool = pool.clone();
+                    let cache = cache.clone();
                     let std_rng = std_rng.clone();
                     let router = router.clone();
                     let sem = Arc::clone(&sem);
@@ -174,7 +179,7 @@ impl<B: BaseRequest<SqlPool = D> + fmt::Debug + Clone, D: DbPool + 'static> Serv
                     let site = site.clone();
                     if aq.is_ok() {
                         tokio::spawn(async move {
-                            handle_connection(stream, urls, pool, std_rng, router, timer, site).await.unwrap();
+                            handle_connection(stream, urls, pool, cache, std_rng, router, timer, site).await.unwrap();
                         });
                     } else {
                         eprintln!("Open socket limit reached");
@@ -211,7 +216,7 @@ impl Rng {
     }
 }
 
-pub async fn handle_connection<B: BaseRequest<SqlPool = D> + 'static + fmt::Debug, D: DbPool>(mut stream: TcpStream, urls: Arc<HashMap<usize, Vec<String>>>, pool: D, std_rng: Rng, router: Arc<Router<B>>, timer: Timer, site: AdminRef<B>) -> Result<()> {
+pub async fn handle_connection<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool, C: BaseCache>(mut stream: TcpStream, urls: Arc<HashMap<usize, Vec<String>>>, pool: D, cache: C, std_rng: Rng, router: Arc<Router<B>>, timer: Timer, site: AdminRef<B>) -> Result<()> {
     let mut buffer = vec![0; 1024];
     while let Ok(l) = time::timeout(time::Duration::from_secs(5), stream.read(&mut buffer)).await {
         let length = l.unwrap();
@@ -220,6 +225,7 @@ pub async fn handle_connection<B: BaseRequest<SqlPool = D> + 'static + fmt::Debu
         }
         let urls = urls.clone();
         let pool = pool.clone();
+        let cache = cache.clone();
         let std_rng = std_rng.clone();
         let site = site.clone();
 
@@ -233,7 +239,7 @@ pub async fn handle_connection<B: BaseRequest<SqlPool = D> + 'static + fmt::Debu
                     Err(_) => router.internal_error.clone(),
                 }
             } else {
-                let result = B::new(&buffer[n..length], request_line, urls, pool.clone(), std_rng.clone(), site).await;
+                let result = B::new(&buffer[n..length], request_line, urls, pool.clone(), cache.clone(), std_rng.clone(), site).await;
                 match result {
                     Ok(mut req) => {
                         match route_request(dirs, &mut req, &router.routes).await {
@@ -290,6 +296,7 @@ pub async fn handle_connection<B: BaseRequest<SqlPool = D> + 'static + fmt::Debu
             response.headers_mut().insert("Date".to_string(), format!("{timer}"));
         }
         stream.write(&response.into_bytes()).await.unwrap();
+        break;
     }
     Ok(())
 }

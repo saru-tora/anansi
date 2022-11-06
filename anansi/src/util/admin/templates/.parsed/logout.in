@@ -1,6 +1,0 @@
-{let _content = {{let mut _c = String::new();_c.push_str("    <h1>");_c.push_str(&anansi::web::html_escape(&format!("{}", title)));_c.push_str("</h1>
-    Are you sure you want to log out?
-    <br><br>
-    ");_c.push_str(&form.tag()); if let Some(token_tag) = form.token_tag() { _c.push_str(&token_tag) } {_c.push_str("
-	");_c.push_str(&format!("{}", form.submit("Confirm")));_c.push_str("
-    </form>");}_c.push_str(""); _c}};let _title = {{let mut _c = String::new();_c.push_str("");_c.push_str(&anansi::web::html_escape(&format!("{}", title)));_c.push_str(""); _c}};base::base(req, base::Args{_content, _title, })}

@@ -10,6 +10,7 @@ use std::pin::Pin;
 use std::future::Future;
 use std::path::PathBuf;
 
+use crate::cache::BaseCache;
 use crate::server::Rng;
 use crate::router::Routes;
 use crate::records::{Record, FromParams, BigInt, DateTime};
@@ -80,6 +81,7 @@ macro_rules! middleware {
             raw: anansi::web::RawRequest<Pool>,
             mid: Middleware,
             urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>,
+            cache: AppCache,
             admin: anansi::util::admin::site::AdminRef<Self>,
         }
         #[derive(Debug, Clone)]
@@ -180,7 +182,7 @@ macro_rules! render {
 macro_rules! app_statics {
     ($($name:ident,)*) => {
         static APP_STATICS: &[&[anansi::web::Static]] = &[
-            $($name::init::STATICS,)*
+            $($name::STATICS,)*
         ];
     }
 }
@@ -418,7 +420,6 @@ impl Response {
         if let Some(mut body) = self.body {
             bytes.append(&mut body.body);
         }
-        bytes.append(&mut b"0\r\n\r\n".to_vec());
         bytes
     }
 }
@@ -641,8 +642,9 @@ pub trait BaseRequest: Send + Sync {
     type Mid: BaseMiddleware;
     type Usr: BaseUser;
     type SqlPool: DbPool;
+    type Cache: BaseCache;
 
-    async fn new(buffer: &[u8], request_line: RequestLine, url: Arc<HashMap<usize, Vec<String>>>, pool: Self::SqlPool, rng: Rng, admin: AdminRef<Self>) -> Result<Self> where Self: Sized;
+    async fn new(buffer: &[u8], request_line: RequestLine, url: Arc<HashMap<usize, Vec<String>>>, pool: Self::SqlPool, cache: Self::Cache, rng: Rng, admin: AdminRef<Self>) -> Result<Self> where Self: Sized;
     fn method(&self) -> &Method;
     fn url(&self) -> &String;
     fn headers(&self) -> &Headers;
@@ -653,9 +655,11 @@ pub trait BaseRequest: Send + Sync {
     fn raw(&self) -> &RawRequest<Self::SqlPool>;
     fn mid(&self) -> &Self::Mid;
     fn to_form_map(&self) -> Result<FormMap>;
-    fn from(raw: RawRequest<Self::SqlPool>, mid: Self::Mid, urls: Arc<HashMap<usize, Vec<String>>>, admin: AdminRef<Self>) -> Self where Self: Sized;
+    fn from(raw: RawRequest<Self::SqlPool>, mid: Self::Mid, cache: Self::Cache, urls: Arc<HashMap<usize, Vec<String>>>, admin: AdminRef<Self>) -> Self where Self: Sized;
     fn user(&self) -> &Self::Usr;
     fn user_mut(&mut self) -> &mut Self::Usr;
+    fn cache(&self) -> &Self::Cache;
+    fn cache_mut(&mut self) -> &mut Self::Cache;
     fn to_raw(self) -> RawRequest<Self::SqlPool>;
     async fn handle_no_session(response: Response, pool: Self::SqlPool, std_rng: Rng) -> Result<Response> where Self: Sized;
 }
@@ -720,7 +724,7 @@ pub async fn route_request<B: BaseRequest + fmt::Debug + 'static>(dirs: Vec<&str
     Err(Box::new(anansi::web::Http404 {}))
 }
 
-impl<M, U, S> fmt::Debug for dyn BaseRequest<Mid = M, Usr = U, SqlPool = S> {
+impl<M, U, S, C> fmt::Debug for dyn BaseRequest<Mid = M, Usr = U, SqlPool = S, Cache = C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "BaseRequest")
     }
@@ -728,7 +732,7 @@ impl<M, U, S> fmt::Debug for dyn BaseRequest<Mid = M, Usr = U, SqlPool = S> {
 
 #[macro_export]
 macro_rules! path {
-    ($s:literal, $f:path) => {
+    ($s:literal, $f:expr) => {
         anansi::web::Route::Path(($s, $f))
     }
 }
@@ -763,11 +767,12 @@ macro_rules! request_derive {
             type Mid = Middleware;
             type Usr = anansi::util::auth::records::User;
             type SqlPool = Pool;
+            type Cache = AppCache;
 
-            async fn new(buffer: &[u8], request_line: $crate::web::RequestLine, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: Self::SqlPool, std_rng: $crate::server::Rng, admin: $crate::admin_site::AdminRef<Self>) -> $crate::web::Result<Self> where Self: Sized {
+            async fn new(buffer: &[u8], request_line: $crate::web::RequestLine, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: Self::SqlPool, cache: Self::Cache, std_rng: $crate::server::Rng, admin: $crate::admin_site::AdminRef<Self>) -> $crate::web::Result<Self> where Self: Sized {
                 let mut raw = $crate::web::RawRequest::new(buffer, request_line, pool, std_rng).await?;
                 let mid = Middleware::new(&mut raw).await?;
-                Ok(Self {raw, mid, urls, admin})
+                Ok(Self {raw, mid, urls, cache, admin})
             }
             fn method(&self) -> &anansi::web::Method {
                 &self.raw.method
@@ -799,8 +804,8 @@ macro_rules! request_derive {
             fn to_form_map(&self) -> anansi::web::Result<anansi::web::FormMap> {
                 self.raw().to_form_map()
             }
-            fn from(raw: anansi::web::RawRequest<Pool>, mid: Middleware, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, admin: $crate::admin_site::AdminRef<Self>) -> Self {
-                Self{raw, mid, urls, admin}
+            fn from(raw: anansi::web::RawRequest<Pool>, mid: Middleware, cache: Self::Cache, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, admin: $crate::admin_site::AdminRef<Self>) -> Self {
+                Self{raw, mid, cache, urls, admin}
             }
             fn to_raw(self) -> anansi::web::RawRequest<Pool> {
                 self.raw
@@ -810,6 +815,12 @@ macro_rules! request_derive {
             }
             fn user_mut(&mut self) -> &mut Self::Usr {
                 &mut self.mid.user
+            }
+            fn cache(&self) -> &Self::Cache {
+                &self.cache
+            }
+            fn cache_mut(&mut self) -> &mut Self::Cache {
+                &mut self.cache
             }
             async fn handle_no_session(response: anansi::web::Response, pool: Self::SqlPool, std_rng: anansi::server::Rng) -> anansi::web::Result<anansi::web::Response> {
                 let session = anansi::util::sessions::records::Session::gen(&pool, &std_rng).await?;

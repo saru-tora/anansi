@@ -14,7 +14,7 @@ use crate::records::RecordField;
 macro_rules! apps {
     ($($name:ident,)*) => {
         fn app_migrations<D: anansi::db::DbPool>() -> Vec<anansi::migrations::AppMigration<D>> {
-            vec![$($name::migrations::init::migrations(),)*]
+            vec![$($name::migrations::migrations(),)*]
         }
     }
 }
@@ -24,7 +24,7 @@ macro_rules! local_migrations {
     ($($name:literal,)*) => {
         pub fn migrations<D: anansi::db::DbPool>() -> anansi::migrations::AppMigration<D> {
             (
-                super::super::init::APP_NAME.to_string(),
+                super::APP_NAME.to_string(),
                 vec![$(($name.to_string(), include!($name)),)*]
             )
         }
@@ -198,7 +198,7 @@ pub async fn make_migrations<D: DbPool>(app_dir: &str, pool: &D) {
         fs::write(&s, sql).unwrap();
         println!("Created \"{}\"", s.to_str().unwrap());
         let mut idir = mdir.clone();
-        idir.push("init.rs");
+        idir.push("mod.rs");
         let original = fs::read_to_string(&idir).unwrap();
         if original.trim() == "use anansi::migrations::prelude::*;\n\nlocal_migrations! {}" {
             fs::write(idir, format!("use anansi::migrations::prelude::*;\n\nlocal_migrations! {{\n    \"{}\",\n}}", mname)).unwrap();

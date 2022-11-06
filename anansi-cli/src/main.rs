@@ -104,7 +104,7 @@ fn make_view(args: &Vec<String>) {
         fs::create_dir(&parsed).expect("Failed to create path");
         let upper = uppercase(arg);
         let arg_path = PathBuf::from(arg);
-        make_file(&arg_path, "views", ".rs", format!("use crate::prelude::*;\nuse super::super::records::{{{}}};\n\n#[base_view]\nfn base<R: Request>(_req: &mut R) -> Result<Response> {{}}\n\n#[record_view]\nimpl<R: Request> {0}View<R> {{\n    #[view(Group::is_visitor)]\n    pub async fn index(req: &mut R) -> Result<Response> {{\n        let title = \"Title\";\n    }}\n}}", upper));
+        make_file(&arg_path, "views", ".rs", format!("use crate::prelude::*;\nuse super::super::records::{{{}}};\n\n#[base_view]\nfn base<R: Request>(_req: &mut R) -> Result<Response> {{}}\n\n#[viewer]\nimpl<R: Request> {0}View<R> {{\n    #[view(Group::is_visitor)]\n    pub async fn index(req: &mut R) -> Result<Response> {{\n        let title = \"Title\";\n    }}\n}}", upper));
         make_file(&arg_path, "mod", ".rs", "pub mod views;".to_string());
         let mut t2 = temp.clone();
         let mut t3 = temp.clone();
@@ -159,15 +159,11 @@ fn app(args: &Vec<String>) {
     let mut migrations = name.clone();
     migrations.push("migrations");
     fs::create_dir(migrations).expect("Failed to create migrations directory");
-    make(&name, "init", format!("pub const APP_NAME: &'static str = \"{}\";", args[2]));
-    make(&name, "mod", "pub mod init;\npub mod urls;\npub mod records;\npub mod migrations;\n".to_string());
+    make(&name, "mod", format!("pub mod urls;\npub mod records;\npub mod migrations;\n\npub const APP_NAME: &'static str = \"{}\";", args[2]));
     make(&name, "urls", "use anansi::web::prelude::*;\n\nroutes! {}".to_string());
     let mut m = format!("migrations{}", main_separator!());
-    let mut init = m.clone();
     m.push_str("mod");
-    init.push_str("init");
-    make(&name, &m, "pub mod init;".to_string());
-    make(&name, &init, "use anansi::migrations::prelude::*;\n\nlocal_migrations! {}".to_string());
+    make(&name, &m, "use anansi::migrations::prelude::*;\n\nlocal_migrations! {}".to_string());
     cp!(name, "records.rs");
     println!("Created app \"{}\"", args[2]);
 }
@@ -288,15 +284,16 @@ impl Parser {
         Self {blocks: vec![]}
     }
     fn parse(&mut self, name: &PathBuf) {
-        let content = fs::read_to_string(name).unwrap();
+        let content = fs::read_to_string(name).unwrap().trim().to_string();
+        let ext = content.starts_with("@block");
+        let base_ext = content.starts_with("@base_extend");
         let mut chrs = content.chars();
-        let e = collect(&mut chrs, ' ');
         let mut dir: Vec<Component> = name.components().collect();
         let temp = dir.pop().unwrap();
         let mut base = false;
-        let view = if e == "@extend" {
+        let view = if ext {
             self.extend(&mut chrs)
-        } else if e == "@base_extend" {
+        } else if base_ext {
             base = true;
             self.extend(&mut chrs)
         } else {
@@ -318,10 +315,27 @@ impl Parser {
 
         if !self.blocks.is_empty() || base {
             let mut s = "pub struct Args {".to_string();
+            let mut t = String::new();
+            let mut u = String::new();
+            let mut v = String::new();
+            let mut new = String::new();
             for block in &self.blocks {
                 s.push_str(&format!("pub _{}: String,", block));
+                t.push_str(&format!("v.append(&mut self._{}.len().to_ne_bytes().to_vec());v.append(&mut self._{0}.as_bytes().to_vec());", block));
+                u.push_str(&format!("let mut buf = __b.split_off(8); let l = usize::from_ne_bytes(__b.try_into().unwrap()); let mut __b = buf.split_off(l); let _{} = String::from_utf8(buf)?;", block));
+                v.push_str(&format!("_{}, ", block));
+                new.push_str(&format!("_{}: String::new(), ", block));
             }
             s.push_str("}");
+            s.push_str("impl anansi::cache::Cacheable for Args {fn to_bytes(&self) -> Vec<u8> {let mut v = vec![];");
+            s.push_str(&t);
+            s.push_str("v} fn from_bytes(mut __b: Vec<u8>) -> anansi::web::Result<Self> {");
+            s.push_str(&u);
+            s.push_str("Ok(Self {");
+            s.push_str(&v);
+            s.push_str("})}} impl Args {pub fn new() -> Self {Self {");
+            s.push_str(&new);
+            s.push_str("}}}");
             let mut n3 = n2.clone();
             n3.push(format!("{}_args.in", out));
             let mut f = fs::File::create(n3).unwrap();
@@ -355,7 +369,6 @@ impl Parser {
         view
     }
     fn extend(&mut self, chars: &mut Chars) -> String {
-        let basename = collect(chars, '\n').trim().to_string();
         let mut blocks = HashMap::new();
         loop {
             skip(chars, '@');
@@ -377,15 +390,11 @@ impl Parser {
                 break;
             }
         }
-        let args = format!("{}::Args", basename);
-        let mut ext = format!("{}::base(req, {}{{", basename, args);
         let mut s = String::from("{");
         for (name, src) in blocks {
-            s.push_str(&format!("let _{} = {{{}}};", name, src));
-            ext.push_str(&format!("_{}, ", name));
+            s.push_str(&format!("_args._{} = {};", name, src));
         }
-        s.push_str(&ext);
-        s.push_str("})}");
+        s.push_str("_args}");
         s
     }
 }
@@ -595,7 +604,29 @@ impl Parser {
                 view.push_str(&format!("_c.push_str(&format!(\"<a href=\\\"{{}}\\\"{}>\", anansi::url!({})));", attrs, u));
                 let blk = collect(chars, '}');
                 view.push_str(&self.process(blk));
-                return view.push_str("_c.push_str(\"</a>");
+                view.push_str("_c.push_str(\"</a>");
+                return;
+            }
+            "cache" => {
+                s.clear();
+                let line = collect(chars, '{');
+                let args: Vec<&str> = line.split(',').collect();
+                let req = args[0];
+                let timeout = args[1];
+                let key = args[2];
+                let key = if args.len() == 2 {
+                    format!("&format!(\"{key}{{}}\", {req}.user().username())")
+                } else if args[3] == "visitor" {
+                    format!("\"{key}\"")
+                } else {
+                    unimplemented!()
+                };
+
+                view.push_str(&format!("{{let _d = if let Ok(res) = {req}.cache().get({key}) {{String::from_utf(res)?}} else {{let mut _c = String::new();"));
+                let blk = collect(chars, '}');
+                view.push_str(&self.process(blk));
+                view.push_str(&format!("{req}.cache_mut().set_ex({key}, _c.as_bytes(), {timeout}).await?; _c\"}}; _c.push_str(&_d);}} _c.push_str(\""));
+                return;
             }
             "url!" => {
                 s = "anansi::url!".to_string();
