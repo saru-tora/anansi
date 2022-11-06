@@ -38,12 +38,6 @@ password = "mypassword"
 address = "127.0.0.1:5432"
 ```
 
-The default cache uses local memory, which may work for testing. For an actual site, if you want to use Redis, add the feature `"redis"` to `Cargo.toml`. In `src/project.rs`, change `app_cache!(local)` to `app_cache!(redis)`. Finally, in `settings.toml`, change `[caches.default]` to :
-
-```toml
-location = "redis://127.0.0.1/"
-```
-
 <br>
 
 Starting the server
@@ -248,7 +242,36 @@ At this point, you can visit the index page you wrote at [http://127.0.0.1:9090/
 Caching
 -------
 
-While caching may not be required for a small site, this is an example of how to do it in `forum/topic/views.rs`:
+While caching may not be required for a small site, if you want to use it, there are a few steps involved. First add some dependencies to `Cargo.toml`:
+
+```toml
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+```
+
+For the cache, there are two options. The default cache uses local memory, which may work for testing. For an actual site, if you want to use Redis, add the feature `"redis"` to `Cargo.toml`. In `src/project.rs`, change `app_cache!(local)` to `app_cache!(redis)`. Finally, in `settings.toml`, change `[caches.default]` to:
+
+```toml
+location = "redis://127.0.0.1/"
+```
+
+Add traits to `forum/records.rs`:
+
+```rust
+use serde::{Serialize, Deserialize};
+
+#[record]
+#[derive(Relate, FromParams, Serialize, Deserialize)]
+pub struct Topic {
+    pub title: VarChar<200>,
+    #[field(app = "auth")]
+    pub user: ForeignKey<User>,
+    pub content: VarChar<40000>,
+    pub date: DateTime,
+}
+```
+
+Finally, in `forum/topic/views.rs`:
 
 ```rust
 use anansi::cache::prelude::*;
@@ -258,10 +281,10 @@ impl<R: Request> TopicView<R> {
     #[view(Group::is_visitor)]
     pub async fn index(req: &mut R) -> Result<Response> {
         let title = "Latest Topics";
-        let topics = cache!(req, Some(30), "topic_index",
+        let topics = cache!(req, Some(30), "topic_index", {
             Topic::order_by(date().desc())
                 .limit(25).query(req).await?
-	);
+	});
     }
 }
 ```
@@ -331,7 +354,7 @@ use anansi::db::OrderBy;
 use anansi::ToUrl;
 
 #[record]
-#[derive(Relate, FromParams, ToUrl)]
+#[derive(Relate, FromParams, Serialize, Deserialize, ToUrl)]
 pub struct Topic {
     pub title: VarChar<200>,
     #[field(app = "auth")]
