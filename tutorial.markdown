@@ -32,7 +32,6 @@ This will create a crate called `mini-forum` with the following files:
 The default database is Sqlite. If you want to use PostgreSQL, in `Cargo.toml`, change `features = ["sqlite"]` to `features = ["postgres"]`. In `src/project.rs`, change `database!(sqlite)` to `database!(postgres)`. Finally, in `settings.toml`, change `[databases.default]` to:
 
 ```toml
-engine = "postgresql"
 name = "mydatabase"
 user = "myuser"
 password = "mypassword"
@@ -66,7 +65,6 @@ This will make a `forum` directory with the following files:
 
 ```
 .
-├── init.rs
 ├── migrations
 ├── mod.rs
 ├── records.rs
@@ -196,7 +194,7 @@ Now edit `forum/topic/views.rs`:
 ```rust
 use super::super::records::{Topic, topic::date};
 
-#[record_view]
+#[viewer]
 impl<R: Request> TopicView<R> {
     #[view(Group::is_visitor)]
     pub async fn index(req: &mut R) -> Result<Response> {
@@ -212,8 +210,6 @@ impl<R: Request> TopicView<R> {
 To use these variables, edit `forum/topic/templates/index.rs.html`:
 
 ```html
-@extend base
-
 @block title {@title}
 
 @block content {
@@ -226,7 +222,7 @@ To use these variables, edit `forum/topic/templates/index.rs.html`:
 }
 ```
 
-In a template, the `@` symbol allows the use of keywords. `extend` puts the `block`s in the current template into a parent template (in this case, `base.rs.html`). The `@` symbol can also format variables into strings.
+In a template, the `@` symbol allows the use of keywords. The `@` symbol can also format variables into strings.
 
 To add this view to the routes, change `urls.rs` to the following:
 
@@ -242,6 +238,58 @@ routes! {
 At this point, you can visit the index page you wrote at [http://127.0.0.1:9090/](http://127.0.0.1:9090/), but there won't be much to see since there aren't any topics.
 
 <br>
+
+Caching
+-------
+
+While caching may not be required for a small site, if you want to use it, there are a few steps involved. First add some dependencies to `Cargo.toml`:
+
+```toml
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+```
+
+For the cache, there are two options. The default cache uses local memory, which may work for testing. For an actual site, if you want to use Redis, add the feature `"redis"` to `Cargo.toml`. In `src/project.rs`, change `app_cache!(local)` to `app_cache!(redis)`. Finally, in `settings.toml`, change `[caches.default]` to:
+
+```toml
+location = "redis://127.0.0.1/"
+```
+
+Add traits to `forum/records.rs`:
+
+```rust
+use serde::{Serialize, Deserialize};
+
+#[record]
+#[derive(Relate, FromParams, Serialize, Deserialize)]
+pub struct Topic {
+    pub title: VarChar<200>,
+    #[field(app = "auth")]
+    pub user: ForeignKey<User>,
+    pub content: VarChar<40000>,
+    pub date: DateTime,
+}
+```
+
+Finally, in `forum/topic/views.rs`:
+
+```rust
+use anansi::cache::prelude::*;
+
+#[viewer]
+impl<R: Request> TopicView<R> {
+    #[view(Group::is_visitor)]
+    pub async fn index(req: &mut R) -> Result<Response> {
+        let title = "Latest Topics";
+        let topics = cache!(req, Some(30), "topic_index", {
+            Topic::order_by(date().desc())
+                .limit(25).query(req).await?
+	});
+    }
+}
+```
+
+This will cache the results of the query with the key `"topic_index"` for 30 seconds.
 
 Creating an admin
 -----------------
@@ -306,7 +354,7 @@ use anansi::db::OrderBy;
 use anansi::ToUrl;
 
 #[record]
-#[derive(Relate, FromParams, ToUrl)]
+#[derive(Relate, FromParams, Serialize, Deserialize, ToUrl)]
 pub struct Topic {
     pub title: VarChar<200>,
     #[field(app = "auth")]
@@ -343,7 +391,7 @@ Update `forum/topic/views.rs`:
 use anansi::get_or_404;
 use anansi::humanize::ago;
 
-#[record_view]
+#[viewer]
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(Group::is_visitor)]
@@ -362,8 +410,6 @@ In `show`, `get_or_404!` retrieves a specific topic by `topic_id` or returns a 4
 Now let's add the template for this view in `forum/topic/templates/show.rs.html`:
 
 ```html
-@extend base
-
 @block title {@title}
 
 @block content {
@@ -408,7 +454,7 @@ use anansi::handle;
 use anansi::forms::ToRecord;
 use anansi::util::auth::forms::UserLogin;
 
-#[record_view]
+#[viewer]
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(Group::is_visitor)]
@@ -426,8 +472,6 @@ impl<R: Request> TopicView<R> {
 `handle!` creates a new form if the request method is GET. Otherwise, it tries to do something with the submitted form (in this case, log in the user), and if that fails, gives back the form. The form can be used in `forum/topic/templates/login.rs.html`:
 
 ```html
-@extend base
-
 @block title {@title}
 
 @block content {
@@ -511,10 +555,10 @@ pub mod forms;
 Now use it in `forum/topic/views.rs`:
 
 ```rust
-use anansi::{check, render};
+use anansi::{check, extend};
 use crate::forum::forms::TopicForm;
 
-#[record_view]
+#[viewer]
 impl<R: Request> TopicView<R> {
     // --snip--
     #[check(Group::is_auth)]
@@ -524,12 +568,12 @@ impl<R: Request> TopicView<R> {
         let form = handle!(TopicForm, ToRecord<R>, req, |topic| {
     	    Ok(redirect!(req, Self::show, topic))
         })?;
-        render!("login")
+        extend!(req, base, "login")
     }
 }
 ```
 
-`Group::is_auth` will redirect the visitor if they aren't authenticated. This time, for `handle`, a closure is passed this time since redirection isn't async. For the template, in this simple case, you can just reuse `login.rs.html` by using the `check` and `render` macros, though for an actual site, you'd probably write a custom one. You can also have a link to the page added in `index.rs.html` if the user is authenticated:
+`Group::is_auth` will redirect the visitor if they aren't authenticated. This time, for `handle`, a closure is passed this time since redirection isn't async. For the template, in this simple case, you can just reuse `login.rs.html` by using the `check` and `extend` macros, though for an actual site, you'd probably write a custom one. You can also have a link to the page added in `index.rs.html` if the user is authenticated:
 
 ```html
 @block content {
@@ -578,7 +622,7 @@ And add a view to `forum/topic/views.rs`:
 use anansi::handle_or_404;
 use anansi::forms::ToEdit;
 
-#[record_view]
+#[viewer]
 impl<R: Request> TopicView<R> {
     // --snip--
     #[check(Topic::owner)]
@@ -588,7 +632,7 @@ impl<R: Request> TopicView<R> {
         let form = handle_or_404!(TopicForm, ToEdit<R>, req, |topic| {
     	    Ok(redirect!(req, Self::show, topic))
         })?;
-        render!("login")
+        extend!(req, base, "login")
     }
 }
 ```
@@ -666,7 +710,7 @@ Deleting
 To delete topics edit `forum/topic/views.rs`:
 
 ```rust
-#[record_view]
+#[viewer]
 impl<R: Request> TopicView<R> {
     // --snip--
     #[view(Topic::owner)]
@@ -684,8 +728,6 @@ impl<R: Request> TopicView<R> {
 `forum/topic/templates/destroy.rs.html` is relatively simple:
 
 ```html
-@extend base
-
 @block title {@title}
 
 @block content {
