@@ -24,5 +24,4 @@
 			</form>");}_c.push_str("
 		</div>
 	</body>
-</html>
-");Ok(anansi::web::Response::new("HTTP/1.1 200 OK", _c.into_bytes()))}
+</html>");Ok(anansi::web::Response::new("HTTP/1.1 200 OK", _c.into_bytes()))}

@@ -6,9 +6,9 @@ use anansi::db::{invalid, WhoseArg, Builder};
 use anansi::web::{Result, Method, Response, Reverse, BaseUser, BaseRequest, CsrfDefense, GetRecord};
 use crate::util::auth;
 use anansi::forms::{Form, Field, ToRecord, HasRecord, ToEdit};
-use anansi::{render, redirect, handle, base_view, handle_or_404};
+use anansi::{extend, render, redirect, handle, base_view, handle_or_404};
 use super::forms::{UserLogin, AdminSearch, FilterForm};
-use anansi::{check, record_view, record_admin};
+use anansi::{check, viewer, record_admin};
 use crate::register;
 use super::middleware::Auth;
 use super::super::sessions::middleware::Sessions;
@@ -51,7 +51,7 @@ pub fn initialize_admin<R: Request>(site: AdminRef<R>) {
     site.urls_mut().push(("/admin/filter/search", anansi::util::auth::admin::AuthAdminView::record_search::<Filter>));
 }
 
-#[record_view]
+#[viewer]
 impl<R: Request> AuthAdminView<R> {
     #[check(Group::is_visitor)]
     pub async fn login(req: &mut R) -> Result<Response> {
@@ -69,7 +69,7 @@ impl<R: Request> AuthAdminView<R> {
             req.session().delete(req).await?;
             Ok(redirect!())
         })?;
-        render!("logout")
+        extend!(req, base, "logout")
     }
 
     #[check(Group::is_admin)]
@@ -86,7 +86,7 @@ where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams, <M as R
         } else {
             None
         };
-        render!("record_index")
+        extend!(req, base, "record_index")
     }
 
     #[check(Group::is_admin)]
@@ -122,7 +122,7 @@ where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams, <M as R
         let m_edit = Self::record_edit::<M>;
         let filters = Filter::whose(filter::table_name().eq(M::table_name())).limit(25).query(req).await?;
         let search = Some(search.action(req, Self::record_search::<M>));
-        render!("record_index")
+        extend!(req, base, "record_index")
     }
 
     #[check(Group::is_admin)]
@@ -147,7 +147,7 @@ where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams
         let mut form = handle!(FilterForm, ToRecord<R>, req, || Ok(redirect!(req, BasicAdminSite::index)))?;
         form.filter.mut_widget().mut_attrs().insert("placeholder", "e.g. created > &quot;2022-02-22&quot;");
         let button = "Create";
-        render!("record_new")
+        extend!(req, base, "record_new")
     }
 
     #[check(Group::is_admin)]
@@ -157,7 +157,7 @@ where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams, <M as a
         let title = format!("Add {}", M::NAME);
         let form = handle!(<M as RecordAdmin<R>>::AddForm, ToRecord<R>, req, || Ok(redirect!(req, Self::record_index::<M>)))?;
         let button = "Create";
-        render!("record_new")
+        extend!(req, base, "record_new")
     }
 
     #[check(Group::is_admin)]
@@ -167,7 +167,7 @@ where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams
         let title = format!("Edit {}", M::NAME);
         let form = handle_or_404!(<M as RecordAdmin<R>>::AdminForm, ToEdit<R>, req, || Ok(redirect!(req, BasicAdminSite::index)))?;
         let button = "Edit";
-        render!("record_new")
+        extend!(req, base, "record_new")
     }
 }
 

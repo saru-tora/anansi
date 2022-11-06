@@ -1,3 +1,7 @@
-anansi::database!(sqlite);
+use anansi::project::prelude::*;
 
-anansi::middleware!();
+app_cache!(local);
+
+database!(sqlite);
+
+middleware!();

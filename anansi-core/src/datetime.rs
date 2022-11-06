@@ -7,8 +7,9 @@ use crate::db::invalid;
 use crate::web::Result;
 use crate::records::{DataType, RecordField, ToSql};
 use sqlx::{Decode, Database, database::HasValueRef};
+use serde::{Serialize, Deserialize};
 
-#[derive(PartialEq, PartialOrd, Clone, Copy, Debug)]
+#[derive(PartialEq, PartialOrd, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Date {
     year: u16,
     month: u8,
@@ -81,7 +82,7 @@ impl fmt::Display for Date {
     }
 }
 
-#[derive(PartialEq, PartialOrd, Clone, Copy, Debug)]
+#[derive(PartialEq, PartialOrd, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Time {
     hour: u8,
     minute: u8,
@@ -126,7 +127,7 @@ impl fmt::Display for Time {
     }
 }
 
-#[derive(PartialEq, PartialOrd, Clone, Copy, Debug)]
+#[derive(PartialEq, PartialOrd, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct DateTime {
     pub date: Date,
     pub time: Time,
@@ -163,6 +164,7 @@ impl DateTime {
         }
         let mut yday = s/86400;
         s -= yday*86400;
+        yday += 1;
         year += 1970;
         let last = if year % 4 != 0 {
             28
@@ -173,10 +175,10 @@ impl DateTime {
         } else {
             29
         };
-        let days = vec![31, last, 31, 30, 31, 30, 31, 30, 31, 30, 31];
+        let days = [31, last, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
         let mut month = 1;
-        for day in days {
-            if yday > day {
+        for day in &days {
+            if yday > *day {
                 month += 1;
                 yday -= day;
             } else {

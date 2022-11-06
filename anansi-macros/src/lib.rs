@@ -84,8 +84,8 @@ pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
     }
 
     let name_string = name.to_string();
-    let table = quote! {&format!("{}_{}", super::init::APP_NAME, #lowercase)};
-    let table_name = quote! {format!("{}_{}", super::init::APP_NAME, #lowercase)};
+    let table = quote! {&format!("{}_{}", super::APP_NAME, #lowercase)};
+    let table_name = quote! {format!("{}_{}", super::APP_NAME, #lowercase)};
     let record_fields = format_ident!("{}Fields", name);
     
     let primary = quote! {<#name as #pdt>::pk(&self)};
@@ -722,8 +722,8 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                         let name = &f.ident;
                         let member = name.as_ref().unwrap().to_string();
                         let m2 = member.clone();
-                        let column = quote! {&format!("{}_{}.{}", super::init::APP_NAME, #fname, #member)};
-                        let lowcolumn = quote! {&format!("{}_{}.{}", super::super::init::APP_NAME, #fname, #member)};
+                        let column = quote! {&format!("{}_{}.{}", super::APP_NAME, #fname, #member)};
+                        let lowcolumn = quote! {&format!("{}_{}.{}", super::super::APP_NAME, #fname, #member)};
                         let attrs = get_attrs(&f.attrs);
                         let mut fty = f.ty.clone();
                         match &f.ty {
@@ -781,8 +781,8 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                                         let ty = &ty[segment.len()+3..ty.len()-2];
                                         let lower = ty.to_lowercase();
                                         let mfield = format_ident!("{}Fields", ty);
-                                        let q = quote! {pub fn #name() -> #mfield<#mname> {let full_name = format!("{}_{}", super::super::init::APP_NAME, #fname); let join = format!("{}_{}", full_name, #lower); #mfield::new(anansi::db::Builder::new().inner_join(&join, &full_name, "id", &format!("{}_id", #fname)).inner_join(&format!("{}_{}", super::super::init::APP_NAME, #lower), &join, &format!("{}_id", #lower), "id"))}};
-                                        let q2 = quote! {pub fn #name(self) -> #mfield<F> {let full_name = format!("{}_{}", super::init::APP_NAME, #fname); let join = format!("{}_{}", full_name, #lower); #mfield::new(anansi::db::Builder::new().inner_join(&join, &full_name, "id", &format!("{}_id", #fname)).inner_join(&format!("{}_{}", super::init::APP_NAME, #lower), &join, &format!("{}_id", #lower), "id"))}};
+                                        let q = quote! {pub fn #name() -> #mfield<#mname> {let full_name = format!("{}_{}", super::super::APP_NAME, #fname); let join = format!("{}_{}", full_name, #lower); #mfield::new(anansi::db::Builder::new().inner_join(&join, &full_name, "id", &format!("{}_id", #fname)).inner_join(&format!("{}_{}", super::super::APP_NAME, #lower), &join, &format!("{}_id", #lower), "id"))}};
+                                        let q2 = quote! {pub fn #name(self) -> #mfield<F> {let full_name = format!("{}_{}", super::APP_NAME, #fname); let join = format!("{}_{}", full_name, #lower); #mfield::new(anansi::db::Builder::new().inner_join(&join, &full_name, "id", &format!("{}_id", #fname)).inner_join(&format!("{}_{}", super::APP_NAME, #lower), &join, &format!("{}_id", #lower), "id"))}};
                                         fv.push(q);
                                         fv2.push(q2);
                                         quote_spanned! {f.span() =>
@@ -967,20 +967,77 @@ pub fn base_view(_args: proc_macro::TokenStream, input: proc_macro::TokenStream)
 }
 
 #[proc_macro_attribute]
+pub fn cacheable(_args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as ItemFn);
+    let attrs = input.attrs;
+    let vis = input.vis;
+    let sig = input.sig;
+    let (req, ty) = if let syn::FnArg::Typed(pat_type) = sig.inputs.first().unwrap() {
+        (pat_type.pat.clone(), pat_type.ty.clone())
+    } else {
+        panic!("expected typed argument for cached view");
+    };
+    let ret = sig.output;
+    let sig_ident = &sig.ident;
+    let base_ident = format_ident!("_base_{}", sig_ident);
+    let cache_ident = format_ident!("_cache_{}", sig_ident);
+    
+    let name = format!("{}.parsed{0}", main_separator!()) + &sig.ident.to_string() + ".in";
+
+    let attr_ident = attrs[0].path.segments.last().unwrap().ident.to_string();
+    let tokens = &attrs[0].tokens;
+    let key = if tokens.to_string().contains("Group :: is_visitor") {
+        quote!{format!("_c{}", Self::#cache_ident::<N> as usize)}
+    } else {
+        panic!("expected cache to be set to visitor");
+    };
+    let extend = match attr_ident.as_str() {
+        "view" => quote! {{let mut _args = base::Args::new(); include!(concat!("templates", #name))}},
+        "check" => quote! {},
+        _ => panic!("expected `view` or `check` macro"),
+    };
+    let stmts = input.block.stmts;
+    let q = quote! {
+        #[anansi::check(#tokens)]
+        #vis async fn #cache_ident<const N: usize>(#req: #ty) #ret {
+            let key = #key;
+            let _b = if let Ok(v) = #req.cache().get(&key).await {
+                base::Args::from_bytes(v)?
+            } else {
+                let _b = Self::#base_ident(#req).await?;
+                #req.cache_mut().set_ex(&key, &_b.to_bytes(), Some(N)).await?;
+                _b
+            };
+            base::base(#req, _b)
+        }
+        async fn #base_ident(#req: #ty) -> anansi::web::Result<base::Args> {
+            #(#stmts)*
+            Ok(#extend)
+        }
+        #[anansi::check(#tokens)]
+        #vis async fn #sig_ident(#req: #ty) #ret {
+            let _b =  Self::#base_ident(#req).await?;
+            base::base(#req, _b)
+        }
+    };
+    q.into()
+}
+
+#[proc_macro_attribute]
 pub fn view(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as ItemFn);
     let args = parse_macro_input!(args as SchemaArgs);
     let vars = args.vars;
     let vis = input.vis;
     let sig = input.sig;
-    let name = format!("{}.parsed{0}", main_separator!()) + &sig.ident.to_string() + ".in";
+    let name = &sig.ident.to_string();
 
     let stmts = input.block.stmts;
     let q = quote! {
         #[anansi::check(#(#vars)*)]
         #vis #sig {
             #(#stmts)*
-            include!(concat!("templates", #name))
+            anansi::extend!(req, base, #name)
         }
     };
     q.into()
@@ -1031,12 +1088,15 @@ pub fn check(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> p
                 GenericParam::Type(ty) => {
                     let t = &ty.ident;
                     v.push(quote!{#t});
-                },
+                }
                 GenericParam::Lifetime(lt) => {
                     let l = &lt.lifetime;
                     v.push(quote!{#l});
-                },
-                _ => unimplemented!(),
+                }
+                GenericParam::Const(co) => {
+                    let c = &co.ident;
+                    v.push(quote!{#c});
+                }
             }
         }
         generic_idents = quote! {::<#(#v,)*>};
@@ -1115,7 +1175,7 @@ pub fn check_fn(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -
 }
 
 #[proc_macro_attribute]
-pub fn record_view(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub fn viewer(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as ViewerArgs);
     let imp = input.imp;
     let ty = &imp.self_ty;
@@ -1207,6 +1267,20 @@ pub fn record(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream
     }
 }
 
+struct CacheArgs {
+    n: Expr,
+    view: syn::Path,
+}
+
+impl Parse for CacheArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let n = input.parse().unwrap();
+        let _c: Comma = input.parse().unwrap();
+        let view = input.parse().unwrap();
+        Ok(Self {view, n,})
+    }
+}
+
 struct ViewerArgs {
     imp: ItemImpl,
 }
@@ -1287,6 +1361,42 @@ impl Parse for UrlArgs {
         }
         Ok(Self {req, first, exprs})
     }
+}
+
+#[proc_macro]
+pub fn extend(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as SchemaArgs);
+    let req = &input.vars[0];
+    let base = &input.vars[1];
+    let name = &input.vars[2];
+    let q = quote! {
+        {
+            let mut _args = #base::Args::new();
+            _args = include!(concat!("templates", anansi::main_separator!(), ".parsed", anansi::main_separator!(), #name, ".in"));
+            #base::#base(#req, _args)
+        }
+    };
+    q.into()
+}
+
+#[proc_macro]
+pub fn cache_view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as CacheArgs);
+    let mut view = input.view.segments.clone();
+    let name = if let syn::punctuated::Pair::End(t) = view.pop().unwrap() {
+        format_ident!("_cache_{}", t.ident)
+    } else {
+        unimplemented!();
+    };
+    let e = &input.n;
+    let n = match e {
+        Expr::Lit(n) => quote! {#n},
+        _ => quote! {{#e}}
+    };
+    let q = quote! {
+        #view #name::<#n>
+    };
+    q.into()
 }
 
 #[proc_macro]
@@ -1455,7 +1565,7 @@ pub fn register(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let lower = name.to_lowercase();
     let q = quote! {
         {
-            use super::init::APP_NAME;
+            use super::APP_NAME;
             use anansi::admin_site::RecordAdmin;
             site.register(anansi::humanize::capitalize(APP_NAME), anansi::admin_site::RecordEntry {name: #name, index: anansi::util::auth::admin::AuthAdminView::record_index::<#input>, new: anansi::util::auth::admin::AuthAdminView::record_new::<#input>});
             site.urls_mut().push((concat!("/admin/", #lower), anansi::util::auth::admin::AuthAdminView::record_index::<#input>));

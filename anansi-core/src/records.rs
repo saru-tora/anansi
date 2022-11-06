@@ -7,6 +7,9 @@ use std::str::FromStr;
 use std::ops::Deref;
 use std::error::Error;
 use async_trait::async_trait;
+use serde::{Serialize, Deserialize};
+use serde::ser::{Serializer, SerializeSeq};
+use serde::de::{Deserializer, Visitor, SeqAccess};
 
 use sqlx::{Decode, Database, database::HasValueRef};
 use rand::Rng;
@@ -40,7 +43,7 @@ impl AdminField for Text {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Boolean {
     b: bool,
 }
@@ -90,7 +93,7 @@ impl ToSql for Boolean {
     }
 }
 
-#[derive(Clone, PartialEq, Copy, Debug)]
+#[derive(Clone, PartialEq, Copy, Debug, Serialize, Deserialize)]
 pub struct BigInt {
     n: i64,
 }
@@ -155,7 +158,7 @@ pub fn generate_id() -> BigInt {
     BigInt::new(rng.gen_range(0..i64::MAX))
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Text {
     s: String,
 }
@@ -224,7 +227,7 @@ where String: Decode<'r, DB> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VarChar<const N: u16> {
     s: String,
 }
@@ -319,7 +322,7 @@ where String: Decode<'r, DB> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ForeignKey<M: Record, O: OnDelete = Cascade> {
     pk: M::Pk,
     o: PhantomData<O>,
@@ -405,7 +408,7 @@ where <<M as Record>::Pk as DataType>::T: Decode<'r, DB>, <M as Record>::Pk: std
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManyToMany<M: Record> {
     m: PhantomData<M>,
 }
@@ -417,6 +420,54 @@ impl<M: Record> ManyToMany<M> {
 }
 
 pub struct Objects<M>(Vec<M>);
+
+impl<M: Serialize + Record> Serialize for Objects<M> {
+    fn serialize<S>(&self, serializer: S) -> result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        for e in self {
+            seq.serialize_element(e)?;
+        }
+        seq.end()
+    }
+}
+
+struct ObjectsVisitor<M> {
+    m: PhantomData<M>
+}
+
+impl<M> ObjectsVisitor<M> {
+    fn new() -> Self {
+        Self {m: PhantomData}
+    }
+}
+
+impl<'de, R: Deserialize<'de>>Visitor<'de> for ObjectsVisitor<R> {
+    type Value = Objects<R>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("Objects<R>")
+    }
+
+    fn visit_seq<M: SeqAccess<'de>>(self, mut access: M) -> result::Result<Self::Value, M::Error> {
+        let mut v = Vec::with_capacity(access.size_hint().unwrap_or(0));
+        while let Some(r) = access.next_element()? {
+            v.push(r);
+        }
+        Ok(Objects {0: v})
+    }
+}
+
+impl<'de, M: Deserialize<'de> + Record> Deserialize<'de> for Objects<M> {
+    fn deserialize<D>(deserializer: D) -> result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(ObjectsVisitor::new())
+    }
+}
 
 impl<M: Record> Objects<M> {
     pub fn pks(&self) -> Vec<M::Pk> {
@@ -445,6 +496,9 @@ impl<M: Record> Objects<M> {
     pub fn len(&self) -> usize {
         self.0.len()
     }
+    pub fn iter<'a>(&'a self) -> std::slice::Iter<'a, M> {
+        self.0.iter()
+    }
     pub fn push(&mut self, value: M) {
         self.0.push(value);
     }
@@ -453,6 +507,15 @@ impl<M: Record> Objects<M> {
     }
     pub fn swap_remove(&mut self, index: usize) -> M {
         self.0.swap_remove(index)
+    }
+}
+
+impl<'a, M: Record> IntoIterator for &'a Objects<M> {
+    type Item = &'a M;
+    type IntoIter = std::slice::Iter<'a, M>;
+    #[inline]
+    fn into_iter(self) -> std::slice::Iter<'a, M> {
+        self.iter()
     }
 }
 

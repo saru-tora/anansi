@@ -1,4 +1,4 @@
-use anansi::{check, render};
+use anansi::{check, extend};
 use anansi::web::{View, Response, Result, BaseRequest};
 pub use anansi::admin_site::{RecordAdmin, RecordEntry, AdminSite, AdminRef, AdminEntry};
 use super::super::auth::admin::{base, Request, AuthAdminView};
@@ -47,6 +47,6 @@ impl<R: Request> BasicAdminSite<R> {
     #[check(Group::is_admin)]
     pub async fn index(req: &mut R) -> Result<Response> {
         let title = "Site Administration";
-        render!("index")
+        extend!(req, base, "index")
     }
 }
