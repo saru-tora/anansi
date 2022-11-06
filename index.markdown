@@ -84,8 +84,6 @@ Templates
 Templates allow you to mix Rust with HTML for formatting.
 
 ```html
-@extend base
-
 @block title {@title}
 
 @block content {
