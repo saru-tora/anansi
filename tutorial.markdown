@@ -38,7 +38,7 @@ password = "mypassword"
 address = "127.0.0.1:5432"
 ```
 
-The default cache uses local memory, which may work for testing. If you want to use Redis, in `Cargo.toml`, add the feature `"redis"`. In `src/project.rs`, change `app_cache!(local)` to `app_cache!(redis)`. Finally, in `settings.toml`, change `[caches.default]` to :
+The default cache uses local memory, which may work for testing. For an actual site, if you want to use Redis, add the feature `"redis"` to `Cargo.toml`. In `src/project.rs`, change `app_cache!(local)` to `app_cache!(redis)`. Finally, in `settings.toml`, change `[caches.default]` to :
 
 ```toml
 location = "redis://127.0.0.1/"
@@ -251,7 +251,7 @@ Caching
 While caching may not be required for a small site, this is an example of how to do it in `forum/topic/views.rs`:
 
 ```rust
-use anansi::cache::prelude::*
+use anansi::cache::prelude::*;
 
 #[viewer]
 impl<R: Request> TopicView<R> {
@@ -545,7 +545,7 @@ impl<R: Request> TopicView<R> {
         let form = handle!(TopicForm, ToRecord<R>, req, |topic| {
     	    Ok(redirect!(req, Self::show, topic))
         })?;
-        extend!("login")
+        extend!(req, "login")
     }
 }
 ```
@@ -609,7 +609,7 @@ impl<R: Request> TopicView<R> {
         let form = handle_or_404!(TopicForm, ToEdit<R>, req, |topic| {
     	    Ok(redirect!(req, Self::show, topic))
         })?;
-        extend!("login")
+        extend!(req, "login")
     }
 }
 ```
