@@ -545,7 +545,7 @@ impl<R: Request> TopicView<R> {
         let form = handle!(TopicForm, ToRecord<R>, req, |topic| {
     	    Ok(redirect!(req, Self::show, topic))
         })?;
-        extend!(req, "login")
+        extend!(req, base, "login")
     }
 }
 ```
@@ -609,7 +609,7 @@ impl<R: Request> TopicView<R> {
         let form = handle_or_404!(TopicForm, ToEdit<R>, req, |topic| {
     	    Ok(redirect!(req, Self::show, topic))
         })?;
-        extend!(req, "login")
+        extend!(req, base, "login")
     }
 }
 ```
