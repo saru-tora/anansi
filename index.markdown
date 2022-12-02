@@ -102,7 +102,7 @@ Templates allow you to mix Rust with HTML for formatting.
 Components
 ==========
 
-Components can add reactivity.
+Reactivity can be added with WebAssembly.
 
 ```rust
 #[derive(Properties, Serialize, Deserialize)]
