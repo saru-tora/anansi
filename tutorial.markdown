@@ -43,7 +43,7 @@ address = "127.0.0.1:5432"
 Starting the server
 ===================
 
-To start the web server, go to `mini-forum/` directory and execute:
+To start the web server, go to the `mini-forum/` directory and execute:
 ```shell
 $ ananc run
 ```
@@ -238,6 +238,172 @@ routes! {
 At this point, you can visit the index page you wrote at [http://127.0.0.1:9090/](http://127.0.0.1:9090/), but there won't be much to see since there aren't any topics.
 
 <br>
+
+Components
+----------
+
+You can use components to make pages interactive, though there is some set up involved, so you can skip this section if you're not interested. If you want to keep going, you'll first need to install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) if you haven't already. Next, go to the `mini-forum/` directory and run:
+
+```shell
+$ ananc init-components
+```
+
+This will create the `mini-forum-comps` and `mini-forum-wasm` crates. In `mini-forum-comps/Cargo.toml`, add the following dependency:
+
+```toml
+gloo-net = { version = "0.2", features = ["http", "json"] }
+```
+
+Then create `mini-forum-comps/src/loader.rs`:
+
+```rust
+use anansi_aux::prelude::*;
+use gloo_net::http::Request;
+
+#[derive(Properties, Serialize, Deserialize)]
+pub struct LoaderProps {
+    pub load_url: String,
+    pub show_url: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Data {
+    pub id: String,
+    pub title: String,
+}
+
+#[store]
+#[derive(Serialize, Deserialize)]
+pub struct Loader {
+    visible: bool,
+    page: u32,
+    fetched: Vec<Data>,
+    status: String,
+}
+
+#[component(Loader)]
+fn init(props: LoaderProps) -> Rsx {
+    let state = Self::store(true, 0, vec![], String::new());
+
+    let handle_click = async_callback! {
+        let resp = Request::get(&props.load_url)
+            .query([("page", state.page.to_string())])
+            .send().await;
+        let json = match resp {
+            Ok(r) => r.json::<Vec<Data>>().await,
+            Err(_) => return state.status = "Problem getting topics".to_string(),
+        };
+        match json {
+            Ok(mut f) => {
+                if f.len() < 25 || state.page >= 2 {
+                    state.visible = false;
+                } else {
+                    state.page += 1;
+                }
+                state.fetched.append(&mut f);
+                state.status = "".to_string();
+            }
+            Err(_) => state.status = "Problem loading topics".to_string(),
+        }
+    };
+
+    rsx! {
+        @for data in &state.fetched {
+            <li>@href props.show_url, data.id {@data.title}</li>
+        }
+        @if !state.status.is_empty() {
+            <div>@state.status</div>
+        }
+        @if state.visible {
+            <button @onclick=handle_click>Load more</button>
+        }
+    }
+}
+```
+
+This will create a button that will fetch additional topics when pressed. Now, edit `mini-forum-comps/src/lib.rs`:
+
+```rust
+pub mod loader;
+
+anansi_aux::app_components! {
+    loader::Loader,
+}
+```
+
+Add the files to `src/main.rs`:
+
+```rust
+app_statics! {
+    admin,
+    self,
+}
+
+wasm_statics!("mini-forum-wasm");
+```
+
+You can then put it in `forum/topic/views.rs`, and add a `load` function:
+
+```rust
+use anansi::{url, check, http_404};
+use mini_forum_comps::loader::{Loader, Data};
+
+#[viewer]
+impl<R: Request> TopicView<R> {
+    #[view(Group::is_visitor)]
+    pub async fn index(req: &mut R) -> Result<Response> {
+        let title = "Latest Topics";
+        let topics = Topic::order_by(date().desc())
+            .limit(25).query(req).await?;
+        // Replace with url!(req, Self::show) later.
+        let show_url = "/topic";
+        let load_url = url!(req, Self::load);
+    }
+    #[check(Group::is_visitor)]
+    pub async fn load(req: &mut R) -> Result<Response> {
+        let page: u32 = req.params().get("page")?.parse()?;
+        if page > 2 {
+            http_404!();
+        }
+        let topics = Topic::order_by(date().desc())
+            .limit(25).offset(25 * (page + 1)).query(req).await?;
+        let data: Vec<Data> = topics.iter().map(|t| {
+            Data {id: t.pk().to_string(), title: t.title.to_string()}
+        }).collect();
+        Ok(Response::from_json(serde_json::to_string(&data)?))
+    }
+}
+```
+
+And use it in `forum/topic/templates/index.rs.html`:
+
+```html
+@block content {
+    @load components {
+        <h1>@title</h1>
+        <ul>
+            @for topic in &topics {
+                <li>@topic.title</li>
+            }
+            @if topics.len() == 25 {
+                <Loader @show_url @load_url />
+            }
+        </ul>
+    }
+}
+```
+
+Finally, don't forget to add `load` to `forum/urls.rs`:
+
+```rust
+use super::topic::views::TopicView;
+
+routes! {
+    path!("load", TopicView::load),
+}
+```
+
+If you've never used wasm-pack before, the first compiliation may take a while.
 
 Caching
 -------
