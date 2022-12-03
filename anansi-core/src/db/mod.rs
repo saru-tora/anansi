@@ -316,6 +316,10 @@ impl<B: Record> Builder<B> {
         self.val.push_str(&format!(" LIMIT {}", n));
         self
     }
+    pub fn offset(mut self, n: u32) -> Self {
+        self.val.push_str(&format!(" OFFSET {}", n));
+        self
+    }
     pub fn val(self) -> String {
         self.start + &self.join + &self.val
     }
@@ -739,6 +743,32 @@ pub async fn delete_from<B: BaseRequest>(table: &str, table_id: &str, id: BigInt
     req.raw().pool().raw_execute(&val).await
 }
 
+pub struct Offset<M: Record> {
+    val: Builder<M>,
+}
+
+impl<M: Record> Offset<M> {
+    pub fn from(val: Builder<M>) -> Self {
+        Self {val}
+    }
+    pub async fn query<B: BaseRequest>(self, req: &B) -> Result<Objects<M>> {
+        self.raw_query(req.raw().pool()).await
+    }
+    async fn raw_query<D: DbPool>(self, pool: &D) -> Result<Objects<M>> {
+        let mut val = self.val.val();
+        val.push_str(";\n");
+
+        match pool.raw_fetch_all(&val).await {
+            Ok(rows) => {
+                M::from(rows)
+            }
+            Err(_) => {
+                Err(invalid())
+            }
+        }
+    }
+}
+
 pub struct Limit<M: Record> {
     val: Builder<M>,
 }
@@ -746,6 +776,9 @@ pub struct Limit<M: Record> {
 impl<M: Record> Limit<M> {
     pub fn from(val: Builder<M>) -> Self {
         Self {val}
+    }
+    pub fn offset(self, n: u32) -> Offset<M> {
+        Offset::from(self.val.offset(n))
     }
     pub async fn query<B: BaseRequest>(self, req: &B) -> Result<Objects<M>> {
         self.raw_query(req.raw().pool()).await

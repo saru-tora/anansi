@@ -1,6 +1,6 @@
 [package]
 name = "anansi"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 authors = ["sarutora"]
 license = "MIT"
@@ -18,7 +18,7 @@ postgres = ["anansi-core/postgres"]
 redis = ["anansi-core/redis"]
 
 [dependencies]
-anansi-core = { path = "../anansi-core" , version = "0.6.0" }
+anansi-core = { path = "../anansi-core" , version = "0.7.0" }
 async-trait = "0.1.57"
 async-recursion = "1.0.0"
 serde_json = "1.0"

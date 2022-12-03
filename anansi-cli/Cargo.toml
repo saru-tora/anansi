@@ -1,6 +1,6 @@
 [package]
 name = "ananc"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 authors = ["sarutora"]
 license = "MIT"
@@ -13,3 +13,7 @@ keywords = ["http", "web", "framework"]
 
 [dependencies]
 which = "4.3.0"
+proc-macro2 = "1.0"
+syn = { version = "1.0", features = [ "full", "fold" ]}
+quote = "1.0"
+toml = "0.5"

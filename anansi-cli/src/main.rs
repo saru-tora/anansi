@@ -9,6 +9,9 @@ use std::process::Command;
 
 use which::which;
 
+use toml::Value;
+use toml::map::Map;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn main() {
@@ -18,6 +21,7 @@ pub fn main() {
         match first {
             "run" => {
                 template(&args, false, "");
+                check_wasm(&args);
                 cargo(&args);
             }
             "check" => {
@@ -32,6 +36,9 @@ pub fn main() {
             "new" => {
                 cargo(&args);
                 new(&args);
+            }
+            "init-components" => {
+                init_components(&args);
             }
             "app" => {
                 if args.len() > 2 {
@@ -112,13 +119,294 @@ fn make_view(args: &Vec<String>) {
         t3.push("base.rs.html");
         cp_as!(&t2, concat!("templates", main_separator!(), "index.rs.html"));
         cp_as!(&t3, concat!("templates", main_separator!(), "base.rs.html"));
-        append(".", "mod.rs", &format!("pub mod {};\n", arg).into_bytes());
+        append(".", "mod.rs", &format!("\npub mod {};\n", arg).into_bytes());
         println!("Created view \"{}\"", arg);
     }
 }
 
 fn usage() {
     eprintln!("Anansi's project manager\n\nUSAGE:\n    ananc [OPTIONS] [SUBCOMMAND]\n\nOPTIONS:\n    --version\tPrint version info and exit\n\nIn addition to Cargo's commands, some others are:\n    app\t\t\tCreate an app\n    sql-migrate\t\tView SQL for migration files\n    make-migrations\tCreate migration files for the project\n    migrate\t\tApply migrations");
+}
+
+fn get_src(args: &Vec<String>, extra: &str) -> (SystemTime, PathBuf) {
+    let path = match fs::canonicalize(&args[0]) {
+        Ok(o) => o,
+        Err(_) => which(&args[0]).unwrap(),
+    };
+    let date = fs::metadata(path).unwrap().modified().unwrap();
+    let mut cwd = env::current_dir().unwrap();
+    cwd.push(extra);
+    let cs = cwd.clone();
+    let mut dir = &cs;
+    for component in cs.components().rev() {
+        if let Component::Normal(c) = component {
+            if c == "src" {
+                dir = &cwd;
+                break;
+            }
+        }
+        cwd.pop();
+    }
+    (date, dir.clone())
+}
+
+fn check_wasm(args: &Vec<String>) {
+    let (mut date, mut dir) = get_src(args, "");
+    if !check_files(&mut date, &dir) {
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        if name.ends_with("-wasm") || name.ends_with("-comps") {
+            dir.pop();
+            check_files(&mut date, &dir);
+        }
+    }
+}
+
+fn check_files(date: &mut SystemTime, dir: &PathBuf) -> bool {
+    let dirs = read_dir(&dir).unwrap();
+    let mut checked = false;
+    for f in dirs {
+        let f = f.unwrap();
+        if f.file_type().unwrap().is_dir() {
+            let name = f.file_name().to_str().unwrap().to_string();
+            if name.ends_with("-wasm") {
+                checked = true;
+                let mut orig = dir.clone();
+                orig.push(f.file_name());
+                let mut wasm = orig.clone();
+                wasm.push("pkg");
+                let dirs = match read_dir(&wasm) {
+                    Ok(d) => d,
+                    Err(_) => {
+                        wasm.pop();
+                        build_wasm(&wasm);
+                        return true;
+                    }
+                };
+                for f in dirs {
+                    let f = f.unwrap();
+                    if f.file_name().to_str().unwrap().ends_with(".wasm") {
+                        let modified = f.metadata().unwrap().modified().unwrap();
+                        if modified > *date {
+                            *date = modified
+                        }
+                        break;
+                    }
+                }
+                let (base_name, _) = name.rsplit_once("-wasm").unwrap();
+                let comp_name = format!("{}-comps", base_name);
+                let mut comp = dir.clone();
+                comp.push(comp_name);
+                comp.push("src");
+                wasm.pop();
+                if check_files2(&comp, &wasm, &date) {
+                    return true;
+                }
+            }
+        }
+    }
+    checked
+}
+
+fn build_wasm(dir: &PathBuf) {
+    let mut cmd = Command::new("wasm-pack");
+        cmd.arg("build");
+        cmd.arg("--target");
+        cmd.arg("web");
+        cmd.arg(dir);
+        let mut child = cmd.spawn().expect("Failed to start wasm-pack");
+        child.wait().expect("failed to wait on child");
+}
+
+fn check_files2(dir: &PathBuf, wasm: &PathBuf, date: &SystemTime) -> bool {
+    let src = read_dir(&dir).unwrap();
+    for s in src {
+        let s = s.unwrap();
+        let modified = s.metadata().unwrap().modified().unwrap();
+        if modified > *date {
+            build_wasm(&wasm);
+            return true;
+        }
+    }
+    false
+}
+
+fn init_components(args: &Vec<String>) {
+    let (_, dir) = get_src(args, "");
+    let name = dir.file_name().unwrap().to_str().unwrap();
+    let cargo_toml = fs::read_to_string("Cargo.toml").expect("Could not find Cargo.toml");
+    let comps = format!("{}-comps", name);
+    let mut cargo_toml: Map<String, Value> = toml::from_str(&cargo_toml).expect("Could not parse settings.toml");
+    {
+        let members = cargo_toml.get_mut("workspace").unwrap().get_mut("members").unwrap().as_array_mut().unwrap();
+        members.push(Value::String(comps.clone()));
+    }
+    {
+        let deps = cargo_toml.get_mut("dependencies").unwrap().as_table_mut().unwrap();
+        deps.insert("anansi-aux".to_string(), Value::String(format!("{}", VERSION)));
+        {
+            let mut table = Map::new();
+            table.insert("path".to_string(), Value::String(comps.clone()));
+            table.insert("version".to_string(), Value::String("*".to_string()));
+            deps.insert(comps.clone(), Value::Table(table));
+        }
+        {
+            let mut table = Map::new();
+            table.insert("version".to_string(), Value::String("1.0".to_string()));
+            table.insert("features".to_string(), Value::Array(vec![Value::String("derive".to_string())]));
+            deps.entry("serde").or_insert(Value::Table(table));
+        }
+        deps.entry("serde_json").or_insert(Value::String("1.0".to_string()));
+    }
+    fs::write("Cargo.toml", toml::to_string(&cargo_toml).unwrap().into_bytes()).unwrap();
+    let comps_args = vec!["".to_string(), "new".to_string(), comps.clone(), "--lib".to_string()];
+    cargo(&comps_args);
+    let mut comp_path = PathBuf::from(&comps);
+    append(comp_path.to_str().unwrap(), "Cargo.toml", &format!("wasm-bindgen = \"0.2\"
+serde = {{ version = \"1.0\", features = [\"derive\"] }}
+serde_json = \"1.0\"
+wasm-bindgen-futures = \"0.4\"
+async-channel = \"1.7.1\"
+anansi-aux = \"{}\"", VERSION).into_bytes());
+    comp_path.push("src");
+    comp_path.push("lib.rs");
+    let wasm = format!("{}-wasm", name);
+    let under_wasm = wasm.replace('-', "_");
+    let under_comps = comps.replace('-', "_");
+    fs::write(comp_path, "anansi_aux::app_components! {}".to_string().into_bytes()).unwrap();
+    let wasm_args = vec!["".to_string(), "new".to_string(), wasm.clone(), "--lib".to_string()];
+    {
+        let members = cargo_toml.get_mut("workspace").unwrap().get_mut("members").unwrap().as_array_mut().unwrap();
+        members.push(Value::String(wasm.clone()));
+        fs::write("Cargo.toml", toml::to_string(&cargo_toml).unwrap().into_bytes()).unwrap();
+    }
+    cargo(&wasm_args);
+    let mut wasm_path = PathBuf::from(&wasm);
+    let mut js = "const registerServiceWorker = async () => {
+  if ('serviceWorker' in navigator) {
+    try {
+      const registration = await navigator.serviceWorker.register(
+        '/static/sw.js',
+        {
+          scope: '/static/',
+        }
+      );
+    } catch (error) {
+      console.error(`Registration failed with ${error}`);
+    }
+  }
+};
+registerServiceWorker();
+
+let mod;
+document.addEventListener('click', (e) => {
+  let paths = e.composedPath();
+  let callback;
+  let id;
+  for (let i = 0; i < paths.length; i++) {
+    let el = paths[i];
+    let attributes = el.attributes;
+    if (attributes) {
+      let onclick = attributes.getNamedItem('on:click');
+      let aid = attributes.getNamedItem('a:id');
+      if (onclick && aid) {
+        callback = onclick.value;
+        id = aid.value;
+        break;
+      }
+    }
+  }
+  if (callback) {
+    if (mod) {
+      mod.call(callback, id);
+    } else {
+      import('/static/pkg/".to_string();
+    js.push_str(&under_wasm);
+    js.push_str(".js').then((module) => {
+        module.default().then(() => {
+          module.start();
+          mod = module;
+          mod.call(callback, id);
+        });
+      });
+    }
+  }
+});");
+    make_file(&wasm_path, "main", ".js", js);
+    let mut sw = "const addResourcesToCache = async (resources) => {
+  const cache = await caches.open('v1');
+  await cache.addAll(resources);
+};
+
+const putInCache = async (request, response) => {
+  const cache = await caches.open('v1');
+  await cache.put(request, response);
+};
+
+const cacheFirst = async ({ request, preloadResponsePromise }) => {
+  const responseFromCache = await caches.match(request);
+  if (responseFromCache) {
+    return responseFromCache;
+  }
+
+  const preloadResponse = await preloadResponsePromise;
+  if (preloadResponse) {
+    console.info('using preload response', preloadResponse);
+    putInCache(request, preloadResponse.clone());
+    return preloadResponse;
+  }
+
+  try {
+    const responseFromNetwork = await fetch(request);
+    putInCache(request, responseFromNetwork.clone());
+    return responseFromNetwork;
+  } catch (error) {
+    return new Response('Network error happened', {
+      status: 408,
+      headers: { 'Content-Type': 'text/plain' },
+    });
+  }
+};
+
+const enableNavigationPreload = async () => {
+  if (self.registration.navigationPreload) {
+    await self.registration.navigationPreload.enable();
+  }
+};
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(enableNavigationPreload());
+});
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    addResourcesToCache([".to_string();
+    sw.push_str(&format!("
+      '/pkg/main.js',
+      '/pkg/{}.js',
+      '/pkg/{0}_bg.wasm',
+    ", under_wasm));
+    sw.push_str("])
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  event.respondWith(
+    cacheFirst({
+      request: event.request,
+      preloadResponsePromise: event.preloadResponse,
+    })
+  );
+});");
+    make_file(&wasm_path, "sw", ".js", sw);
+    append(wasm_path.to_str().unwrap(), "Cargo.toml", &format!("wasm-bindgen = \"0.2\"
+anansi-aux = \"{}\"
+{} = {{ path = \"../{1}\" , version = \"*\" }}
+
+[lib]
+crate-type = [\"cdylib\"]", VERSION, comps).into_bytes());
+    wasm_path.push("src");
+    wasm_path.push("lib.rs");
+    fs::write(wasm_path, format!("anansi_aux::start!({});", under_comps)).unwrap();
 }
 
 fn new(args: &Vec<String>) {
@@ -129,6 +417,7 @@ fn new(args: &Vec<String>) {
     cp!(arg_path, "settings.toml");
     cp!(src, "project.rs", "urls.rs", "main.rs");
     append(name, ".gitignore", b"/settings.toml\n/database.db*");
+    prepend(name, "Cargo.toml", b"[workspace]\nmembers = [\n    \".\",\n]\n\n");
     append(name, "Cargo.toml", &format!("anansi = {{ version = \"{}\", features = [\"sqlite\"] }}\nasync-trait = \"0.1.57\"", VERSION).into_bytes());
     fs::create_dir(format!("{}{MAIN_SEPARATOR}src{MAIN_SEPARATOR}http_errors", name)).unwrap();
     cp!(src, concat!("http_errors", main_separator!(), "500.html"));
@@ -142,6 +431,18 @@ fn new(args: &Vec<String>) {
     s2.push(".parsed");
     fs::create_dir(s2).unwrap();
     template(args, false, &format!("{name}"));
+}
+
+fn prepend(dir_name: &str, file_name: &str, content: &[u8]) {
+    let path = format!("{}{}{}", dir_name, MAIN_SEPARATOR, file_name);
+    let mut original = fs::read(&path).unwrap();
+    let mut content = content.to_vec();
+    content.append(&mut original);
+    let mut file = fs::OpenOptions::new()
+      .write(true)
+      .open(format!("{}{}{}", dir_name, MAIN_SEPARATOR, file_name))
+      .expect(&format!("error with {}{}{}", dir_name, MAIN_SEPARATOR, file_name));
+   file.write_all(&content).unwrap();
 }
 
 fn append(dir_name: &str, file_name: &str, content: &[u8]) {
@@ -179,25 +480,8 @@ fn make(dir: &PathBuf, name: &str, content: String) {
 }
 
 fn template(args: &Vec<String>, mut force: bool, extra: &str) {
-    let path = match fs::canonicalize(&args[0]) {
-        Ok(o) => o,
-        Err(_) => which(&args[0]).unwrap(),
-    };
-    let date = fs::metadata(path).unwrap().modified().unwrap();
-    let mut cwd = env::current_dir().unwrap();
-    cwd.push(extra);
-    let cs = cwd.clone();
-    let mut dir = &cs;
-    for component in cs.components().rev() {
-        if let Component::Normal(c) = component {
-            if c == "src" {
-                dir = &cwd;
-                break;
-            }
-        }
-        cwd.pop();
-    }
-    search(&date, dir, &mut force);
+    let (date, dir) = get_src(args, extra);
+    search(&date, &dir, &mut force);
 }
 
 fn search(date: &SystemTime, current: &PathBuf, force: &mut bool) {
@@ -276,12 +560,13 @@ fn cargo(args: &Vec<String>) {
 }
 
 struct Parser {
+    lower_comp: String,
     blocks: Vec<String>,
 }
 
 impl Parser {
     fn new() -> Self {
-        Self {blocks: vec![]}
+        Self {lower_comp: String::new(), blocks: vec![]}
     }
     fn parse(&mut self, name: &PathBuf) {
         let content = fs::read_to_string(name).unwrap().trim().to_string();
@@ -298,7 +583,7 @@ impl Parser {
             self.extend(&mut chrs)
         } else {
             let mut view = String::from("{let mut _c = String::new();");
-            view.push_str(&self.process(content));
+            view.push_str(&self.process(&content));
             view.push_str("Ok(anansi::web::Response::new(\"HTTP/1.1 200 OK\", _c.into_bytes()))}");
             view
         };
@@ -346,7 +631,7 @@ impl Parser {
         let mut f = fs::File::create(n2).unwrap();
         write!(f, "{}", view).unwrap();
     }
-    fn process(&mut self, content: String) -> String {
+    fn process(&mut self, content: &str) -> String {
         let mut view = String::from("_c.push_str(\"");
         let mut chars = content.chars();
         while let Some(c) = chars.next() {
@@ -360,6 +645,9 @@ impl Parser {
                 '@' => {
                     self.at(&mut view, &mut chars);
                 }
+                '<' => {
+                    self.tag(&mut view, &mut chars);
+                }
                 _ => {
                     view.push(c);
                 }
@@ -367,6 +655,43 @@ impl Parser {
         }
         view.push_str("\");");
         view
+    }
+    fn tag(&mut self, view: &mut String, chars: &mut Chars) {
+        let (name, extra) = collect_name(chars);
+        if !name.starts_with(char::is_uppercase) {
+            view.push('<');
+            view.push_str(&name);
+        } else {
+            let args = collect(chars, '>');
+            let (args, _) = args.rsplit_once('/').unwrap();
+            let mut chrs = args.chars();
+            let mut list = String::new();
+            loop {
+                let arg = collect(&mut chrs, ' ');
+                if arg.is_empty() {
+                    break;
+                }
+                if arg.starts_with('@') {
+                    let (_, a) = arg.split_once('@').unwrap();
+                    list.push_str(&format!(".{}({0})", a));
+                } else {
+                    let (n, a) = arg.split_once('=').unwrap();
+                    let ar = if a.trim().starts_with('@') {
+                        let (_, a) = a.split_once('@').unwrap();
+                        a.to_string()
+                    } else {
+                        a.to_string()
+                    };
+                    list.push_str(&format!(".{}({})", n, ar));
+                }
+            }
+            view.push_str(&format!("\");_c.push_str(&format!(\"<!--av a:id={{}}-->\", _p.id()));_c.push_str(&<{} as anansi_aux::components::Component>::init(<{0} as anansi_aux::components::Component>::Properties::new(){}.build(), &mut _p));_c.push_str(\"<!--/av-->", name, list));
+        }
+        if extra == '@' {
+            self.at(view, chars);
+        } else {
+            view.push(extra);
+        }
     }
     fn extend(&mut self, chars: &mut Chars) -> String {
         let mut blocks = HashMap::new();
@@ -383,7 +708,7 @@ impl Parser {
                     }
                 }
                 get_block(chars, &mut block);
-                let block = self.process(block);
+                let block = self.process(&block);
                 let block = format!("{{let mut _c = String::new();{} _c}}", block);
                 blocks.insert(name, block);
             } else {
@@ -464,6 +789,7 @@ fn collect_name(chars: &mut Chars) -> (String, char) {
             match c {
                 ' ' => {}
                 '<' => {}
+                '>' => {}
                 '\n' => {}
                 _ => {
                     name.push(c);
@@ -561,7 +887,7 @@ impl Parser {
         }
         let keyword = s.clone();
         let mut find_brace = true;
-        match s.as_str() {
+        match s.trim() {
             "if" => {}
             "for" => {}
             "loop" => {}
@@ -571,6 +897,17 @@ impl Parser {
                 self.blocks.push(name.clone());
                 view.push_str(&format!("_c.push_str(&_base_args._{});_c.push_str(\"{}", name, ex));
                 return;
+            }
+            "load" => {
+                let (name, ex) = collect_name(chars);
+                if name == "components" {
+                    s = format!("let mut _p = anansi_aux::components::Pauser::new();");
+                } else {
+                    unimplemented!();
+                }
+                if ex == '{' {
+                    find_brace = false;
+                }
             }
             "build" => {
                 let (name, ex) = collect_name(chars);
@@ -585,17 +922,10 @@ impl Parser {
                 return;
             }
             "link" => {
-                s.clear();
-                let line = collect(chars, '{');
-                let args: Vec<&str> = line.split(',').collect();
-                let mut segments = vec![];
+                let (av, segments) = get_attrs(&mut s, chars);
                 let mut attrs = String::new();
-                for arg in args {
-                    if arg.contains("=") {
-                        attrs.push_str(&format!(" {}", arg.replace("\"", "\\\"")));
-                    } else {
-                        segments.push(arg);
-                    }
+                for attr in av {
+                    attrs.push_str(&format!(" {}", attr.replace("\"", "\\\"")));
                 }
                 let mut u = String::from(segments[0].clone());
                 for segment in &segments[1..] {
@@ -603,8 +933,27 @@ impl Parser {
                 }
                 view.push_str(&format!("_c.push_str(&format!(\"<a href=\\\"{{}}\\\"{}>\", anansi::url!({})));", attrs, u));
                 let blk = collect(chars, '}');
-                view.push_str(&self.process(blk));
+                view.push_str(&self.process(&blk));
                 view.push_str("_c.push_str(\"</a>");
+                return;
+            }
+            "href" => {
+                let (_, segments) = get_attrs(&mut s, chars);
+                let mut u = String::from(segments[0].clone());
+                let mut v = String::from("{}");
+                for segment in &segments[1..] {
+                    u.push_str(&format!(", {}", segment));
+                    v.push_str("/{}");
+                }
+                view.push_str(&format!("_c.push_str(&format!(\"<a href=\\\"{}\\\">\", {}));", v, u));
+                let blk = collect(chars, '}');
+                view.push_str(&self.process(&blk));
+                view.push_str("_c.push_str(\"</a>");
+                return;
+            }
+            "onclick" => {
+                let (callback, ex) = collect_name(chars);
+                view.push_str(&format!("_c.push_str(&format!(\"on:click=\\\"{}_{}[0]\\\" a:id=\\\"{{}}\\\"\", _p.add()));_c.push_str(\"{}", self.lower_comp, callback, ex));
                 return;
             }
             "cache" => {
@@ -624,7 +973,7 @@ impl Parser {
 
                 view.push_str(&format!("{{let _d = if let Ok(res) = {req}.cache().get({key}) {{String::from_utf(res)?}} else {{let mut _c = String::new();"));
                 let blk = collect(chars, '}');
-                view.push_str(&self.process(blk));
+                view.push_str(&self.process(&blk));
                 view.push_str(&format!("{req}.cache_mut().set_ex({key}, _c.as_bytes(), {timeout}).await?; _c\"}}; _c.push_str(&_d);}} _c.push_str(\""));
                 return;
             }
@@ -643,7 +992,7 @@ impl Parser {
                     view.push_str(&blk);
                     view.push_str("_c.push_str(\"");
                 } else {
-                    variable(&extra, &mut s, chars, view);
+                    get_var(&extra, &mut s, chars, view);
                 }
                 return;
             }
@@ -671,14 +1020,17 @@ impl Parser {
                 }
                 '}' => {
                     match keyword.as_str() {
-                        "build" => view.push_str("</form>"),
-                        _ => {}
+                        "build" => view.push_str("</form>\");}_c.push_str(\""),
+                        "load" => view.push_str("\");_c.push_str(&_p.to_string());}_c.push_str(\""),
+                        _ => view.push_str("\");}_c.push_str(\""),
                     }
-                    view.push_str("\");}_c.push_str(\"");
                     return;
                 }
                 '@' => {
                     self.at(view, chars);
+                }
+                '<' => {
+                    self.tag(view, chars);
                 }
                 _ => {
                     view.push(c);
@@ -689,6 +1041,31 @@ impl Parser {
     }
 }
 
+fn get_var(extra: &str, s: &mut String, chars: &mut Chars, view: &mut String) {
+    if extra == "(" {
+        unimplemented!();
+    } else {
+        s.push_str(&collect_var(chars));
+        view.push_str(&format!("_c.push_str(&anansi::web::html_escape(&format!(\"{{}}\", {})));_c.push_str(\"{}", s, extra));
+    }
+}
+
+fn get_attrs(s: &mut String, chars: &mut Chars) -> (Vec<String>, Vec<String>) {
+    s.clear();
+    let line = collect(chars, '{');
+    let args: Vec<&str> = line.split(',').collect();
+    let mut segments = vec![];
+    let mut attrs = vec![];
+    for arg in args {
+        if arg.contains("=") {
+            attrs.push(arg.to_string());
+        } else {
+            segments.push(arg.to_string());
+        }
+    }
+    (attrs, segments)
+}
+
 fn variable(extra: &str, s: &mut String, chars: &mut Chars, view: &mut String) {
     if extra == "(" {
         s.push_str(extra);
@@ -697,4 +1074,35 @@ fn variable(extra: &str, s: &mut String, chars: &mut Chars, view: &mut String) {
     } else {
         view.push_str(&format!("_c.push_str(&anansi::web::html_escape(&format!(\"{{}}\", {})));_c.push_str(\"{}", s, extra));
     }
+}
+
+fn collect_var(chars: &mut Chars) -> String {
+    let mut s = String::new();
+    let mut c2 = chars.clone();
+    while let Some(c) = c2.next() {
+        match c {
+            ' ' => {}
+            '.' => {
+                while let Some(d) = chars.next() {
+                    s.push(d);
+                    if d == '.' {
+                        break;
+                    }
+                }
+                if let Some(d) = chars.next() {
+                    s.push(d);
+                }
+                while let Some(d) = chars.next() {
+                    s.push(d);
+                    if d == ' ' {
+                        break;
+                    }
+                }
+                s.push_str(&collect_var(chars));
+                break;
+            }
+            _ => break,
+        } 
+    }
+    s
 }

@@ -1,7 +1,7 @@
 Anansi
 ======
 
-Anansi is a simple MVC web framework for Rust.
+Anansi is a simple full-stack web framework for Rust.
 
 It is intended to be safe, fast, and to make web development easier.
 

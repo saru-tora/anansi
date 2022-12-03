@@ -20,6 +20,13 @@ use crate::admin_site::AdminField;
 pub use crate::datetime::DateTime;
 
 #[macro_export]
+macro_rules! http_404 {
+    () => {
+        return Err(Box::new(anansi::web::Http404{}))
+    }
+}
+
+#[macro_export]
 macro_rules! get_or_404 {
     ($record:path, $req:ident) => {
         match $req.get_record::<$record>().await {
