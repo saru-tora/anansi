@@ -1,0 +1,24 @@
+[package]
+name = "anansi-aux"
+version = "0.7.0"
+edition = "2021"
+authors = ["sarutora"]
+license = "MIT"
+description = "Anansi's auxiliary library."
+homepage = "https://saru-tora.github.io/anansi"
+repository = "https://github.com/saru-tora/anansi"
+categories = ["web-programming", "asynchronous"]
+
+[dependencies]
+anansi-macros = { path = "../anansi-macros" , version = "0.7.0" }
+wasm-bindgen = "0.2"
+js-sys = "0.3.60"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1.7"
+async-channel = "1.7.1"
+
+[dependencies.web-sys]
+version = "0.3.6"
+features = [ 'Document', 'Element', 'HtmlElement', 'HtmlInputElement', 'Event', 'Window', 'Node', 'NodeList', 'NamedNodeMap', 'Attr', 'Text', 'Comment', 'console' ]

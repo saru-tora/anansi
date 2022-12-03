@@ -385,11 +385,21 @@ impl Response {
         headers.insert_str("content-type", "text/html");
         headers.insert_str("charset", "UTF-8");
         headers.insert_str("Server", "webserver");
-        headers.insert_str("content-security-policy", "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests;");
+        headers.insert_str("content-security-policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests;");
         headers.insert_str("x-frame-options", "DENY");
         headers.insert("Content-length".to_string(), contents.len().to_string());
         let body = Some(Body {body: contents});
         Self {status_line: status_line.to_string(), headers, body}
+    }
+    pub fn from_json(contents: String) -> Self {
+        let mut headers = Headers::new();
+        let contents = contents.into_bytes();
+        headers.insert_str("content-type", "application/json");
+        headers.insert_str("charset", "UTF-8");
+        headers.insert_str("Server", "webserver");
+        headers.insert("Content-length".to_string(), contents.len().to_string());
+        let body = Some(Body {body: contents});
+        Self {status_line: "HTTP/1.1 200 OK".to_string(), headers, body}
     }
     pub fn content(status_line: &'static str, ty: &str, contents: Vec<u8>) -> Self {
         let mut headers = Headers::new();
@@ -412,7 +422,7 @@ impl Response {
     pub fn into_bytes(self) -> Vec<u8> {
         let mut s = String::from(format!("{}\r\n", self.status_line));
         for (key, value) in self.headers {
-            s.push_str(&format!("{key}: {value};\r\n"));
+            s.push_str(&format!("{key}: {value}\r\n"));
         }
         s.push_str("\r\n");
         

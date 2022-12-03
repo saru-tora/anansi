@@ -66,6 +66,7 @@ impl<B: BaseRequest> Router<B> {
         };
         let mut base = PathBuf::new();
         BASE_DIR.with(|b| base = b.clone());
+        base.push("static");
         let mut full = base.clone();
         full.push(url);
         let path = fs::canonicalize(&full).await?;
@@ -79,6 +80,8 @@ impl<B: BaseRequest> Router<B> {
         let n = url.rfind('.').ok_or(invalid())?;
         let ty = match &url[n+1..] {
             "css" => "text/css",
+            "js" => "application/javascript",
+            "wasm" => "application/wasm",
             _ => return Err(invalid()),
         };
         Ok(Response::content("HTTP/1.1 200 OK", ty, content))

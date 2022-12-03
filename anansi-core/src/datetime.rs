@@ -147,10 +147,9 @@ impl DateTime {
         format!("{}, {} {} {} {} GMT", self.date.day_of_week(), self.date.day, months[self.date.month as usize - 1], self.date.year, self.time)
     }
     fn from_secs(mut s: u64) -> Self {
-        let mut days = 365;
         let mut year = 0;
-        while s > days * 86400 {
-            days = if year % 4 != 0 {
+        loop {
+            let days = if year % 4 != 0 {
                 365
             } else if year % 100 != 0 {
                 366
@@ -159,6 +158,9 @@ impl DateTime {
             } else {
                 366
             };
+            if s < days * 86400 {
+                break;
+            }
             year += 1;
             s -= days * 86400;
         }
@@ -184,6 +186,11 @@ impl DateTime {
             } else {
                 break;
             }
+        
+        }
+        if month == 13 {
+            month = 1;
+            year += 1;
         }
         let hour = s/3600;
         s -= hour*3600;
