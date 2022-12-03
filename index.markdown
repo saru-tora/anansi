@@ -99,15 +99,69 @@ Templates allow you to mix Rust with HTML for formatting.
 }
 ```
 
-Forms
-=====
+Components
+==========
 
-Forms can be created without much effort.
+Reactivity can be added with WebAssembly.
 
 ```rust
-#[form(Topic)]
-pub struct TopicForm {
-    pub title: VarChar<200>,
-    pub content: VarChar<40000>,
+#[derive(Properties, Serialize, Deserialize)]
+pub struct LoaderProps {
+    pub load_url: String,
+    pub show_url: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Data {
+    pub id: String,
+    pub title: String,
+}
+
+#[store]
+#[derive(Serialize, Deserialize)]
+pub struct Loader {
+    visible: bool,
+    page: u32,
+    fetched: Vec<Data>,
+    status: String,
+}
+
+#[component(Loader)]
+fn init(props: LoaderProps) -> Rsx {
+    let state = Self::store(true, 0, vec![], String::new());
+
+    let handle_click = async_callback! {
+        let resp = Request::get(&props.load_url)
+            .query([("page", state.page.to_string())])
+            .send().await;
+        let json = match resp {
+            Ok(r) => r.json::<Vec<Data>>().await,
+            Err(_) => return state.status = "Problem getting topics".to_string(),
+        };
+        match json {
+            Ok(mut f) => {
+                if f.len() < 25 || state.page >= 2 {
+                    state.visible = false;
+                } else {
+                    state.page += 1;
+                }
+                state.fetched.append(&mut f);
+                state.status = "".to_string();
+            }
+            Err(_) => state.status = "Problem loading topics".to_string(),
+        }
+    };
+
+    rsx! {
+        @for data in &state.fetched {
+            <li>@href props.show_url, data.id {@data.title}</li>
+        }
+        @if !state.status.is_empty() {
+            <div>@state.status</div>
+        }
+        @if state.visible {
+            <button @onclick=handle_click>Load more</button>
+        }
+    }
 }
 ```
