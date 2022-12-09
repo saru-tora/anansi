@@ -130,26 +130,27 @@ pub struct Loader {
 fn init(props: LoaderProps) -> Rsx {
     let state = Self::store(true, 0, vec![], String::new());
 
-    let handle_click = async_callback! {
-        let resp = Request::get(&props.load_url)
-            .query([("page", state.page.to_string())])
-            .send().await;
-        let json = match resp {
-            Ok(r) => r.json::<Vec<Data>>().await,
-            Err(_) => return state.status = "Problem getting topics".to_string(),
-        };
-        match json {
-            Ok(mut f) => {
-                if f.len() < 25 || state.page >= 2 {
-                    state.visible = false;
-                } else {
-                    state.page += 1;
+    let handle_click = callback! {
+        state.status = "Loading...".to_string();
+        state.visible = false;
+        let request = Request::get(&props.load_url)
+            .query([("page", state.page.to_string())]);
+        resource!(request, Vec<Data>, |json| {
+            state.status = match json {
+                Ok(mut f) => {
+                    if f.len() == 25 && state.page < 3 {
+                        state.page += 1;
+                        state.visible = true;
+                    }
+                    state.fetched.append(&mut f);
+                    String::new()
                 }
-                state.fetched.append(&mut f);
-                state.status = "".to_string();
+                Err(_) => {
+                    state.visible = true;
+                    "Problem loading topics".to_string()
+                }
             }
-            Err(_) => state.status = "Problem loading topics".to_string(),
-        }
+        });
     };
 
     rsx! {
@@ -160,7 +161,7 @@ fn init(props: LoaderProps) -> Rsx {
             <div>@state.status</div>
         }
         @if state.visible {
-            <button @onclick=handle_click>Load more</button>
+            <button @onclick(handle_click)>Load more</button>
         }
     }
 }
