@@ -17,12 +17,12 @@ pub mod prelude {
     pub use serde_json::Value;
     pub use serde::{Serialize, Deserialize};
     pub use anansi_macros::{store, Properties, component};
-    pub use super::{attributes, element, Rsx, Sub, Proxy, Comp, Elem, Attribute};
+    pub use super::{attributes, element, Rsx, Sub, Proxy, Comp, Elem, Attribute, CbCmd};
 }
 
 pub mod components;
 
-pub type Mounts = &'static [(&'static str, fn(Value, Value, Vec<Sub>, async_channel::Receiver<u8>, async_channel::Sender<Cmd>, String), u8)];
+pub type Mounts = &'static [(&'static str, fn(Value, Value, Vec<Sub>, async_channel::Sender<CbCmd>, async_channel::Receiver<CbCmd>, async_channel::Sender<Cmd>, String), u8)];
 
 thread_local! {
     pub static DOCUMENT: Document = {
@@ -35,7 +35,13 @@ thread_local! {
         let (tx, rx) = async_channel::unbounded(); 
         RefCell::new((tx, Some(rx)))
     };
-    pub static SENDERS: RefCell<HashMap<usize, Sender<u8>>> = RefCell::new(HashMap::new());
+    pub static SENDERS: RefCell<HashMap<usize, Sender<CbCmd>>> = RefCell::new(HashMap::new());
+}
+
+#[derive(Debug)]
+pub enum CbCmd {
+    Callback(u8),
+    Resource(u8, Result<String, Box<dyn std::error::Error>>),
 }
 
 pub enum Cmd {
@@ -224,7 +230,7 @@ pub fn html_escape(s: &str) -> String {
 }
 
 pub struct CallbackData {
-    pub new: fn(Value, Value, Vec<Sub>, Receiver<u8>, Sender<Cmd>, String),
+    pub new: fn(Value, Value, Vec<Sub>, Sender<CbCmd>, Receiver<CbCmd>, Sender<Cmd>, String),
     pub num: u8,
 }
 
@@ -377,13 +383,16 @@ pub fn call(callback: &str, node_id: &str) -> Result<(), JsValue> {
                             let v2 = store.objs[n+1].clone();
                             let subs = store.subs[0].clone();
                             let (sender, receiver) = unbounded();
-                            (cb.new)(v1, v2, subs, receiver, gtx, node_id.to_string());
+                            {
+                                let sender = sender.clone();
+                                (cb.new)(v1, v2, subs, sender, receiver, gtx, node_id.to_string());
+                            }
                             sender
                         });
                         let sender = sender.clone();
                         
                         let n = cb.num;
-                        spawn_local(async move {sender.send(n).await.unwrap()});
+                        spawn_local(async move {sender.send(CbCmd::Callback(n)).await.unwrap()});
                     });
                 });
             });
@@ -439,8 +448,17 @@ fn check_siblings(children: &Vec<Rsx>, node: &mut Node) {
             if let Some(sib) = node.next_sibling() {
                 if sib.node_type() == Node::COMMENT_NODE && sib.text_content().unwrap() == "/av" {
                     while let Some(c) = children.next() {
-                        c.edit(&node);
-                        *node = node.next_sibling().unwrap();
+                        if node.node_name() == "BUTTON" {
+                            DOCUMENT.with(|document| {
+                                let parent = node.parent_node().unwrap();
+                                let new = c.to_node(&document);
+                                parent.insert_before(&new, Some(&node)).unwrap();
+                            });
+                            continue;
+                        } else {
+                            c.edit(&node);
+                            *node = node.next_sibling().unwrap();
+                        }
                     }
                     return;
                 }

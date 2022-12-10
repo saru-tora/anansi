@@ -12,6 +12,10 @@ use which::which;
 use toml::Value;
 use toml::map::Map;
 
+mod components;
+
+use components::check_components;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn main() {
@@ -21,15 +25,22 @@ pub fn main() {
         match first {
             "run" => {
                 template(&args, false, "");
-                check_wasm(&args);
+                check_wasm(&args, false);
                 cargo(&args);
             }
             "check" => {
                 template(&args, false, "");
+                check_wasm(&args, false);
+                cargo(&args);
+            }
+            "build" => {
+                template(&args, false, "");
+                check_wasm(&args, false);
                 cargo(&args);
             }
             "force-check" => {
                 template(&args, true, "");
+                check_wasm(&args, true);
                 args[1] = "check".to_string();
                 cargo(&args);
             }
@@ -150,18 +161,46 @@ fn get_src(args: &Vec<String>, extra: &str) -> (SystemTime, PathBuf) {
     (date, dir.clone())
 }
 
-fn check_wasm(args: &Vec<String>) {
-    let (mut date, mut dir) = get_src(args, "");
-    if !check_files(&mut date, &dir) {
-        let name = dir.file_name().unwrap().to_str().unwrap();
-        if name.ends_with("-wasm") || name.ends_with("-comps") {
-            dir.pop();
-            check_files(&mut date, &dir);
+fn check_wasm(args: &Vec<String>, force: bool) {
+    let (mut date, dir) = get_src(args, "");
+    if !check_files(&mut date, &dir, force) {
+        let mut prev = dir.clone();
+        prev.pop();
+        let name = prev.file_name().unwrap().to_str().unwrap();
+        if name.ends_with("-wasm") {
+            check_files(&mut date, &dir, force);
+        } else if name.ends_with("-comps") {
+            check_parsed_comps(&dir);
         }
     }
 }
 
-fn check_files(date: &mut SystemTime, dir: &PathBuf) -> bool {
+fn check_parsed_comps(dir: &PathBuf) {
+    let dirs = read_dir(&dir).unwrap();
+    let mut path = dir.clone();
+    path.push(".parsed");
+    for f in dirs {
+        let f = f.unwrap();
+        if !f.file_type().unwrap().is_dir() {
+            let name = f.file_name();
+            let mut parsed_path = path.clone();
+            parsed_path.push(name);
+            let parsed = match fs::metadata(parsed_path) {
+                Ok(m) => m,
+                Err(_) => {
+                    check_components(f.path());
+                    continue;
+                }
+            };
+            let modified = f.metadata().unwrap().modified().unwrap();
+            if modified > parsed.modified().unwrap() {
+                check_components(f.path());
+            }
+        }
+    }
+}
+
+fn check_files(date: &mut SystemTime, dir: &PathBuf, force: bool) -> bool {
     let dirs = read_dir(&dir).unwrap();
     let mut checked = false;
     for f in dirs {
@@ -198,7 +237,7 @@ fn check_files(date: &mut SystemTime, dir: &PathBuf) -> bool {
                 comp.push(comp_name);
                 comp.push("src");
                 wasm.pop();
-                if check_files2(&comp, &wasm, &date) {
+                if check_files2(&comp, &wasm, &date, force) {
                     return true;
                 }
             }
@@ -217,17 +256,25 @@ fn build_wasm(dir: &PathBuf) {
         child.wait().expect("failed to wait on child");
 }
 
-fn check_files2(dir: &PathBuf, wasm: &PathBuf, date: &SystemTime) -> bool {
+fn check_files2(dir: &PathBuf, wasm: &PathBuf, date: &SystemTime, force: bool) -> bool {
     let src = read_dir(&dir).unwrap();
+    let mut b = false;
     for s in src {
         let s = s.unwrap();
-        let modified = s.metadata().unwrap().modified().unwrap();
-        if modified > *date {
-            build_wasm(&wasm);
-            return true;
+        if s.file_type().unwrap().is_file() {
+            let modified = s.metadata().unwrap().modified().unwrap();
+            if modified > *date || force {
+                if s.file_name() != "lib.rs" {
+                    check_components(s.path());
+                }
+                b = true;
+            }
         }
     }
-    false
+    if false {
+        build_wasm(&wasm);
+    }
+    b
 }
 
 fn init_components(args: &Vec<String>) {
@@ -268,6 +315,9 @@ wasm-bindgen-futures = \"0.4\"
 async-channel = \"1.7.1\"
 anansi-aux = \"{}\"", VERSION).into_bytes());
     comp_path.push("src");
+    let mut parsed_path = comp_path.clone();
+    parsed_path.push(".parsed");
+    fs::create_dir(parsed_path).unwrap();
     comp_path.push("lib.rs");
     let wasm = format!("{}-wasm", name);
     let under_wasm = wasm.replace('-', "_");
@@ -298,6 +348,7 @@ anansi-aux = \"{}\"", VERSION).into_bytes());
 registerServiceWorker();
 
 let mod;
+const ids = new Map();
 document.addEventListener('click', (e) => {
   let paths = e.composedPath();
   let callback;
@@ -307,7 +358,11 @@ document.addEventListener('click', (e) => {
     let attributes = el.attributes;
     if (attributes) {
       let onclick = attributes.getNamedItem('on:click');
-      let aid = attributes.getNamedItem('a:id');
+      let aid = ids.get(onclick.value);
+      if (!aid) {
+        aid = attributes.getNamedItem('a:id');
+        ids.set(onclick.value, aid);
+      }
       if (onclick && aid) {
         callback = onclick.value;
         id = aid.value;
@@ -568,6 +623,14 @@ impl Parser {
     fn new() -> Self {
         Self {lower_comp: String::new(), blocks: vec![]}
     }
+    fn comp(lower_comp: String) -> Self {
+        Self {lower_comp, blocks: vec![]}
+    }
+    fn to_html(&mut self, content: &str) -> String {
+        let mut view = String::from("let mut _c = String::new();");
+        view.push_str(&self.process(content));
+        view
+    }
     fn parse(&mut self, name: &PathBuf) {
         let content = fs::read_to_string(name).unwrap().trim().to_string();
         let ext = content.starts_with("@block");
@@ -790,6 +853,8 @@ fn collect_name(chars: &mut Chars) -> (String, char) {
                 ' ' => {}
                 '<' => {}
                 '>' => {}
+                '(' => {}
+                ')' => {}
                 '\n' => {}
                 _ => {
                     name.push(c);
@@ -849,6 +914,13 @@ fn get_block(chars: &mut Chars, block: &mut String) {
 }
 
 impl Parser {
+    fn escape_path(&self) -> &'static str {
+        if self.lower_comp.is_empty() {
+            "anansi::web"
+        } else {
+            "anansi_aux"
+        }
+    }
     fn at(&mut self, view: &mut String, chars: &mut Chars) {
         view.push_str("\");");
         let mut s = String::new();
@@ -868,7 +940,7 @@ impl Parser {
                     }
                     s.push(d);
                 }
-                view.push_str(&format!("_c.push_str(&anansi::web::html_escape(&format!(\"{{}}\", {})));_c.push_str(\"", s));
+                view.push_str(&format!("_c.push_str(&{}::html_escape(&format!(\"{{}}\", {})));_c.push_str(\"", self.escape_path(), s));
                 return;
             }
             s.push(c);
@@ -979,7 +1051,7 @@ impl Parser {
             }
             "url!" => {
                 s = "anansi::url!".to_string();
-                variable(&extra, &mut s, chars, view);
+                variable(self.escape_path(), &extra, &mut s, chars, view);
                 return;
             }
             _ => {
@@ -992,7 +1064,7 @@ impl Parser {
                     view.push_str(&blk);
                     view.push_str("_c.push_str(\"");
                 } else {
-                    get_var(&extra, &mut s, chars, view);
+                    get_var(self.escape_path(), &extra, &mut s, chars, view);
                 }
                 return;
             }
@@ -1041,12 +1113,12 @@ impl Parser {
     }
 }
 
-fn get_var(extra: &str, s: &mut String, chars: &mut Chars, view: &mut String) {
+fn get_var(esc_path: &str, extra: &str, s: &mut String, chars: &mut Chars, view: &mut String) {
     if extra == "(" {
         unimplemented!();
     } else {
         s.push_str(&collect_var(chars));
-        view.push_str(&format!("_c.push_str(&anansi::web::html_escape(&format!(\"{{}}\", {})));_c.push_str(\"{}", s, extra));
+        view.push_str(&format!("_c.push_str(&{}::html_escape(&format!(\"{{}}\", {})));_c.push_str(\"{}", esc_path, s, extra));
     }
 }
 
@@ -1066,13 +1138,13 @@ fn get_attrs(s: &mut String, chars: &mut Chars) -> (Vec<String>, Vec<String>) {
     (attrs, segments)
 }
 
-fn variable(extra: &str, s: &mut String, chars: &mut Chars, view: &mut String) {
+fn variable(esc_path: &str, extra: &str, s: &mut String, chars: &mut Chars, view: &mut String) {
     if extra == "(" {
         s.push_str(extra);
         s.push_str(&collect_paren(chars));
-        view.push_str(&format!("_c.push_str(&anansi::web::html_escape(&format!(\"{{}}\", {})));_c.push_str(\"", s));
+        view.push_str(&format!("_c.push_str(&{}::html_escape(&format!(\"{{}}\", {})));_c.push_str(\"", esc_path, s));
     } else {
-        view.push_str(&format!("_c.push_str(&anansi::web::html_escape(&format!(\"{{}}\", {})));_c.push_str(\"{}", s, extra));
+        view.push_str(&format!("_c.push_str(&{}::html_escape(&format!(\"{{}}\", {})));_c.push_str(\"{}", esc_path, s, extra));
     }
 }
 
