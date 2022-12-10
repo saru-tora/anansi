@@ -74,6 +74,8 @@ impl<R: Request> TopicView<R> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
     	    .limit(25).query(req).await?;
+        let show_url = url!(req, Self::show);
+        let load_url = url!(req, Self::load);
     }
 }
 ```
@@ -92,8 +94,11 @@ Templates allow you to mix Rust with HTML for formatting.
         @link req, Self::new {New Topic}
     }
     <ul>
-        @for topic in topics {
+        @for topic in &topics {
     	    <li>@link req, Self::show, topic {@topic.title}</li>
+        }
+        @if topics.len() == 25 {
+            <Loader @show_url @load_url />
         }
     </ul>
 }
@@ -128,7 +133,7 @@ pub struct Loader {
 
 #[component(Loader)]
 fn init(props: LoaderProps) -> Rsx {
-    let state = Self::store(true, 0, vec![], String::new());
+    let state = Self::store(true, 1, vec![], String::new());
 
     let handle_click = callback! {
         state.status = "Loading...".to_string();
