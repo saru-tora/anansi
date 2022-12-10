@@ -242,7 +242,7 @@ At this point, you can visit the index page you wrote at [http://127.0.0.1:9090/
 Components
 ----------
 
-You can use components to make pages interactive, though there is some set up involved, so you can skip this section if you're not interested. If you want to keep going, you'll first need to install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) if you haven't already. Next, go to the `mini-forum/` directory and run:
+You can use components to make pages interactive, though there is some set up involved, so you can skip this section if you're not interested. If you want to keep going, you'll need to install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) first if you haven't already. Next, go to the `mini-forum/` directory and run:
 
 ```shell
 $ ananc init-components
@@ -283,28 +283,29 @@ pub struct Loader {
 
 #[component(Loader)]
 fn init(props: LoaderProps) -> Rsx {
-    let state = Self::store(true, 0, vec![], String::new());
+    let state = Self::store(true, 1, vec![], String::new());
 
-    let handle_click = async_callback! {
-        let resp = Request::get(&props.load_url)
-            .query([("page", state.page.to_string())])
-            .send().await;
-        let json = match resp {
-            Ok(r) => r.json::<Vec<Data>>().await,
-            Err(_) => return state.status = "Problem getting topics".to_string(),
-        };
-        match json {
-            Ok(mut f) => {
-                if f.len() < 25 || state.page >= 2 {
-                    state.visible = false;
-                } else {
-                    state.page += 1;
+    let handle_click = callback! {
+        state.status = "Loading...".to_string();
+        state.visible = false;
+        let request = Request::get(&props.load_url)
+            .query([("page", state.page.to_string())]);
+        resource!(request, Vec<Data>, |json| {
+            state.status = match json {
+                Ok(mut f) => {
+                    if f.len() == 25 && state.page < 3 {
+                        state.page += 1;
+                        state.visible = true;
+                    }
+                    state.fetched.append(&mut f);
+                    String::new()
                 }
-                state.fetched.append(&mut f);
-                state.status = "".to_string();
+                Err(_) => {
+                    state.visible = true;
+                    "Problem loading topics".to_string()
+                }
             }
-            Err(_) => state.status = "Problem loading topics".to_string(),
-        }
+        });
     };
 
     rsx! {
@@ -315,13 +316,19 @@ fn init(props: LoaderProps) -> Rsx {
             <div>@state.status</div>
         }
         @if state.visible {
-            <button @onclick=handle_click>Load more</button>
+            <button @onclick(handle_click)>Load more</button>
         }
     }
 }
 ```
 
-This will create a button that will fetch additional topics when pressed. Now, edit `mini-forum-comps/src/lib.rs`:
+This will create a button that will fetch additional topics when pressed. In the `mini-forum-comps` directory, You can build it with:
+
+```shell
+$ ananc build
+```
+
+Now, edit `mini-forum-comps/src/lib.rs`:
 
 ```rust
 pub mod loader;
@@ -362,11 +369,11 @@ impl<R: Request> TopicView<R> {
     #[check(Group::is_visitor)]
     pub async fn load(req: &mut R) -> Result<Response> {
         let page: u32 = req.params().get("page")?.parse()?;
-        if page > 2 {
+        if page > 3 {
             http_404!();
         }
         let topics = Topic::order_by(date().desc())
-            .limit(25).offset(25 * (page + 1)).query(req).await?;
+            .limit(25).offset(25 * page).query(req).await?;
         let data: Vec<Data> = topics.iter().map(|t| {
             Data {id: t.pk().to_string(), title: t.title.to_string()}
         }).collect();
@@ -393,7 +400,7 @@ And use it in `forum/topic/templates/index.rs.html`:
 }
 ```
 
-Finally, don't forget to add `load` to `forum/urls.rs`:
+Don't forget to add `load` to `forum/urls.rs`:
 
 ```rust
 use super::topic::views::TopicView;
@@ -403,7 +410,19 @@ routes! {
 }
 ```
 
-If you've never used wasm-pack before, the first compiliation may take a while.
+Finally, you can go to `mini-forum-comps/src` and create the necessary files with the following command:
+
+```shell
+$ ananc build
+```
+
+Now, if you go to the `mini-forum` directory and execute:
+
+```shell
+$ ananc run
+```
+
+Hopefully, it should all work. If you've never used wasm-pack before, the first compiliation may take a while.
 
 Caching
 -------
