@@ -384,7 +384,7 @@ impl<R: Request> TopicView<R> {
 
 And use it in `forum/topic/templates/index.rs.html`:
 
-```html
+```rust
 @block content {
     @load components {
         <h1>@title</h1>
