@@ -1073,17 +1073,33 @@ pub fn wasm_statics(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let sw = format!("..{}{}{0}sw.js", main_separator!(), name);
     let stat = "/static/pkg/";
     let names = quote! {
-        ("/static/main.js", include_bytes!(#main)),
-        ("/static/sw.js", include_bytes!(#sw)),
-        (concat!(#stat, #name_js), include_bytes!(concat!(#pkg, #name_js))),
-        (concat!(#stat, #name_wasm), include_bytes!(concat!(#pkg, #name_wasm))),
+        &[
+            ("/static/main.js", include_bytes!(#main)),
+            ("/static/sw.js", include_bytes!(#sw)),
+            (concat!(#stat, #name_js), include_bytes!(concat!(#pkg, #name_js))),
+            (concat!(#stat, #name_wasm), include_bytes!(concat!(#pkg, #name_wasm)))
+        ]
     };
+    names.into()
+}
+
+#[proc_macro]
+pub fn app_statics(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as SchemaArgs);
+    let mut args = vec![];
+    for arg in input.vars {
+        if let syn::Expr::Macro(a) = arg {
+            args.push(quote! {#a});
+        } else {
+            args.push(quote! {#arg::STATICS});
+        }
+    }
     let q = quote! {
-        pub static STATICS: &[(&'static str, &'static [u8])] = &[
-            #names
+        static APP_STATICS: &[&[anansi::web::Static]] = &[
+            #(#args),*
         ];
-    };
-    q.into()
+    }.into();
+    q
 }
 
 #[proc_macro_attribute]
@@ -1607,6 +1623,24 @@ pub fn cache_view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 #[proc_macro]
+pub fn aux_path_literal(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as SchemaArgs);
+    let mut l = 1;
+    let mut qv = vec![];
+    for arg in &input.vars {
+        qv.push(if l >= input.vars.len() {
+            quote! {#arg}
+        } else {
+            quote! {#arg, main_separator!(),}
+        });
+        l += 1;
+    }
+    quote! {
+        concat!(#(#qv)*)
+    }.into()
+}
+
+#[proc_macro]
 pub fn path_literal(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as SchemaArgs);
     let mut l = 1;
@@ -1844,6 +1878,16 @@ pub fn routes(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
     };
     q.into()
+}
+
+#[proc_macro_attribute]
+pub fn function_component(args: proc_macro::TokenStream, _input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let args = parse_macro_input!(args as Ident);
+    let id = quote!{#args}.to_string().trim().to_lowercase();
+    let name = format!(".parsed/{}.rs", id);
+    quote! {
+        include!(#name);
+    }.into()
 }
 
 #[proc_macro_attribute]

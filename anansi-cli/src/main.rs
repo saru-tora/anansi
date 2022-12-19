@@ -4,7 +4,7 @@ use std::path::{PathBuf, Component, MAIN_SEPARATOR};
 use std::io::Write;
 use std::str::Chars;
 use std::env;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
 
 use which::which;
@@ -14,7 +14,7 @@ use toml::map::Map;
 
 mod components;
 
-use components::check_components;
+use components::{get_expr, check_components};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -25,22 +25,22 @@ pub fn main() {
         match first {
             "run" => {
                 template(&args, false, "");
-                check_wasm(&args, false);
+                check_wasm(&args, false, true);
                 cargo(&args);
             }
             "check" => {
                 template(&args, false, "");
-                check_wasm(&args, false);
+                check_wasm(&args, false, false);
                 cargo(&args);
             }
             "build" => {
                 template(&args, false, "");
-                check_wasm(&args, false);
+                check_wasm(&args, false, true);
                 cargo(&args);
             }
             "force-check" => {
                 template(&args, true, "");
-                check_wasm(&args, true);
+                check_wasm(&args, true, true);
                 args[1] = "check".to_string();
                 cargo(&args);
             }
@@ -147,35 +147,47 @@ fn get_src(args: &Vec<String>, extra: &str) -> (SystemTime, PathBuf) {
     let date = fs::metadata(path).unwrap().modified().unwrap();
     let mut cwd = env::current_dir().unwrap();
     cwd.push(extra);
-    let cs = cwd.clone();
-    let mut dir = &cs;
-    for component in cs.components().rev() {
-        if let Component::Normal(c) = component {
-            if c == "src" {
-                dir = &cwd;
-                break;
+    let dir;
+
+    'outer: loop {
+        let dirs = read_dir(&cwd).unwrap();
+        for f in dirs {
+            let f = f.unwrap();
+            if !f.file_type().unwrap().is_dir() {
+                let name = f.file_name().to_str().unwrap().to_string();
+                if name == "settings.toml" {
+                    dir = &cwd;
+                    break 'outer;
+                }
             }
         }
-        cwd.pop();
+        if !cwd.pop() {
+            panic!("expected src directory");
+        }
     }
-    (date, dir.clone())
+    let d = dir.clone();
+    (date, d)
 }
 
-fn check_wasm(args: &Vec<String>, force: bool) {
+fn check_wasm(args: &Vec<String>, force: bool, build: bool) {
     let (mut date, dir) = get_src(args, "");
-    if !check_files(&mut date, &dir, force) {
-        let mut prev = dir.clone();
-        prev.pop();
-        let name = prev.file_name().unwrap().to_str().unwrap();
-        if name.ends_with("-wasm") {
-            check_files(&mut date, &dir, force);
-        } else if name.ends_with("-comps") {
-            check_parsed_comps(&dir);
+    let name = dir.file_name().unwrap().to_str().unwrap().to_string();
+    let mut cpath = dir.clone();
+    cpath.push(format!("{}-comps", name));
+    if cpath.canonicalize().is_ok() {
+        cpath.push("src");
+        check_parsed_comps(&date, &cpath);
+    }
+    if build {
+        let mut wpath = dir.clone();
+        wpath.push(format!("{}-wasm", name));
+        if wpath.canonicalize().is_ok() {
+            check_files(&mut date, &dir, wpath, force);
         }
     }
 }
 
-fn check_parsed_comps(dir: &PathBuf) {
+fn check_parsed_comps(date: &SystemTime, dir: &PathBuf) {
     let dirs = read_dir(&dir).unwrap();
     let mut path = dir.clone();
     path.push(".parsed");
@@ -193,70 +205,58 @@ fn check_parsed_comps(dir: &PathBuf) {
                 }
             };
             let modified = f.metadata().unwrap().modified().unwrap();
-            if modified > parsed.modified().unwrap() {
+            let parsed_modified = parsed.modified().unwrap();
+            if parsed_modified < *date || modified > parsed_modified {
                 check_components(f.path());
             }
         }
     }
 }
 
-fn check_files(date: &mut SystemTime, dir: &PathBuf, force: bool) -> bool {
-    let dirs = read_dir(&dir).unwrap();
-    let mut checked = false;
+fn check_files(date: &mut SystemTime, dir: &PathBuf, mut wasm: PathBuf, force: bool) {
+    let name = dir.file_name().unwrap().to_str().unwrap().to_string();
+    wasm.push("pkg");
+    let dirs = match read_dir(&wasm) {
+        Ok(d) => d,
+        Err(_) => {
+            wasm.pop();
+            build_wasm(&wasm);
+            return;
+        }
+    };
     for f in dirs {
         let f = f.unwrap();
-        if f.file_type().unwrap().is_dir() {
-            let name = f.file_name().to_str().unwrap().to_string();
-            if name.ends_with("-wasm") {
-                checked = true;
-                let mut orig = dir.clone();
-                orig.push(f.file_name());
-                let mut wasm = orig.clone();
-                wasm.push("pkg");
-                let dirs = match read_dir(&wasm) {
-                    Ok(d) => d,
-                    Err(_) => {
-                        wasm.pop();
-                        build_wasm(&wasm);
-                        return true;
-                    }
-                };
-                for f in dirs {
-                    let f = f.unwrap();
-                    if f.file_name().to_str().unwrap().ends_with(".wasm") {
-                        let modified = f.metadata().unwrap().modified().unwrap();
-                        if modified > *date {
-                            *date = modified
-                        }
-                        break;
-                    }
-                }
-                let (base_name, _) = name.rsplit_once("-wasm").unwrap();
-                let comp_name = format!("{}-comps", base_name);
-                let mut comp = dir.clone();
-                comp.push(comp_name);
-                comp.push("src");
+        if f.file_name().to_str().unwrap().ends_with(".wasm") {
+            let modified = f.metadata().unwrap().modified().unwrap();
+            if *date > modified {
                 wasm.pop();
-                if check_files2(&comp, &wasm, &date, force) {
-                    return true;
-                }
+                build_wasm(&wasm);
+                return;
+            } else {
+                *date = modified
             }
+            break;
         }
     }
-    checked
+    let comp_name = format!("{}-comps", name);
+    let mut comp = dir.clone();
+    comp.push(comp_name);
+    comp.push("src");
+    wasm.pop();
+    check_files2(&comp, &wasm, &date, force);
 }
 
 fn build_wasm(dir: &PathBuf) {
     let mut cmd = Command::new("wasm-pack");
-        cmd.arg("build");
-        cmd.arg("--target");
-        cmd.arg("web");
-        cmd.arg(dir);
-        let mut child = cmd.spawn().expect("Failed to start wasm-pack");
-        child.wait().expect("failed to wait on child");
+    cmd.arg("build");
+    cmd.arg("--target");
+    cmd.arg("web");
+    cmd.arg(dir);
+    let mut child = cmd.spawn().expect("Failed to start wasm-pack");
+    child.wait().expect("failed to wait on child");
 }
 
-fn check_files2(dir: &PathBuf, wasm: &PathBuf, date: &SystemTime, force: bool) -> bool {
+fn check_files2(dir: &PathBuf, wasm: &PathBuf, date: &SystemTime, force: bool) {
     let src = read_dir(&dir).unwrap();
     let mut b = false;
     for s in src {
@@ -271,10 +271,9 @@ fn check_files2(dir: &PathBuf, wasm: &PathBuf, date: &SystemTime, force: bool) -
             }
         }
     }
-    if false {
+    if b {
         build_wasm(&wasm);
     }
-    b
 }
 
 fn init_components(args: &Vec<String>) {
@@ -617,14 +616,15 @@ fn cargo(args: &Vec<String>) {
 struct Parser {
     lower_comp: String,
     blocks: Vec<String>,
+    selectors: HashSet<String>,
 }
 
 impl Parser {
     fn new() -> Self {
-        Self {lower_comp: String::new(), blocks: vec![]}
+        Self {lower_comp: String::new(), blocks: vec![], selectors: HashSet::new()}
     }
-    fn comp(lower_comp: String) -> Self {
-        Self {lower_comp, blocks: vec![]}
+    fn comp(lower_comp: String, selectors: HashSet<String>) -> Self {
+        Self {lower_comp, blocks: vec![], selectors}
     }
     fn to_html(&mut self, content: &str) -> String {
         let mut view = String::from("let mut _c = String::new();");
@@ -724,6 +724,9 @@ impl Parser {
         if !name.starts_with(char::is_uppercase) {
             view.push('<');
             view.push_str(&name);
+            if self.selectors.contains(&name) {
+                view.push_str(&format!(" class=\\\"anansi-{}\\\"", self.lower_comp.trim()));
+            }
         } else {
             let args = collect(chars, '>');
             let (args, _) = args.rsplit_once('/').unwrap();
@@ -748,7 +751,12 @@ impl Parser {
                     list.push_str(&format!(".{}({})", n, ar));
                 }
             }
-            view.push_str(&format!("\");_c.push_str(&format!(\"<!--av a:id={{}}-->\", _p.id()));_c.push_str(&<{} as anansi_aux::components::Component>::init(<{0} as anansi_aux::components::Component>::Properties::new(){}.build(), &mut _p));_c.push_str(\"<!--/av-->", name, list));
+            let prop = if !list.is_empty() {
+                format!("<{} as anansi_aux::components::Component>::Properties::new(){}.build(), &mut _p", name, list)
+            } else {
+                "(), _p".to_string()
+            };
+            view.push_str(&format!("\");_c.push_str(&format!(\"<!--av a:id={{}}-->\", _p.id()));_c.push_str(&<{} as anansi_aux::components::Component>::init({}));_c.push_str(\"<!--/av-->", name, prop));
         }
         if extra == '@' {
             self.at(view, chars);
@@ -1023,9 +1031,14 @@ impl Parser {
                 view.push_str("_c.push_str(\"</a>");
                 return;
             }
+            "resource" => {
+                get_expr(chars);
+                view.push_str("_c.push_str(\"");
+                return;
+            }
             "onclick" => {
-                let (callback, ex) = collect_name(chars);
-                view.push_str(&format!("_c.push_str(&format!(\"on:click=\\\"{}_{}[0]\\\" a:id=\\\"{{}}\\\"\", _p.add()));_c.push_str(\"{}", self.lower_comp, callback, ex));
+                let (callback, _) = collect_name(chars);
+                view.push_str(&format!("_c.push_str(&format!(\"on:click=\\\"{}_{}[0]\\\" a:id=\\\"{{}}\\\"\", _p.add()));_c.push_str(\"", self.lower_comp, callback));
                 return;
             }
             "cache" => {

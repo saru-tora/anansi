@@ -179,15 +179,6 @@ macro_rules! render {
 }
 
 #[macro_export]
-macro_rules! app_statics {
-    ($($name:ident,)*) => {
-        static APP_STATICS: &[&[anansi::web::Static]] = &[
-            $($name::STATICS,)*
-        ];
-    }
-}
-
-#[macro_export]
 #[cfg(not(target_os = "windows"))]
 macro_rules! main_separator {
     () => {r"/"}
