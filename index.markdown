@@ -61,6 +61,7 @@ Mapping requests to views is simple.
 routes! {
     path!("", TopicView::index),
     path!("new", TopicView::new),
+    path!("load", TopicView::load),
     path!("{topic_id}", TopicView::show),
 }
 ```
