@@ -216,6 +216,10 @@ impl Rng {
     }
 }
 
+pub async fn sleep(duration: std::time::Duration) {
+    tokio::time::sleep(duration).await;
+}
+
 pub async fn handle_connection<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool, C: BaseCache>(mut stream: TcpStream, urls: Arc<HashMap<usize, Vec<String>>>, pool: D, cache: C, std_rng: Rng, router: Arc<Router<B>>, timer: Timer, site: AdminRef<B>) -> Result<()> {
     let mut buffer = vec![0; 1024];
     while let Ok(l) = time::timeout(time::Duration::from_secs(5), stream.read(&mut buffer)).await {

@@ -1,9 +1,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::error::Error;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{Element, Node, NodeList, Document, Text};
+use web_sys::{Element, Node, NodeList, Document, Text, Window};
 
 use serde_json::Value;
 use serde::{Serialize, Deserialize};
@@ -16,8 +17,8 @@ pub use anansi_macros::*;
 pub mod prelude {
     pub use serde_json::Value;
     pub use serde::{Serialize, Deserialize};
-    pub use anansi_macros::{store, Properties, component};
-    pub use super::{attributes, element, Rsx, Sub, Proxy, Comp, Elem, Attribute, CbCmd};
+    pub use anansi_macros::{store, Properties, component, function_component};
+    pub use super::{attributes, element, Rsx, Sub, Proxy, Comp, Elem, Attribute, CbCmd, Resource};
 }
 
 pub mod components;
@@ -25,9 +26,10 @@ pub mod components;
 pub type Mounts = &'static [(&'static str, fn(Value, Value, Vec<Sub>, async_channel::Sender<CbCmd>, async_channel::Receiver<CbCmd>, async_channel::Sender<Cmd>, String), u8)];
 
 thread_local! {
+    pub static WINDOW: Window = web_sys::window().expect("should have a window");
     pub static DOCUMENT: Document = {
         let window = web_sys::window().expect("should have a window");
-         window.document().expect("window should have a document")
+        window.document().expect("window should have a document")
     };
     pub static CALLBACKS: RefCell<HashMap<String, CallbackData>> = RefCell::new(HashMap::new());
     pub static APP_STATE: RefCell<Option<AppState>> = RefCell::new(None);
@@ -38,10 +40,64 @@ thread_local! {
     pub static SENDERS: RefCell<HashMap<usize, Sender<CbCmd>>> = RefCell::new(HashMap::new());
 }
 
+#[macro_export]
+macro_rules! comp_statics {
+    ($($name:expr,)*) => {
+        pub static STATICS: &[(&'static str, &'static [u8])] = &[
+            $((concat!("/static/styles/", $name, ".css"), include_bytes!(concat!("static", anansi_aux::main_separator!(), "styles", anansi_aux::main_separator!(), $name, ".css"))),)*
+        ];
+    }
+}
+
+#[macro_export]
+#[cfg(not(target_os = "windows"))]
+macro_rules! main_separator {
+    () => {r"/"}
+}
+
+#[macro_export]
+#[cfg(target_os = "windows")]
+macro_rules! main_separator {
+    () => {r"\"}
+}
+
+pub fn load_style(url: &'static str) {
+    DOCUMENT.with(|document| {
+        if let Ok(links) = document.query_selector_all("link") {
+            for i in 0..links.length() {
+                if let Some(node) = links.get(i) {
+                    let link = node.dyn_ref::<Element>().unwrap();
+                    if let Some(href) = link.attributes().get_named_item("href") {
+                        if href.value() == url {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(head) = document.query_selector("head") {
+            if let Some(head) = head {
+                if let Ok(link) = document.create_element("link") {
+                    link.set_attribute("rel", "stylesheet").unwrap();
+                    link.set_attribute("href", url).unwrap();
+                    head.append_child(&link).unwrap();
+                }
+            }
+        }
+    });
+}
+
 #[derive(Debug)]
 pub enum CbCmd {
     Callback(u8),
-    Resource(u8, Result<String, Box<dyn std::error::Error>>),
+    Text(u8, Result<String, Box<dyn Error>>),
+}
+
+#[derive(Debug)]
+pub enum Resource<D> {
+    Pending,
+    Rejected(Box<dyn Error>),
+    Resolved(D),
 }
 
 pub enum Cmd {
@@ -90,19 +146,19 @@ impl Proxy {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Comp {
     pub children: Vec<Rsx>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Elem {
     pub name: &'static str,
     pub attrs: Vec<Attribute>,
     pub children: Vec<Rsx>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Attribute {
     pub key: String,
     pub value: String,
@@ -162,7 +218,7 @@ macro_rules! element {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Rsx {
     Component(Comp),
     Element(Elem),
@@ -405,8 +461,10 @@ pub fn call(callback: &str, node_id: &str) -> Result<(), JsValue> {
 fn update(rsx: &Rsx, node: &mut Node) {
     match rsx {
         Rsx::Element(element) => {
-                element.diff(node);
-                check_siblings(&element.children, &mut node.first_child().unwrap());
+            element.diff(node);
+            if let Some(mut first_child) = node.first_child() {
+                check_siblings(&element.children, &mut first_child);
+            }
         }
         Rsx::Text(text) => {
             set_content(&node, &text);
@@ -441,6 +499,12 @@ fn check_siblings(children: &Vec<Rsx>, node: &mut Node) {
                     parent.insert_before(&new, Some(&node)).unwrap();
                 });
                 continue;
+            } else if node.node_name() == "DIV" {
+                if let Some(sib) = node.next_sibling() {
+                    let parent = node.parent_node().unwrap();
+                    parent.remove_child(&node).unwrap();
+                    *node = sib;
+                }
             } else {
                 update(child, node);
             }
