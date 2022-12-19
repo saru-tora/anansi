@@ -130,46 +130,78 @@ pub struct Loader {
     visible: bool,
     page: u32,
     fetched: Vec<Data>,
-    status: String,
 }
 
 #[component(Loader)]
 fn init(props: LoaderProps) -> Rsx {
-    let state = Self::store(true, 1, vec![], String::new());
+    let mut state = Self::store(true, 1, vec![]);
 
-    let handle_click = callback! {
-        state.status = "Loading...".to_string();
+    let (data_resource, handle_click) = resource!(Vec<Data>, || {
         state.visible = false;
-        let request = Request::get(&props.load_url)
-            .query([("page", state.page.to_string())]);
-        resource!(request, Vec<Data>, |json| {
-            state.status = match json {
-                Ok(mut f) => {
-                    if f.len() == 25 && state.page < 3 {
-                        state.page += 1;
-                        state.visible = true;
-                    }
-                    state.fetched.append(&mut f);
-                    String::new()
-                }
-                Err(_) => {
-                    state.visible = true;
-                    "Problem loading topics".to_string()
-                }
-            }
-        });
-    };
+        Request::get(&props.load_url)
+            .query([("page", state.page.to_string())])
+    });
 
     rsx! {
         @for data in &state.fetched {
             <li>@href props.show_url, data.id {@data.title}</li>
         }
-        @if !state.status.is_empty() {
-            <div>@state.status</div>
+        @resource data_resource {
+            Resource::Pending => {
+                <Spinner />
+            }
+            Resource::Rejected(_) => {
+                state.visible = true;
+                <div>Problem loading topics</div>
+            }
+            Resource::Resolved(mut f) => {
+                if f.len() == 25 && state.page < 3 {
+                    state.page += 1;
+                    state.visible = true;
+                }
+                state.fetched.append(&mut f);
+            }
         }
         @if state.visible {
             <button @onclick(handle_click)>Load more</button>
+        }       
+    }
+}
+```
+
+Scoped CSS
+==========
+
+CSS can be isolated to individual components.
+
+```rust
+#[function_component(Spinner)]
+fn init() -> Rsx {
+    style! {
+        div {
+            display: inline-block;
+            width: 25px;
+            height: 25px;
+            border: 3px solid #cfd0d1;
+            border-radius: 50%;
+            border-top-color: #1c87c9;
+            animation: spin 1s ease-in-out infinite;
+            -webkit-animation: spin 1s ease-in-out infinite;
         }
+        @keyframes spin {
+            to {
+                -webkit-transform: rotate(360deg);
+            }
+        }
+        @-webkit-keyframes spin {
+            to {
+                -webkit-transform: rotate(360deg);
+            }
+        }
+    }
+
+    rsx! {
+        <div></div>
     }
 }
 ```
