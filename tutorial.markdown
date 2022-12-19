@@ -278,42 +278,37 @@ pub struct Loader {
     visible: bool,
     page: u32,
     fetched: Vec<Data>,
-    status: String,
 }
 
 #[component(Loader)]
 fn init(props: LoaderProps) -> Rsx {
-    let state = Self::store(true, 1, vec![], String::new());
+    let mut state = Self::store(true, 1, vec![]);
 
-    let handle_click = callback! {
-        state.status = "Loading...".to_string();
+    let (data_resource, handle_click) = resource!(Vec<Data>, || {
         state.visible = false;
         let request = Request::get(&props.load_url)
             .query([("page", state.page.to_string())]);
-        resource!(request, Vec<Data>, |json| {
-            state.status = match json {
-                Ok(mut f) => {
-                    if f.len() == 25 && state.page < 3 {
-                        state.page += 1;
-                        state.visible = true;
-                    }
-                    state.fetched.append(&mut f);
-                    String::new()
-                }
-                Err(_) => {
-                    state.visible = true;
-                    "Problem loading topics".to_string()
-                }
-            }
-        });
-    };
+    });
 
     rsx! {
         @for data in &state.fetched {
             <li>@href props.show_url, data.id {@data.title}</li>
         }
-        @if !state.status.is_empty() {
-            <div>@state.status</div>
+	@resource data_resource {
+            Resource::Pending => {
+                <div>Loading...</div>
+            }
+            Resource::Rejected(_) => {
+                state.visible = true;
+                <div>Problem loading topics</div>
+            }
+            Resource::Resolved(mut f) => {
+                if f.len() == 25 && state.page < 3 {
+                    state.page += 1;
+                    state.visible = true;
+                }
+                state.fetched.append(&mut f);
+            }
         }
         @if state.visible {
             <button @onclick(handle_click)>Load more</button>
@@ -322,13 +317,7 @@ fn init(props: LoaderProps) -> Rsx {
 }
 ```
 
-This will create a button that will fetch additional topics when pressed. In the `mini-forum-comps` directory, You can build it with:
-
-```shell
-$ ananc build
-```
-
-Now, edit `mini-forum-comps/src/lib.rs`:
+This will create a button that will fetch additional topics when pressed. Now, edit `mini-forum-comps/src/lib.rs`:
 
 ```rust
 pub mod loader;
@@ -343,10 +332,8 @@ Add the files to `src/main.rs`:
 ```rust
 app_statics! {
     admin,
-    self,
+    wasm_statics!("mini-forum-wasm"),
 }
-
-wasm_statics!("mini-forum-wasm");
 ```
 
 You can then put it in `forum/topic/views.rs`, and add a `load` function:
@@ -410,12 +397,6 @@ routes! {
 }
 ```
 
-Finally, you can go to `mini-forum-comps/src` and create the necessary files with the following command:
-
-```shell
-$ ananc build
-```
-
 Now, if you go to the `mini-forum` directory and execute:
 
 ```shell
@@ -423,6 +404,98 @@ $ ananc run
 ```
 
 Hopefully, it should all work. If you've never used wasm-pack before, the first compiliation may take a while.
+
+Scoped CSS
+----------
+
+If you want, you can create CSS that only applies to a specific component. First, create `mini-forum-comps/src/spinner.rs`:
+
+```rust
+use anansi_aux::prelude::*;
+
+#[function_component(Spinner)]
+fn init() -> Rsx {
+    style! {
+        div {
+            display: inline-block;
+            width: 25px;
+            height: 25px;
+            border: 3px solid #cfd0d1;
+            border-radius: 50%;
+            border-top-color: #1c87c9;
+            animation: spin 1s ease-in-out infinite;
+            -webkit-animation: spin 1s ease-in-out infinite;
+        }
+        @keyframes spin {
+            to {
+                -webkit-transform: rotate(360deg);
+            }
+        }
+        @-webkit-keyframes spin {
+            to {
+                -webkit-transform: rotate(360deg);
+            }
+        }
+    }
+
+    rsx! {
+        <div></div>
+    }
+}
+```
+
+This one uses `function_component` since it doesn't have to manage state, and the CSS goes in `style`. Now, add everything to `mini-forum-comps/src/lib.rs`:
+
+```rust
+pub mod spinner;
+
+anansi_aux::comp_statics! {
+    "spinner",
+}
+
+anansi_aux::app_components! {
+    loader::Loader,
+    spinner::Spinner,
+}
+```
+
+And edit `src/main.rs`:
+
+```rust
+app_statics! {
+    admin,
+    wasm_statics!("mini-forum-wasm"),
+    eddit_comps,
+}
+```
+
+Finally, you should be able to use it in `mini-forum-comps/src/loader.rs`:
+
+```rust
+use crate::spinner::Spinner;
+
+// --snip--
+
+#[component(Loader)]
+fn init(props: LoaderProps) -> Rsx {
+    // --snip--
+
+    rsx! {
+        @for data in &state.fetched {
+            <li>@href props.show_url, data.id {@data.title}</li>
+        }
+	@resource data_resource {
+            Resource::Pending => {
+                <Spinner />
+            }
+            // --snip--
+        }
+        @if state.visible {
+            <button @onclick(handle_click)>Load more</button>
+        }
+    }
+}
+```
 
 Caching
 -------
