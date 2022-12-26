@@ -585,7 +585,7 @@ To create an admin, run:
 $ ananc admin
 ```
 
-Then enter a username, email (optional), and a strong password.
+Then enter a username, email, and a strong password.
 
 <br>
 
