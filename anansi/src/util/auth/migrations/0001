@@ -12,8 +12,24 @@ anansi::operations! {
                 records::VarChar::<150>::field().unique()
             ),
             (
+                "email",
+                records::Text::field().null()
+            ),
+            (
                 "password",
                 records::VarChar::<150>::field()
+            ),
+            (
+                "is_active",
+                records::Boolean::field().default("false")
+            ),
+            (
+                "last_login",
+                records::DateTime::field().auto_now_add()
+            ),
+            (
+                "date_joined",
+                records::DateTime::field().auto_now_add()
             ),
         ],
     },

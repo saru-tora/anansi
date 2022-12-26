@@ -130,7 +130,7 @@ where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams, <M as R
 where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams
     {
         let title = "Add filter".to_string();
-        if *req.method() == Method::Post {
+        if *req.method() == Method::POST {
             req.params_mut().insert("table_name".to_string(), M::table_name().to_string());
             let checker = FilterChecker::new(M::field_names());
             let form_map = req.to_form_map()?;

@@ -10,17 +10,21 @@ use std::pin::Pin;
 use std::future::Future;
 use std::path::PathBuf;
 
+use hyper::{Request as RawHyperRequest, Response as RawHyperResponse, body::Incoming as IncomingBody};
+use hyper::{header::HeaderValue, body::Bytes, StatusCode};
+use http_body_util::{BodyExt, Full};
+
 use crate::cache::BaseCache;
 use crate::server::Rng;
 use crate::router::Routes;
 use crate::records::{Record, FromParams, BigInt, DateTime};
 use crate::admin_site::AdminRef;
+use crate::email::{EmailBuilder, Mailer};
 
 pub type Result<T> = result::Result<T, Box<dyn Error + Send + Sync>>;
 pub type View<B> = fn(&mut B) -> Pin<Box<dyn Future<Output = Result<Response>> + Send + '_>>;
 pub type Static = (&'static str, &'static [u8]);
 
-const SPACE: u8 = 32;
 const AMPERSAND: u8 = 38;
 const SEMICOLON: u8 = 59;
 const EQUAL: u8 = 61;
@@ -28,8 +32,13 @@ const EQUAL: u8 = 61;
 pub const SLASH: u8 = 47;
 pub const LEFT_BRACE: u8 = 123;
 
-pub const GET: Method = Method::Get;
-pub const POST: Method = Method::Post;
+pub const GET: Method = Method::GET;
+pub const POST: Method = Method::POST;
+
+pub use hyper::{Uri, Method, HeaderMap};
+
+#[derive(Debug)]
+pub struct HyperRequest(pub(crate) RawHyperRequest<IncomingBody>);
 
 fn find_base(dir: &mut PathBuf) -> bool {
     let files = std::fs::read_dir(&dir).unwrap();
@@ -83,6 +92,7 @@ macro_rules! middleware {
             urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>,
             cache: AppCache,
             admin: anansi::util::admin::site::AdminRef<Self>,
+            mailer: Option<anansi::email::Mailer>,
         }
         #[derive(Debug, Clone)]
         pub struct Middleware {
@@ -231,26 +241,17 @@ macro_rules! strip_plus {
 }
 
 #[derive(Debug, Clone)]
-pub struct Headers(HashMap<String, String>);
+pub struct Headers(HeaderMap<HeaderValue>);
 
 impl Headers {
-    fn new() -> Self {
-        Self {0: HashMap::new()}
-    }
-    pub fn insert(&mut self, key: String, value: String) {
-        self.0.insert(key, value);
-    }
-    fn insert_str(&mut self, key: &str, value: &str) {
-        self.0.insert(key.to_string(), value.to_string());
-    }
-    fn get(&self, key: &str) -> Option<&String> {
-        self.0.get(key)
+    pub fn insert(&mut self, key: &'static str, value: &str) {
+        self.0.insert(key, HeaderValue::from_str(value).unwrap());
     }
 }
 
 impl IntoIterator for Headers {
-    type Item = (String, String);
-    type IntoIter = std::collections::hash_map::IntoIter<String, String>;
+    type Item = (Option<hyper::header::HeaderName>, HeaderValue);
+    type IntoIter = hyper::header::IntoIter<HeaderValue>;
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -340,12 +341,6 @@ pub fn route_path<B: BaseRequest>(s: &'static str, f: View<B>) -> Route<B> {
     Route::Path((s, f))
 }
 
-#[derive(PartialEq, Eq, Copy, Clone, Debug)]
-pub enum Method {
-    Get,
-    Post,
-}
-
 #[derive(Debug, Clone)]
 pub struct Body {
     body: Vec<u8>,
@@ -357,71 +352,77 @@ impl Body {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Response {
-    status_line: String,
-    headers: Headers,
-    body: Option<Body>,
-}
+#[derive(Debug)]
+pub struct Response(RawHyperResponse<Full<Bytes>>);
 
 impl Response {
-    pub fn headers(&self) -> &Headers {
-        &self.headers
+    pub fn status(&self) -> StatusCode {
+        self.0.status()
     }
-    pub fn headers_mut(&mut self) -> &mut Headers {
-        &mut self.headers
+    pub fn headers(&self) -> &HeaderMap {
+        self.0.headers()
     }
-    pub fn new(status_line: &'static str, contents: Vec<u8>) -> Self {
-        let mut headers = Headers::new();
-        headers.insert_str("content-type", "text/html");
-        headers.insert_str("charset", "UTF-8");
-        headers.insert_str("Server", "webserver");
-        headers.insert_str("content-security-policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests;");
-        headers.insert_str("x-frame-options", "DENY");
-        headers.insert("Content-length".to_string(), contents.len().to_string());
-        let body = Some(Body {body: contents});
-        Self {status_line: status_line.to_string(), headers, body}
+    pub fn headers_mut(&mut self) -> &mut HeaderMap {
+        self.0.headers_mut()
     }
-    pub fn from_json(contents: String) -> Self {
-        let mut headers = Headers::new();
+    pub fn new(status: u16, contents: Vec<u8>) -> Self {
+        let builder = RawHyperResponse::builder()
+            .status(status)
+            .header("content-type", "text/html")
+            .header("charset", "UTF-8")
+            .header("Server", "webserver")
+            .header("content-security-policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests;")
+            .header("x-frame-options", "DENY")
+            .header("Content-length", contents.len().to_string())
+            .body(Full::new(Bytes::from(contents))).unwrap();
+        Self {0: builder}
+    }
+    pub fn json<T: serde::ser::Serialize>(value: &T) -> Result<Self> {
+        let contents = serde_json::to_vec(value)?;
+        let builder = RawHyperResponse::builder()
+            .header("content-type", "application/json; charset=UTF-8")
+            .header("Server", "webserver")
+            .header("Content-length", contents.len().to_string())
+            .body(Full::new(Bytes::from(contents))).unwrap();
+        Ok(Self {0: builder})
+    }
+    pub fn text(contents: String) -> Self {
         let contents = contents.into_bytes();
-        headers.insert_str("content-type", "application/json");
-        headers.insert_str("charset", "UTF-8");
-        headers.insert_str("Server", "webserver");
-        headers.insert("Content-length".to_string(), contents.len().to_string());
-        let body = Some(Body {body: contents});
-        Self {status_line: "HTTP/1.1 200 OK".to_string(), headers, body}
+        let builder = RawHyperResponse::builder()
+            .header("content-type", "text/plain; charset=UTF-8")
+            .header("Server", "webserver")
+            .header("Content-length", contents.len().to_string())
+            .body(Full::new(Bytes::from(contents))).unwrap();
+        Self {0: builder}
     }
-    pub fn content(status_line: &'static str, ty: &str, contents: Vec<u8>) -> Self {
-        let mut headers = Headers::new();
-        headers.insert_str("Content-Type", ty);
-        headers.insert("Content-Length".to_string(), contents.len().to_string());
-        let body = Some(Body {body: contents});
-        Self {status_line: status_line.to_string(), headers, body}
+    pub fn content(status: u16, ty: &str, contents: Vec<u8>) -> Self {
+        let builder = RawHyperResponse::builder()
+            .status(status)
+            .header("Content-Type", ty)
+            .header("Content-Length", contents.len().to_string())
+            .body(Full::new(Bytes::from(contents))).unwrap();
+        Self {0: builder}
     }
-    pub fn internal_error(b: &[u8]) -> Self {
-        Self::new("HTTP/1.1 500 INTERNAL SERVER ERROR", b.to_vec())
+    pub fn internal_error(b: Vec<u8>) -> Self {
+        let builder = RawHyperResponse::builder()
+            .status(500)
+            .body(Full::new(Bytes::from(b))).unwrap();
+        Self {0: builder}
     }
     pub fn redirect(location: &str) -> Self {
-        let headers = Headers::new();
-        Self {status_line: format!("HTTP/1.1 303 See Other\r\nLocation: {}", location), headers, body: None}
+        let builder = RawHyperResponse::builder()
+            .status(303)
+            .header("Location", location)
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        Self {0: builder}
     }
     pub fn set_persistent(mut self, key: &str, value: &str, expires: &DateTime) -> Self {
-        self.headers.insert("Set-Cookie".to_string(), format!("{key}={value}; Path=/; Expires={}; Secure; HttpOnly; SameSite=Lax", expires.to_gmt()));
+        self.0.headers_mut().insert("Set-Cookie", HeaderValue::from_str(&format!("{key}={value}; Path=/; Expires={}; Secure; HttpOnly; SameSite=Lax", expires.to_gmt())).unwrap());
         self
     }
-    pub fn into_bytes(self) -> Vec<u8> {
-        let mut s = String::from(format!("{}\r\n", self.status_line));
-        for (key, value) in self.headers {
-            s.push_str(&format!("{key}: {value}\r\n"));
-        }
-        s.push_str("\r\n");
-        
-        let mut bytes = s.into_bytes();
-        if let Some(mut body) = self.body {
-            bytes.append(&mut body.body);
-        }
-        bytes
+    pub(crate) fn into_inner(self) -> RawHyperResponse<Full<Bytes>> {
+        self.0
     }
 }
 
@@ -460,8 +461,8 @@ impl Cookies {
 #[derive(Debug, Clone)]
 pub struct RawRequest<D: DbPool> {
     pub method: Method,
-    pub url: String,
-    pub headers: Headers,
+    pub url: Uri,
+    pub headers: HeaderMap<HeaderValue>,
     pub body: Option<Body>,
     pub cookies: Cookies,
     pub params: Parameters,
@@ -583,46 +584,6 @@ fn find_byte(buffer: &[u8], n: usize, byte: u8) -> usize {
     buffer.len()
 }
 
-fn find_bytes(buffer: &[u8], mut n: usize, bytes: &[u8]) -> usize {
-    loop {
-        let m = find_byte(buffer, n, bytes[0]) + 1;
-        if n >= buffer.len() - bytes.len() {
-            return m;
-        }
-        let o = m + bytes.len() - 1;
-        if buffer[m..o] == bytes[1..] {
-            return o;
-        } else {
-            n = m + 1;
-        }
-    }
-}
-
-fn find_space(buffer: &[u8], n: usize) -> usize {
-    find_byte(buffer, n, SPACE)
-}
-
-fn get_headers(buffer: &[u8], o: &mut usize) -> Result<Headers> {
-    let mut headers = Headers::new();
-    let mut n = *o;
-    let mut m = find_bytes(buffer, n, b"\r\n");
-    while n < buffer.len() {
-        let n2 = find_bytes(buffer, n, b": ");
-        let key = get_string(&buffer[n..n2-2])?;
-        let value = get_string(&buffer[n2..m-2])?;
-        headers.insert(key, value);
-        let m2 = find_bytes(buffer, m, b"\r\n");
-        if m2 - m <= 2 {
-            break;
-        } else {
-            n = m;
-            m = m2;
-        }
-    }
-    *o = m;
-    Ok(headers)
-}
-
 pub fn get_string(buffer: &[u8]) -> result::Result<String, FromUtf8Error> {
     String::from_utf8(buffer.to_vec())
 }
@@ -645,10 +606,11 @@ pub trait BaseRequest: Send + Sync {
     type SqlPool: DbPool;
     type Cache: BaseCache;
 
-    async fn new(buffer: &[u8], request_line: RequestLine, url: Arc<HashMap<usize, Vec<String>>>, pool: Self::SqlPool, cache: Self::Cache, rng: Rng, admin: AdminRef<Self>) -> Result<Self> where Self: Sized;
+    async fn new(request: HyperRequest, url: Arc<HashMap<usize, Vec<String>>>, pool: Self::SqlPool, cache: Self::Cache, rng: Rng, admin: AdminRef<Self>, mailer: Option<Mailer>) -> Result<Self> where Self: Sized;
     fn method(&self) -> &Method;
-    fn url(&self) -> &String;
-    fn headers(&self) -> &Headers;
+    fn url(&self) -> &str;
+    fn query(&self) -> Option<&str>;
+    fn headers(&self) -> &HeaderMap;
     fn body(&self) -> &Option<Body>;
     fn cookies(&self) -> &Cookies;
     fn params(&self) -> &Parameters;
@@ -656,11 +618,12 @@ pub trait BaseRequest: Send + Sync {
     fn raw(&self) -> &RawRequest<Self::SqlPool>;
     fn mid(&self) -> &Self::Mid;
     fn to_form_map(&self) -> Result<FormMap>;
-    fn from(raw: RawRequest<Self::SqlPool>, mid: Self::Mid, cache: Self::Cache, urls: Arc<HashMap<usize, Vec<String>>>, admin: AdminRef<Self>) -> Self where Self: Sized;
+    fn from(raw: RawRequest<Self::SqlPool>, mid: Self::Mid, cache: Self::Cache, urls: Arc<HashMap<usize, Vec<String>>>, admin: AdminRef<Self>, mailer: Option<Mailer>) -> Self where Self: Sized;
     fn user(&self) -> &Self::Usr;
     fn user_mut(&mut self) -> &mut Self::Usr;
     fn cache(&self) -> &Self::Cache;
     fn cache_mut(&mut self) -> &mut Self::Cache;
+    fn email(&self) -> EmailBuilder;
     fn to_raw(self) -> RawRequest<Self::SqlPool>;
     async fn handle_no_session(response: Response, pool: Self::SqlPool, std_rng: Rng) -> Result<Response> where Self: Sized;
 }
@@ -694,18 +657,20 @@ pub async fn route_request<B: BaseRequest + fmt::Debug + 'static>(dirs: Vec<&str
             for (pattern, dir) in patterns.iter().zip(dirs.iter()) {
                 match pattern.as_bytes()[0] {
                     SLASH => if pattern == dir {
-                        continue;
-                    } else if let Some((d, qs)) = dir.split_once('?') {
-                        if pattern == d {
-                            if let Some(qv) = parse_query_string(qs) {
-                                for (k, v) in qv {
-                                    params.insert(k, v);
+                        if let Some(qs) = req.query() {
+                            if pattern == dir {
+                                if let Some(qv) = parse_query_string(qs) {
+                                    for (k, v) in qv {
+                                        params.insert(k, v);
+                                    }
+                                    break;
                                 }
-                                break;
                             }
+                            b = false;
+                            break;
+                        } else {
+                            continue;
                         }
-                        b = false;
-                        break;
                     } else {
                         b = false;
                         break;
@@ -770,19 +735,22 @@ macro_rules! request_derive {
             type SqlPool = Pool;
             type Cache = AppCache;
 
-            async fn new(buffer: &[u8], request_line: $crate::web::RequestLine, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: Self::SqlPool, cache: Self::Cache, std_rng: $crate::server::Rng, admin: $crate::admin_site::AdminRef<Self>) -> $crate::web::Result<Self> where Self: Sized {
-                let mut raw = $crate::web::RawRequest::new(buffer, request_line, pool, std_rng).await?;
+            async fn new(request: $crate::web::HyperRequest, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: Self::SqlPool, cache: Self::Cache, std_rng: $crate::server::Rng, admin: $crate::admin_site::AdminRef<Self>, mailer: Option<anansi::email::Mailer>) -> $crate::web::Result<Self> where Self: Sized {
+                let mut raw = $crate::web::RawRequest::new(request, pool, std_rng).await?;
                 let mid = Middleware::new(&mut raw).await?;
-                Ok(Self {raw, mid, urls, cache, admin})
+                Ok(Self {raw, mid, urls, cache, admin, mailer})
             }
             fn method(&self) -> &anansi::web::Method {
-                &self.raw.method
+                self.raw.method()
             }
-            fn url(&self) -> &String {
-                &self.raw.url
+            fn url(&self) -> &str {
+                self.raw.url()
             }
-            fn headers(&self) -> &anansi::web::Headers {
-                &self.raw.headers
+            fn query(&self) -> Option<&str> {
+                self.raw.query()
+            }
+            fn headers(&self) -> &anansi::web::HeaderMap {
+                self.raw.headers()
             }
             fn body(&self) -> &Option<anansi::web::Body> {
                 &self.raw.body
@@ -805,8 +773,8 @@ macro_rules! request_derive {
             fn to_form_map(&self) -> anansi::web::Result<anansi::web::FormMap> {
                 self.raw().to_form_map()
             }
-            fn from(raw: anansi::web::RawRequest<Pool>, mid: Middleware, cache: Self::Cache, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, admin: $crate::admin_site::AdminRef<Self>) -> Self {
-                Self{raw, mid, cache, urls, admin}
+            fn from(raw: anansi::web::RawRequest<Pool>, mid: Middleware, cache: Self::Cache, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, admin: $crate::admin_site::AdminRef<Self>, mailer: Option<anansi::email::Mailer>) -> Self {
+                Self{raw, mid, cache, urls, admin, mailer}
             }
             fn to_raw(self) -> anansi::web::RawRequest<Pool> {
                 self.raw
@@ -823,6 +791,9 @@ macro_rules! request_derive {
             fn cache_mut(&mut self) -> &mut Self::Cache {
                 &mut self.cache
             }
+            fn email(&self) -> anansi::email::EmailBuilder {
+                anansi::email::Email::builder(&self.mailer)
+            }
             async fn handle_no_session(response: anansi::web::Response, pool: Self::SqlPool, std_rng: anansi::server::Rng) -> anansi::web::Result<anansi::web::Response> {
                 let session = anansi::util::sessions::records::Session::gen(&pool, &std_rng).await?;
                 Ok(response.set_persistent("st", &session.secret, &session.expires))
@@ -832,25 +803,7 @@ macro_rules! request_derive {
 }
 
 impl<D: DbPool> RawRequest<D> {
-    pub fn get_request_line(buffer: &[u8]) -> Result<(usize, RequestLine)> {
-        let mut m = find_space(buffer, 0);
-        let method = match &buffer[..m] {
-            b"GET" => Method::Get,
-            b"POST" => Method::Post,
-            _ => return Err(invalid())
-        };
-        let mut n = m + 1;
-        m = find_space(buffer, n);
-        let url = get_string(&buffer[n..m])?;
-        n = m + 1;
-        m = find_bytes(buffer, n, b"\r\n");
-        let version = get_string(&buffer[n..m-2])?;
-        if version != "HTTP/1.1" {
-            return Err(invalid());
-        }
-        Ok((m, RequestLine{method, url}))
-    }
-    fn get_cookies(headers: &Headers) -> Result<Cookies> {
+    fn get_cookies(headers: &HeaderMap<HeaderValue>) -> Result<Cookies> {
         let mut cookies = HashMap::new();
         if let Some(buffer) = headers.get("Cookie") {
             let buffer = buffer.as_bytes();
@@ -867,17 +820,20 @@ impl<D: DbPool> RawRequest<D> {
         }
         Ok(Cookies {cookies})
     }
+    pub fn method(&self) -> &Method {
+        &self.method
+    }
     pub fn to_form_map(&self) -> Result<FormMap> {
-        if self.method == Method::Post {
+        if self.method() == Method::POST {
             if let Some(body) = &self.body {
                 let buffer = body.as_slice();
                 let mut n = 0;
                 let mut map = HashMap::new();
                 while n < buffer.len() {
-                    let mut m = find_byte(buffer, n, EQUAL);
+                    let mut m = find_byte(&buffer, n, EQUAL);
                     let key = get_string(&buffer[n..m])?;
                     n = m + 1;
-                    m = find_byte(buffer, n, AMPERSAND);
+                    m = find_byte(&buffer, n, AMPERSAND);
                     let value = get_string(&buffer[n..m])?;
                     let decoded = percent_decode(&value)?;
                     map.insert(key, decoded);
@@ -888,28 +844,30 @@ impl<D: DbPool> RawRequest<D> {
         }
         Err(invalid())
     }
-    pub async fn new(buffer: &[u8], request_line: RequestLine, pool: D, std_rng: Rng) -> Result<Self> {
-        let mut n = 0;
-        let headers = get_headers(buffer, &mut n)?;
-        n += 2;
-        let body = if n == buffer.len() {
-            None
+    pub async fn new(request: HyperRequest, pool: D, std_rng: Rng) -> Result<Self> {
+        let (parts, body) = request.0.into_parts();
+        let body = body.collect().await?.to_bytes();
+        let body = if !body.is_empty() {
+            Some(Body {body: body.to_vec()})
         } else {
-            Some(Body {body: buffer[n..].to_vec()})
+            None
         };
-        let cookies = Self::get_cookies(&headers)?;
+        let cookies = Self::get_cookies(&parts.headers)?;
         let params = Parameters::new();
         Ok(Self {
-            method: request_line.method,
-            url: request_line.url,
-            headers,
             body,
+            method: parts.method,
+            url: parts.uri,
+            headers: parts.headers,
             cookies,
             params,
             pool,
             std_rng,
             valid_token: false,
         })
+    }
+    pub fn headers(&self) -> &HeaderMap {
+        &self.headers
     }
     pub fn cookies_mut(&mut self) -> &mut Cookies {
         &mut self.cookies
@@ -926,8 +884,11 @@ impl<D: DbPool> RawRequest<D> {
     pub fn valid_token_mut(&mut self) -> &mut bool {
         &mut self.valid_token
     }
-    pub fn url(&self) -> &String {
-        &self.url
+    pub fn url(&self) -> &str {
+        self.url.path()
+    }
+    pub fn query(&self) -> Option<&str> {
+        self.url.query()
     }
     pub async fn transact<F: Future<Output = Result<O>> + Send, O: Send>(&self, future: F) -> F::Output {
         self.pool().transact(future).await

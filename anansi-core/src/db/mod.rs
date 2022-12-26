@@ -18,6 +18,28 @@ use crate::server::Settings;
 use crate::records::{Record, DataType, BigInt, Objects, ToSql};
 use crate::web::{Result, BaseRequest};
 
+#[cfg(feature = "sqlite")]
+#[macro_export]
+macro_rules! sql_bool {
+    (true) => {
+        1
+    };
+    (false) => {
+        0
+    };
+}
+
+#[cfg(feature = "postgres")]
+#[macro_export]
+macro_rules! sql_bool {
+    (true) => {
+        true
+    };
+    (false) => {
+        false
+    };
+}
+
 #[macro_export]
 macro_rules! database {
     (sqlite) => {

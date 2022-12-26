@@ -12,7 +12,7 @@ use async_recursion::async_recursion;
 
 use anansi::web::{Result, BaseUser, BaseRequest, WebError, WebErrorKind};
 use anansi::db::{DbPool, DbRowVec, invalid};
-use anansi::records::{Record, BigInt, VarChar, Text, DataType};
+use anansi::records::{Record, BigInt, VarChar, Text, DateTime, DataType};
 use anansi::{record, FromParams, ToUrl, Relate};
 
 #[record]
@@ -20,7 +20,12 @@ use anansi::{record, FromParams, ToUrl, Relate};
 pub struct User {
     #[field(unique = "true")]
     pub username: VarChar<150>,
+    pub email: Option<Text>,
     pub password: VarChar<150>,
+    #[field(auto_now_add = "true")]
+    pub last_login: DateTime,
+    #[field(auto_now_add = "true")]
+    pub date_joined: DateTime,
 }
 
 impl BaseUser for User {
@@ -165,7 +170,6 @@ impl User {
     pub const KEY: &'static str = "_user_id";
     
     pub async fn validate_username<D: DbPool>(username: &str, pool: &D) -> result::Result<VarChar<150>, UsernameFeedback> {
-        let username = username.trim();
         if username.is_empty() {
             return Err(UsernameFeedback::from(username.to_string()));
         }
@@ -208,10 +212,14 @@ impl User {
         Entropy {0: entropy}
     }
     pub fn guest() -> Self {
+        let now = DateTime::now();
         Self {
             id: BigInt::new(0),
             username: VarChar::from("guest".to_string()).unwrap(),
+            email: None,
             password: VarChar::new(),
+            last_login: now,
+            date_joined: now,
         }
     }
     pub fn verify(&self, password: &VarChar<150>) -> Result<()> {

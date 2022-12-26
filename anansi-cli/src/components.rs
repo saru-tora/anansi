@@ -6,11 +6,15 @@ use syn::{Ident};
 use syn::parse::{Result, Parse, ParseStream};
 use quote::{quote, format_ident};
 use proc_macro2::TokenStream;
+use toml::Value;
+use toml::map::Map;
 
 use syn::Block;
 use syn::Expr::*;
 use syn::Stmt::{Semi, Item, Local};
 use std::collections::{HashSet, HashMap};
+
+use crate::{VERSION, cargo, make_file, append, get_src};
 
 pub fn get_expr(chars: &mut Chars) -> String {
     let mut s = String::new();
@@ -46,15 +50,19 @@ pub fn get_expr(chars: &mut Chars) -> String {
     s
 }
 
-pub fn check_components(path: PathBuf) {
+pub fn check_components(path: PathBuf, changed: &mut bool) {
     let content = fs::read_to_string(&path).unwrap();
     match content.split_once("#[component(") {
-        Some((_, split)) => parse_component(split, &path, false),
+        Some((_, split)) => {
+            parse_component(split, &path, false);
+            *changed = true;
+        }
         None => {}
     };
     match content.split_once("#[function_component(") {
         Some((_, split)) => {
-            parse_component(split, &path, true)
+            parse_component(split, &path, true);
+            *changed = true;
         }
         None => {}
     };
@@ -137,6 +145,10 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
         let token = collect_nws(&mut bchars);
         if token.is_empty() {
             break;
+        }
+        if token.starts_with("//") {
+            collect(&mut bchars, '\n');
+            continue;
         }
         match token.trim() {
             "let" => {
@@ -846,7 +858,7 @@ impl CompParser {
             }
             let name = name.trim().to_string();
             if let Some(attr) = collect_str(&mut chrs) {
-                s.push_str(&format!("(\"{name}\", \"{attr}\")"));
+                s.push_str(&format!("(\"{name}\".to_string(), \"{attr}\".to_string())"));
             } else {
                 break s;
             }
@@ -1174,4 +1186,195 @@ impl Parse for ResourceArgs {
         let cb = input.parse().expect("expected closure");
         Ok(Self { ty, cb })
     }
+}
+
+pub fn init_components(args: &Vec<String>) {
+    let (_, dir) = get_src(args, "");
+    let name = dir.file_name().unwrap().to_str().unwrap();
+    let cargo_toml = fs::read_to_string("Cargo.toml").expect("Could not find Cargo.toml");
+    let comps = format!("{}-comps", name);
+    let mut cargo_toml: Map<String, Value> = toml::from_str(&cargo_toml).expect("Could not parse settings.toml");
+    {
+        let members = cargo_toml.get_mut("workspace").unwrap().get_mut("members").unwrap().as_array_mut().unwrap();
+        members.push(Value::String(comps.clone()));
+    }
+    {
+        let deps = cargo_toml.get_mut("dependencies").unwrap().as_table_mut().unwrap();
+        deps.insert("anansi-aux".to_string(), Value::String(format!("{}", VERSION)));
+        {
+            let mut table = Map::new();
+            table.insert("path".to_string(), Value::String(comps.clone()));
+            table.insert("version".to_string(), Value::String("*".to_string()));
+            deps.insert(comps.clone(), Value::Table(table));
+        }
+        {
+            let mut table = Map::new();
+            table.insert("version".to_string(), Value::String("1.0".to_string()));
+            table.insert("features".to_string(), Value::Array(vec![Value::String("derive".to_string())]));
+            deps.entry("serde").or_insert(Value::Table(table));
+        }
+        deps.entry("serde_json").or_insert(Value::String("1.0".to_string()));
+    }
+    fs::write("Cargo.toml", toml::to_string(&cargo_toml).unwrap().into_bytes()).unwrap();
+    let comps_args = vec!["".to_string(), "new".to_string(), comps.clone(), "--lib".to_string()];
+    cargo(&comps_args);
+    let mut comp_path = PathBuf::from(&comps);
+    append(comp_path.to_str().unwrap(), "Cargo.toml", &format!("wasm-bindgen = \"0.2\"
+serde = {{ version = \"1.0\", features = [\"derive\"] }}
+serde_json = \"1.0\"
+wasm-bindgen-futures = \"0.4\"
+async-channel = \"1.7.1\"
+anansi-aux = \"{}\"
+
+[features]
+server = []
+client = []", VERSION).into_bytes());
+    comp_path.push("src");
+    let mut parsed_path = comp_path.clone();
+    parsed_path.push(".parsed");
+    fs::create_dir(parsed_path).unwrap();
+    comp_path.push("lib.rs");
+    let wasm = format!("{}-wasm", name);
+    let under_wasm = wasm.replace('-', "_");
+    let under_comps = comps.replace('-', "_");
+    fs::write(comp_path, "anansi_aux::app_components! {}".to_string().into_bytes()).unwrap();
+    let wasm_args = vec!["".to_string(), "new".to_string(), wasm.clone(), "--lib".to_string()];
+    {
+        let members = cargo_toml.get_mut("workspace").unwrap().get_mut("members").unwrap().as_array_mut().unwrap();
+        members.push(Value::String(wasm.clone()));
+        fs::write("Cargo.toml", toml::to_string(&cargo_toml).unwrap().into_bytes()).unwrap();
+    }
+    cargo(&wasm_args);
+    let mut wasm_path = PathBuf::from(&wasm);
+    let mut js = "const registerServiceWorker = async () => {
+  if ('serviceWorker' in navigator) {
+    try {
+      const registration = await navigator.serviceWorker.register(
+        '/static/sw.js',
+        {
+          scope: '/static/',
+        }
+      );
+    } catch (error) {
+      console.error(`Registration failed with ${error}`);
+    }
+  }
+};
+registerServiceWorker();
+
+let mod;
+const ids = new Map();
+document.addEventListener('click', (e) => {
+  let paths = e.composedPath();
+  let callback;
+  let id;
+  for (let i = 0; i < paths.length; i++) {
+    let el = paths[i];
+    let attributes = el.attributes;
+    if (attributes) {
+      let onclick = attributes.getNamedItem('on:click');
+      let aid = ids.get(onclick.value);
+      if (!aid) {
+        aid = attributes.getNamedItem('a:id');
+        ids.set(onclick.value, aid);
+      }
+      if (onclick && aid) {
+        callback = onclick.value;
+        id = aid.value;
+        break;
+      }
+    }
+  }
+  if (callback) {
+    if (mod) {
+      mod.call(callback, id);
+    } else {
+      import('/static/pkg/".to_string();
+    js.push_str(&under_wasm);
+    js.push_str(".js').then((module) => {
+        module.default().then(() => {
+          module.start();
+          mod = module;
+          mod.call(callback, id);
+        });
+      });
+    }
+  }
+});");
+    make_file(&wasm_path, "main", ".js", js);
+    let mut sw = "const addResourcesToCache = async (resources) => {
+  const cache = await caches.open('v1');
+  await cache.addAll(resources);
+};
+
+const putInCache = async (request, response) => {
+  const cache = await caches.open('v1');
+  await cache.put(request, response);
+};
+
+const cacheFirst = async ({ request, preloadResponsePromise }) => {
+  const responseFromCache = await caches.match(request);
+  if (responseFromCache) {
+    return responseFromCache;
+  }
+
+  const preloadResponse = await preloadResponsePromise;
+  if (preloadResponse) {
+    console.info('using preload response', preloadResponse);
+    putInCache(request, preloadResponse.clone());
+    return preloadResponse;
+  }
+
+  try {
+    const responseFromNetwork = await fetch(request);
+    putInCache(request, responseFromNetwork.clone());
+    return responseFromNetwork;
+  } catch (error) {
+    return new Response('Network error happened', {
+      status: 408,
+      headers: { 'Content-Type': 'text/plain' },
+    });
+  }
+};
+
+const enableNavigationPreload = async () => {
+  if (self.registration.navigationPreload) {
+    await self.registration.navigationPreload.enable();
+  }
+};
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(enableNavigationPreload());
+});
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    addResourcesToCache([".to_string();
+    sw.push_str(&format!("
+      '/pkg/main.js',
+      '/pkg/{}.js',
+      '/pkg/{0}_bg.wasm',
+    ", under_wasm));
+    sw.push_str("])
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  event.respondWith(
+    cacheFirst({
+      request: event.request,
+      preloadResponsePromise: event.preloadResponse,
+    })
+  );
+});");
+    make_file(&wasm_path, "sw", ".js", sw);
+    append(wasm_path.to_str().unwrap(), "Cargo.toml", &format!("wasm-bindgen = \"0.2\"
+anansi-aux = \"{}\"
+{} = {{ path = \"../{1}\" , version = \"*\" }}
+
+[lib]
+crate-type = [\"cdylib\"]", VERSION, comps).into_bytes());
+    wasm_path.push("src");
+    wasm_path.push("lib.rs");
+    fs::write(wasm_path, format!("anansi_aux::start!({});", under_comps)).unwrap();
 }

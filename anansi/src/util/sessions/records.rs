@@ -60,7 +60,9 @@ impl Session  {
         Ok(SessionData {data_map: serde_json::from_str(&self.data)?})
     }
     pub async fn gen<D: DbPool>(pool: &D, rng: &Rng) -> Result<Self> {
-        Self::from_guest(rng).raw_save(pool).await
+        let session = Self::from_guest(rng);
+        session.raw_save(pool).await?;
+        Ok(session)
     }
     pub async fn from_raw<D: DbPool>(raw: &mut RawRequest<D>) -> Result<Self> {
         let st = raw.cookies_mut().remove("st")?;

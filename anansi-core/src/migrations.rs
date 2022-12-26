@@ -359,6 +359,10 @@ fn get_type(fieldname: &String, field: &Field, meta: &mut Vec<Vec<String>>, db: 
                 };
                 if let Some(_) = attrs.get("unique") {
                     ty.push_str(".unique()");
+                } else if let Some(value) = attrs.get("default") {
+                    ty.push_str(&format!(".default({})", value));
+                } else if let Some(_) = attrs.get("auto_now_add") {
+                    ty.push_str(".auto_now_add()");
                 }
                 ty
             }

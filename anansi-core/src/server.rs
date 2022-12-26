@@ -1,11 +1,13 @@
 use std::{fmt, env, str, path::PathBuf, marker::PhantomData};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::AsyncReadExt;
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tokio::{fs, time};
+use std::pin::Pin;
+use std::future::Future;
 
 use toml;
 use toml::value::Value;
@@ -16,13 +18,23 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 use sha2::{Digest, Sha256};
 
+use http_body_util::Full;
+use hyper::server::conn::http1;
+use hyper::body::Bytes;
+use hyper::{Request, body::Incoming as IncomingBody, Response as HyperResponse, header::HeaderValue};
+use hyper::service::Service;
+
+use log::{error, info};
+use env_logger::Env;
+
 use crate::db::{DbPool, DbRow};
 use crate::cache::BaseCache;
 use crate::records::{VarChar, DateTime, DataType};
-use crate::web::{BASE_DIR, Result, Static, Route, BaseRequest, RawRequest, Response, Http404, WebError, WebErrorKind, View, route_request, route_path};
+use crate::web::{BASE_DIR, Result, Static, Route, BaseRequest, HyperRequest, Response, Http404, WebError, WebErrorKind, View, route_request, route_path};
 use crate::router::{Router, get_capture, split_url};
 use crate::migrations::{migrate, sql_migrate, make_migrations, AppMigration};
 use crate::admin_site::AdminRef;
+use crate::email::Mailer;
 
 pub type Settings = Map<String, Value>;
 
@@ -47,7 +59,7 @@ macro_rules! main {
             use crate::http_errors::views::ErrorView;
             use anansi::util::admin::site::AdminSite;
             use anansi::web::Response;
-            let internal_error = Response::internal_error(include_bytes!("http_errors/500.html"));
+            let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
             let site = Arc::new(Mutex::new(anansi::util::admin::site::BasicAdminSite::new()));
             anansi::server::Server::new(APP_STATICS, APP_ADMINS).run(app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_migrations, anansi::util::auth::cmd::admin, site);
         }
@@ -66,7 +78,8 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
     pub fn new(statics: &'static [&'static [Static]], admin_inits: AdminInits<B>) -> Self {
         Self {statics, admin_inits, d: PhantomData}
     }
-    pub fn run(&mut self, url_mapper: fn(&mut HashMap<usize, Vec<String>>), routes: &[Route<B>], handle_404: View<B>, internal_error: Response, migrations: fn() -> Vec<AppMigration<D>>, admin: fn(D) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>, site: AdminRef<B>) where <<D as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow {
+    pub fn run(&mut self, url_mapper: fn(&mut HashMap<usize, Vec<String>>), routes: &[Route<B>], handle_404: View<B>, internal_error: fn() -> Response, migrations: fn() -> Vec<AppMigration<D>>, admin: fn(D) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>, site: AdminRef<B>) where <<D as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow {
+        env_logger::Builder::from_env(Env::default().default_filter_or("anansi_core")).init();
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let addr = "127.0.0.1:9090";
@@ -95,14 +108,14 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                         if args.len() >= 2 {
                             make_migrations(&args[2], &pool).await;
                         } else {
-                            eprintln!("expected app name");
+                            error!("expected app name");
                         }
                     }
                     "sql-migrate" => {
                         if args.len() >= 3 {
                             sql_migrate(migrations(), &args[2], &args[3]).await;
                         } else{
-                            eprintln!("expected app name");
+                            error!("expected app name");
                         }
                     }
                     "migrate" => {
@@ -111,7 +124,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                     "admin" => {
                         admin(pool.clone()).await.expect("Could not create admin");
                     }
-                    _ => eprintln!("Unrecognized argument"),
+                    _ => error!("Unrecognized argument"),
                 }
             } else {
                 let mut url_map = HashMap::new();
@@ -135,6 +148,11 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                 let urls = Arc::new(url_map);
                 let c_settings = settings.get("caches").expect("Could not get cache settings").as_table().expect("Expected table for cache settings");
                 let cache = C::new(&c_settings).await.expect("Could not start cache");
+                let mailer = if let Ok(mailer) = Mailer::new(&settings) {
+                    Some(mailer)
+                } else {
+                    None
+                };
 
                 let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs().to_string();
                 let std_rng = match settings.get("secret_key") {
@@ -177,12 +195,19 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                     let timer = Arc::clone(&timer);
                     let aq = sem.try_acquire();
                     let site = site.clone();
+                    let mailer = mailer.clone();
                     if aq.is_ok() {
                         tokio::spawn(async move {
-                            handle_connection(stream, urls, pool, cache, std_rng, router, timer, site).await.unwrap();
+                            let addr = stream.peer_addr().unwrap();
+                            if let Err(err) = http1::Builder::new()
+                                .serve_connection(stream, Svc { addr, urls, pool, cache, std_rng, router, timer, site, mailer })
+                                .await
+                            {
+                                error!("Failed to serve connection: {:?}", err);
+                            }
                         });
                     } else {
-                        eprintln!("Open socket limit reached");
+                        error!("Open socket limit reached");
                     }
                 }
             }
@@ -220,87 +245,112 @@ pub async fn sleep(duration: std::time::Duration) {
     tokio::time::sleep(duration).await;
 }
 
-pub async fn handle_connection<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool, C: BaseCache>(mut stream: TcpStream, urls: Arc<HashMap<usize, Vec<String>>>, pool: D, cache: C, std_rng: Rng, router: Arc<Router<B>>, timer: Timer, site: AdminRef<B>) -> Result<()> {
-    let mut buffer = vec![0; 1024];
-    while let Ok(l) = time::timeout(time::Duration::from_secs(5), stream.read(&mut buffer)).await {
-        let length = l.unwrap();
-        if length == 0 {
-            break;
-        }
-        let urls = urls.clone();
-        let pool = pool.clone();
-        let cache = cache.clone();
-        let std_rng = std_rng.clone();
-        let site = site.clone();
+struct Svc<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool, C: BaseCache> {
+    addr: SocketAddr,
+    urls: Arc<HashMap<usize, Vec<String>>>,
+    pool: D,
+    cache: C,
+    std_rng: Rng, 
+    router: Arc<Router<B>>,
+    timer: Timer,
+    site: AdminRef<B>,
+    mailer: Option<Mailer>,
+}
 
-        let mut response = {
-            let (n, request_line) = RawRequest::<D>::get_request_line(&buffer[..length])?;
-            let url = request_line.url.clone();
-            let dirs = split_url(&url)?;
-            if dirs[0] == "/static" {
-                match router.serve_static(&url).await {
-                    Ok(r) => r,
-                    Err(_) => router.internal_error.clone(),
-                }
-            } else {
-                let result = B::new(&buffer[n..length], request_line, urls, pool.clone(), cache.clone(), std_rng.clone(), site).await;
-                match result {
-                    Ok(mut req) => {
-                        match route_request(dirs, &mut req, &router.routes).await {
-                            Ok(res) => {
-                                res
-                            }
-                            Err(error) => {
-                                if let Some(web_error) = error.downcast_ref::<WebError>() {
-                                    if web_error.kind() == &WebErrorKind::Unauthenticated {
-                                        Response::redirect(&router.login_url)
-                                    } else {
-                                        router.internal_error.clone()
-                                    }
-                                } else if let Ok(_http_404) = error.downcast::<Http404>() {
-                                    match (router.handle_404)(&mut req).await {
-                                        Ok(r) => r,
-                                        Err(_) => router.internal_error.clone(),
-                                    }
-                                } else {
-                                    router.internal_error.clone()
-                                }
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        if let Ok(web_error) = error.downcast::<WebError>() {
-                            match web_error.kind() {
-                                WebErrorKind::NoSession => {
-                                    match B::handle_no_session(Response::redirect(&url), pool, std_rng).await {
-                                        Ok(r) => {
-                                            r
-                                        }
-                                        Err(_) => {
-                                            router.internal_error.clone()
-                                        }
-                                    }
-                                }
-                                WebErrorKind::Unauthenticated => {
-                                    Response::redirect(&router.login_url)
-                                }
-                                WebErrorKind::Invalid => {
-                                    router.internal_error.clone()
-                                }
-                            }
-                        } else {
-                            router.internal_error.clone()
-                        }
-                    }
-                }
-            }
+impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 'static, C: BaseCache + 'static> Service<Request<IncomingBody>> for Svc<B, D, C> {
+    type Response = HyperResponse<Full<Bytes>>;
+    type Error = hyper::Error;
+    type Future = Pin<Box<dyn Future<Output = std::result::Result<Self::Response, Self::Error>> + Send>>;
+
+    fn call(&mut self, request: Request<IncomingBody>) -> Self::Future {
+        let urls = self.urls.clone();
+        let pool = self.pool.clone();
+        let cache = self.cache.clone();
+        let std_rng = self.std_rng.clone();
+        let site = self.site.clone();
+        let router = self.router.clone();
+        let timer = self.timer.clone();
+        let mailer = self.mailer.clone();
+        let req_info = if let Some(path_and_query) = request.uri().path_and_query() {
+            format!("{} \"{} {} {:?}\"", self.addr, request.method(), path_and_query, request.version())
+        } else {
+            format!("{} \"{} {} {:?}\"", self.addr, request.method(), request.uri().path(), request.version())
         };
-        {
-            let timer = timer.lock().unwrap();
-            response.headers_mut().insert("Date".to_string(), format!("{timer}"));
-        }
-        stream.write(&response.into_bytes()).await.unwrap();
-        break;
+
+        let block = async move {
+            let mut response = {
+                let url = request.uri().clone();
+                let dirs = if let Ok(dirs) = split_url(url.path()) {
+                    dirs
+                } else {
+                    return Ok((router.internal_error)().into_inner());
+                };
+                if dirs[0] == "/static" {
+                    match router.serve_static(url.path()).await {
+                        Ok(r) => r,
+                        Err(_) => (router.internal_error)(),
+                    }
+                } else {
+                    let result = B::new(HyperRequest {0: request}, urls, pool.clone(), cache.clone(), std_rng.clone(), site, mailer).await;
+                    match result {
+                        Ok(mut req) => {
+                            match route_request(dirs, &mut req, &router.routes).await {
+                                Ok(res) => {
+                                    res
+                                }
+                                Err(error) => {
+                                    if let Some(web_error) = error.downcast_ref::<WebError>() {
+                                        if web_error.kind() == &WebErrorKind::Unauthenticated {
+                                            Response::redirect(&router.login_url)
+                                        } else {
+                                            (router.internal_error)()
+                                        }
+                                    } else if let Ok(_http_404) = error.downcast::<Http404>() {
+                                        match (router.handle_404)(&mut req).await {
+                                            Ok(r) => r,
+                                            Err(_) => (router.internal_error)()
+                                        }
+                                    } else {
+                                        (router.internal_error)()
+                                    }
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            if let Ok(web_error) = error.downcast::<WebError>() {
+                                match web_error.kind() {
+                                    WebErrorKind::NoSession => {
+                                        match B::handle_no_session(Response::redirect(url.path()), pool, std_rng).await {
+                                            Ok(r) => {
+                                                r
+                                            }
+                                            Err(_) => {
+                                                (router.internal_error)()
+                                            }
+                                        }
+                                    }
+                                    WebErrorKind::Unauthenticated => {
+                                        Response::redirect(&router.login_url)
+                                    }
+                                    WebErrorKind::Invalid => {
+                                        (router.internal_error)()
+                                    }
+                                }
+                            } else {
+                                (router.internal_error)()
+                            }
+                        }
+                    }
+                }
+            };
+            {
+                let timer = timer.lock().unwrap();
+                response.headers_mut().insert("Date", HeaderValue::from_str(&format!("{timer}")).unwrap());
+            }
+            info!("{} {}", req_info, response.status().as_u16());
+            Ok(response.into_inner())
+        };
+
+        Box::pin(block)
     }
-    Ok(())
 }

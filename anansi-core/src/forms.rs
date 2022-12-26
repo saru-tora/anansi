@@ -85,7 +85,7 @@ macro_rules! _handle {
 macro_rules! _handle_or_404 {
     ($form:ty, $trait:ty, $req:ident, $post:ident, $b:expr) => {
         match *$req.method() {
-            anansi::web::GET => {
+            anansi::web::Method::GET => {
                 use anansi::forms::Form;
                 let mut form = match <$form as $trait>::on_get($req).await {
                     Ok(form) => form,
@@ -94,7 +94,7 @@ macro_rules! _handle_or_404 {
                 form.post(&$req.token()?);
                 Ok(form)
             }
-            anansi::web::POST => {
+            anansi::web::Method::POST => {
                 use anansi::forms::Form;
                 let res = <$form>::from_post($req);
                 if let Ok(mut form) = res {
@@ -120,6 +120,7 @@ macro_rules! _handle_or_404 {
                     res
                 }
             }
+            _ => anansi::http_404!(),
         }
     }
 }
@@ -137,6 +138,7 @@ macro_rules! base_handle {
                 anansi::web::POST => {
                     $on_post
                 }
+                _ => anansi::http_404!(),
             }
         }
     }

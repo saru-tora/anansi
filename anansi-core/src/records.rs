@@ -100,6 +100,14 @@ impl ToSql for Boolean {
     }
 }
 
+impl FromStr for Boolean {
+    type Err = Box<dyn Error + Send + Sync>;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Self::from(s)
+    }
+}
+
 #[derive(Clone, PartialEq, Copy, Debug, Serialize, Deserialize)]
 pub struct BigInt {
     n: i64,
@@ -588,13 +596,14 @@ pub struct RecordField {
     primary_key: bool,
     unique: bool,
     null: bool,
+    default: String,
     constraints: Vec<String>,
     index: Option<String>,
 }
 
 impl RecordField {
     pub fn new(ty: String) -> Self {
-        Self {ty, primary_key: false, unique: false, null: false, constraints: vec![], index: None}
+        Self {ty, primary_key: false, unique: false, null: false, default: String::new(), constraints: vec![], index: None}
     }
     pub fn primary_key(mut self) -> Self {
         self.primary_key = true;
@@ -629,7 +638,38 @@ impl RecordField {
         if self.unique {
             s.push_str(" UNIQUE");
         }
+        if !self.default.is_empty() {
+            s.push_str(&format!(" DEFAULT {}", self.default));
+        }
         (s, self.constraints.clone(), self.index.clone())
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl RecordField {
+    pub fn default(mut self, value: &str) -> Self {
+        self.default = if value == "true" {
+            "1".to_string()
+        } else if value == "false" {
+            "0".to_string()
+        } else {
+            value.to_string()
+        };
+        self
+    }
+    pub fn auto_now_add(mut self) -> Self {
+        self.default = "CURRENT_TIMESTAMP".to_string();
+        self
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl RecordField {
+    pub fn default(mut self, value: &str) {
+        self.default = value.to_string();
+    }
+    pub fn auto_now_add(mut self) {
+        self.default = "NOW()".to_string();
     }
 }
 
@@ -743,12 +783,13 @@ pub trait Record: Sized {
     fn whose(w: WhoseArg<Self>) -> Whose<Self> where Self: Sized;
     fn delete_whose(w: WhoseArg<Self>) -> DeleteWhose<Self> where Self: Sized;
     fn limit(n: u32) -> Limit<Self> where Self: Sized;
+    fn get_all() -> Limit<Self> where Self: Sized;
     fn get<R: DbRow>(row: R) -> Result<Self> where Self: Sized;
     fn from<V: DbRowVec>(rows: V) -> Result<Objects<Self>> where Self: Sized, <V as IntoIterator>::Item: DbRow;
     fn order_by(w: OrderByArg<Self>) -> OrderBy<Self> where Self: Sized;
     async fn update<B: BaseRequest>(&mut self, req: &B) -> Result<()> where Self: Sized;
     async fn raw_update<D: DbPool>(&mut self, pool: &D) -> Result<()> where Self: Sized;
     async fn delete<B: BaseRequest>(&self, req: &B) -> Result<()> where Self: Sized;
-    async fn save<B: BaseRequest>(self, req: &B) -> Result<Self> where Self: Sized;
-    async fn raw_save<D: DbPool>(self, pool: &D) -> Result<Self> where Self: Sized;
+    async fn save<B: BaseRequest>(&self, req: &B) -> Result<()> where Self: Sized;
+    async fn raw_save<D: DbPool>(&self, pool: &D) -> Result<()> where Self: Sized;
 }

@@ -1,9 +1,10 @@
+use std::io;
 use rpassword::prompt_password;
 
 use anansi::raw_transact;
 use anansi::db::DbPool;
 use anansi::web::Result;
-use anansi::records::{Record, Text};
+use anansi::records::{Record, DateTime, Text};
 use super::records::{User, Group, group::groupname, GroupTuple, hash_password};
 
 pub fn admin<D: DbPool + 'static>(pool: D) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
@@ -20,7 +21,8 @@ async fn _admin<D: DbPool>(pool: D) -> Result<()> {
     let mut input = String::new();
     let name = loop {
         prints("Username: ");
-        std::io::stdin().read_line(&mut input)?;
+        io::stdin().read_line(&mut input)?;
+        input.pop();
         if input.is_empty() {
             continue;
         }
@@ -32,6 +34,18 @@ async fn _admin<D: DbPool>(pool: D) -> Result<()> {
                 input.clear();
             },
         }
+    };
+    let email = loop {
+        prints("Email (optional): ");
+        io::stdin().read_line(&mut input)?;
+        input.pop();
+        break if input.is_empty() {
+            None
+        } else {
+            let email = Text::from(input.clone());
+            input.clear();
+            Some(email)
+        };
     };
     let password = loop {
         let password = prompt_password("Password: ")?;
@@ -49,7 +63,9 @@ async fn _admin<D: DbPool>(pool: D) -> Result<()> {
             eprintln!("Password does not match.\n");
         } else {
             break raw_transact!(pool, {
-                let u = User::new(name, hash_password(&password).unwrap()).raw_save(&pool).await.expect("Problem creating admin.");
+                let now = DateTime::now();
+                let u = User::new(name, email, hash_password(&password).unwrap(), now, now);
+                u.raw_save(&pool).await.expect("Problem creating admin.");
                 let group = Group::whose(groupname().eq("admin")).raw_get(&pool).await?;
                 GroupTuple::new(Text::from("auth_user".to_string()), u.pk(), None, group.pk(), Text::from("member".to_string())).raw_save(&pool).await.expect("Problem adding admin.");
                 println!("Created admin \"{}\"", u.username);
