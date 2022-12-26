@@ -26,7 +26,7 @@ Anansi handles many of the repetitive parts of web development, letting you work
 Records
 =======
 
-Work with databases in Rust instead of SQL.
+Work with databases in Rust instead of SQL to write statically checked queries.
 
 ```rust
 // A topic in a forum.

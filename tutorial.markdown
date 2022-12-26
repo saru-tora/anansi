@@ -497,6 +497,33 @@ fn init(props: LoaderProps) -> Rsx {
 }
 ```
 
+Tailwind
+--------
+
+If you have Tailwind and want to use it, first run:
+
+```shell
+$ ananc init-tailwind
+```
+
+Then edit `forum/topic/templates/base.rs.html`:
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <title>@block title</title>
+        <link href="/static/styles/global.css" rel="stylesheet">
+    </head>
+    <body>
+        @block content
+    </body>
+</html>
+```
+
+That should allow you to use Tailwind classes.
+
 Caching
 -------
 
@@ -558,7 +585,7 @@ To create an admin, run:
 $ ananc admin
 ```
 
-Then enter a username and a strong password.
+Then enter a username, email, and a strong password.
 
 <br>
 
