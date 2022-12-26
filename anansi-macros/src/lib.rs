@@ -120,6 +120,9 @@ pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
             fn limit(n: u32) -> anansi::db::Limit<Self> {
                 anansi::db::Limit::from(anansi::db::Builder::select(&[#(#members),*], #table).limit(n))
             }
+            fn get_all() -> anansi::db::Limit<Self> {
+                anansi::db::Limit::from(anansi::db::Builder::select(&[#(#members),*], #table))
+            }
             fn get<R: anansi::db::DbRow>(row: R) -> anansi::web::Result<Self> {
                 Ok(Self {#init})
             }
@@ -151,18 +154,18 @@ pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
                     anansi::db::delete_from(#table, Self::PK_NAME, #primary, req).await
                 })
             }
-            async fn save<R: anansi::web::BaseRequest>(self, req: &R) -> anansi::web::Result<Self> {
+            async fn save<R: anansi::web::BaseRequest>(&self, req: &R) -> anansi::web::Result<()> {
                 use anansi::records::Relate;
                 anansi::transact!(req, {
                     self.on_save(req).await?;
                     self.raw_save(req.raw().pool()).await
                 })
             }
-            async fn raw_save<D: anansi::db::DbPool>(self, pool: &D) -> anansi::web::Result<Self> {
+            async fn raw_save<D: anansi::db::DbPool>(&self, pool: &D) -> anansi::web::Result<()> {
                 let i: anansi::db::Insert<Self> = anansi::db::Insert::new(#table, &[#(#members),*])
                     #(#saves)*;
                 i.raw_save(pool).await?;
-                Ok(self)
+                Ok(())
             }
         }
         impl #name {
@@ -734,7 +737,7 @@ fn form_init(data: &Data, data_members: &mut Vec<TokenStream>, members: &mut Vec
                                 #name: {
                                     let s = form_data.remove(#ns)?;
                                     if !s.is_empty() {
-                                        <anansi::records::#ty as anansi::records::DataType>::from_val(s)?
+                                        s.parse()?
                                     } else {
                                         return Err(anansi::db::invalid());
                                     }

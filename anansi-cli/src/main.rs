@@ -9,12 +9,9 @@ use std::process::Command;
 
 use which::which;
 
-use toml::Value;
-use toml::map::Map;
-
 mod components;
 
-use components::{get_expr, check_components};
+use components::{get_expr, check_components, init_components};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -24,8 +21,7 @@ pub fn main() {
         let first = args[1].as_str();
         match first {
             "run" => {
-                template(&args, false, "");
-                check_wasm(&args, false, true);
+                build_tailwind(&args);
                 cargo(&args);
             }
             "check" => {
@@ -34,8 +30,7 @@ pub fn main() {
                 cargo(&args);
             }
             "build" => {
-                template(&args, false, "");
-                check_wasm(&args, false, true);
+                build_tailwind(&args);
                 cargo(&args);
             }
             "force-check" => {
@@ -50,6 +45,9 @@ pub fn main() {
             }
             "init-components" => {
                 init_components(&args);
+            }
+            "init-tailwind" => {
+                init_tailwind(&args);
             }
             "app" => {
                 if args.len() > 2 {
@@ -106,6 +104,59 @@ macro_rules! cp_as {
     };
 }
 
+fn build_tailwind(args: &Vec<String>) {
+    let a = template(args, false, "");
+    let b = check_wasm(args, false, true);
+    if a || b {
+        let (_, mut dir) = get_src(args, "");
+        dir.push("src");
+        let mut global = dir.clone();
+        global.push("global.css");
+        let mut cmd = Command::new("npx");
+        cmd.arg("tailwindcss");
+        cmd.arg("-i");
+        cmd.arg(global);
+        dir.push("static");
+        dir.push("styles");
+        dir.push("global.css");
+        cmd.arg("-o");
+        cmd.arg(dir);
+        let mut child = cmd.spawn().expect("Failed to start tailwindcss");
+        child.wait().expect("Failed to wait on child");
+    }
+}
+
+fn init_tailwind(args: &Vec<String>) {
+    let (_, mut dir) = get_src(args, "");
+    let mut cmd = Command::new("npm");
+        cmd.arg("install");
+        cmd.arg("-D");
+        cmd.arg("tailwindcss");
+    let mut child = cmd.spawn().expect("Failed to install tailwindcss");
+    child.wait().expect("Failed to wait on child");
+    make_file(&dir, "tailwind", ".config.js", 
+"/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [\"./src/**/templates/*\", \"./*comps/src/*\"],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+}".to_string());
+    dir.push("src");
+    make_file(&dir, "global", ".css", 
+"@tailwind base;
+@tailwind components;
+@tailwind utilities;".to_string());
+    dir.push("static");
+    if fs::create_dir(&dir).is_ok() {
+        dir.push("styles");
+        if fs::create_dir(&dir).is_err() {
+            eprintln!("Did not create styles directory");
+        }
+    }
+}
+
 fn uppercase(s: &str) -> String {
     let mut c = s.chars();
     c.next().unwrap().to_uppercase().collect::<String>() + c.as_str()
@@ -144,10 +195,11 @@ fn get_src(args: &Vec<String>, extra: &str) -> (SystemTime, PathBuf) {
         Ok(o) => o,
         Err(_) => which(&args[0]).unwrap(),
     };
-    let date = fs::metadata(path).unwrap().modified().unwrap();
+    let date = fs::metadata(&path).unwrap().modified().unwrap();
     let mut cwd = env::current_dir().unwrap();
     cwd.push(extra);
     let dir;
+    let mut first_src = None;
 
     'outer: loop {
         let dirs = read_dir(&cwd).unwrap();
@@ -159,35 +211,46 @@ fn get_src(args: &Vec<String>, extra: &str) -> (SystemTime, PathBuf) {
                     dir = &cwd;
                     break 'outer;
                 }
+            } else if first_src.is_none() {
+                let name = f.file_name().to_str().unwrap().to_string();
+                if name == "src" {
+                    first_src = Some(cwd.clone());
+                }
             }
         }
         if !cwd.pop() {
-            panic!("expected src directory");
+            if let Some(s) = first_src {
+                return (date, s)
+            } else {
+                panic!("expected src directory");
+            }
         }
     }
     let d = dir.clone();
     (date, d)
 }
 
-fn check_wasm(args: &Vec<String>, force: bool, build: bool) {
+fn check_wasm(args: &Vec<String>, force: bool, build: bool) -> bool {
+    let mut changed = false;
     let (mut date, dir) = get_src(args, "");
     let name = dir.file_name().unwrap().to_str().unwrap().to_string();
     let mut cpath = dir.clone();
     cpath.push(format!("{}-comps", name));
     if cpath.canonicalize().is_ok() {
         cpath.push("src");
-        check_parsed_comps(&date, &cpath);
+        check_parsed_comps(&date, &cpath, &mut changed);
     }
     if build {
         let mut wpath = dir.clone();
         wpath.push(format!("{}-wasm", name));
         if wpath.canonicalize().is_ok() {
-            check_files(&mut date, &dir, wpath, force);
+            check_files(&mut date, &dir, wpath, force, &mut changed);
         }
     }
+    changed
 }
 
-fn check_parsed_comps(date: &SystemTime, dir: &PathBuf) {
+fn check_parsed_comps(date: &SystemTime, dir: &PathBuf, changed: &mut bool) {
     let dirs = read_dir(&dir).unwrap();
     let mut path = dir.clone();
     path.push(".parsed");
@@ -200,20 +263,20 @@ fn check_parsed_comps(date: &SystemTime, dir: &PathBuf) {
             let parsed = match fs::metadata(parsed_path) {
                 Ok(m) => m,
                 Err(_) => {
-                    check_components(f.path());
+                    check_components(f.path(), changed);
                     continue;
                 }
             };
             let modified = f.metadata().unwrap().modified().unwrap();
             let parsed_modified = parsed.modified().unwrap();
             if parsed_modified < *date || modified > parsed_modified {
-                check_components(f.path());
+                check_components(f.path(), changed);
             }
         }
     }
 }
 
-fn check_files(date: &mut SystemTime, dir: &PathBuf, mut wasm: PathBuf, force: bool) {
+fn check_files(date: &mut SystemTime, dir: &PathBuf, mut wasm: PathBuf, force: bool, changed: &mut bool) {
     let name = dir.file_name().unwrap().to_str().unwrap().to_string();
     wasm.push("pkg");
     let dirs = match read_dir(&wasm) {
@@ -243,7 +306,7 @@ fn check_files(date: &mut SystemTime, dir: &PathBuf, mut wasm: PathBuf, force: b
     comp.push(comp_name);
     comp.push("src");
     wasm.pop();
-    check_files2(&comp, &wasm, &date, force);
+    check_files2(&comp, &wasm, &date, force, changed);
 }
 
 fn build_wasm(dir: &PathBuf) {
@@ -256,7 +319,7 @@ fn build_wasm(dir: &PathBuf) {
     child.wait().expect("failed to wait on child");
 }
 
-fn check_files2(dir: &PathBuf, wasm: &PathBuf, date: &SystemTime, force: bool) {
+fn check_files2(dir: &PathBuf, wasm: &PathBuf, date: &SystemTime, force: bool, changed: &mut bool) {
     let src = read_dir(&dir).unwrap();
     let mut b = false;
     for s in src {
@@ -265,7 +328,7 @@ fn check_files2(dir: &PathBuf, wasm: &PathBuf, date: &SystemTime, force: bool) {
             let modified = s.metadata().unwrap().modified().unwrap();
             if modified > *date || force {
                 if s.file_name() != "lib.rs" {
-                    check_components(s.path());
+                    check_components(s.path(), changed);
                 }
                 b = true;
             }
@@ -274,193 +337,6 @@ fn check_files2(dir: &PathBuf, wasm: &PathBuf, date: &SystemTime, force: bool) {
     if b {
         build_wasm(&wasm);
     }
-}
-
-fn init_components(args: &Vec<String>) {
-    let (_, dir) = get_src(args, "");
-    let name = dir.file_name().unwrap().to_str().unwrap();
-    let cargo_toml = fs::read_to_string("Cargo.toml").expect("Could not find Cargo.toml");
-    let comps = format!("{}-comps", name);
-    let mut cargo_toml: Map<String, Value> = toml::from_str(&cargo_toml).expect("Could not parse settings.toml");
-    {
-        let members = cargo_toml.get_mut("workspace").unwrap().get_mut("members").unwrap().as_array_mut().unwrap();
-        members.push(Value::String(comps.clone()));
-    }
-    {
-        let deps = cargo_toml.get_mut("dependencies").unwrap().as_table_mut().unwrap();
-        deps.insert("anansi-aux".to_string(), Value::String(format!("{}", VERSION)));
-        {
-            let mut table = Map::new();
-            table.insert("path".to_string(), Value::String(comps.clone()));
-            table.insert("version".to_string(), Value::String("*".to_string()));
-            deps.insert(comps.clone(), Value::Table(table));
-        }
-        {
-            let mut table = Map::new();
-            table.insert("version".to_string(), Value::String("1.0".to_string()));
-            table.insert("features".to_string(), Value::Array(vec![Value::String("derive".to_string())]));
-            deps.entry("serde").or_insert(Value::Table(table));
-        }
-        deps.entry("serde_json").or_insert(Value::String("1.0".to_string()));
-    }
-    fs::write("Cargo.toml", toml::to_string(&cargo_toml).unwrap().into_bytes()).unwrap();
-    let comps_args = vec!["".to_string(), "new".to_string(), comps.clone(), "--lib".to_string()];
-    cargo(&comps_args);
-    let mut comp_path = PathBuf::from(&comps);
-    append(comp_path.to_str().unwrap(), "Cargo.toml", &format!("wasm-bindgen = \"0.2\"
-serde = {{ version = \"1.0\", features = [\"derive\"] }}
-serde_json = \"1.0\"
-wasm-bindgen-futures = \"0.4\"
-async-channel = \"1.7.1\"
-anansi-aux = \"{}\"", VERSION).into_bytes());
-    comp_path.push("src");
-    let mut parsed_path = comp_path.clone();
-    parsed_path.push(".parsed");
-    fs::create_dir(parsed_path).unwrap();
-    comp_path.push("lib.rs");
-    let wasm = format!("{}-wasm", name);
-    let under_wasm = wasm.replace('-', "_");
-    let under_comps = comps.replace('-', "_");
-    fs::write(comp_path, "anansi_aux::app_components! {}".to_string().into_bytes()).unwrap();
-    let wasm_args = vec!["".to_string(), "new".to_string(), wasm.clone(), "--lib".to_string()];
-    {
-        let members = cargo_toml.get_mut("workspace").unwrap().get_mut("members").unwrap().as_array_mut().unwrap();
-        members.push(Value::String(wasm.clone()));
-        fs::write("Cargo.toml", toml::to_string(&cargo_toml).unwrap().into_bytes()).unwrap();
-    }
-    cargo(&wasm_args);
-    let mut wasm_path = PathBuf::from(&wasm);
-    let mut js = "const registerServiceWorker = async () => {
-  if ('serviceWorker' in navigator) {
-    try {
-      const registration = await navigator.serviceWorker.register(
-        '/static/sw.js',
-        {
-          scope: '/static/',
-        }
-      );
-    } catch (error) {
-      console.error(`Registration failed with ${error}`);
-    }
-  }
-};
-registerServiceWorker();
-
-let mod;
-const ids = new Map();
-document.addEventListener('click', (e) => {
-  let paths = e.composedPath();
-  let callback;
-  let id;
-  for (let i = 0; i < paths.length; i++) {
-    let el = paths[i];
-    let attributes = el.attributes;
-    if (attributes) {
-      let onclick = attributes.getNamedItem('on:click');
-      let aid = ids.get(onclick.value);
-      if (!aid) {
-        aid = attributes.getNamedItem('a:id');
-        ids.set(onclick.value, aid);
-      }
-      if (onclick && aid) {
-        callback = onclick.value;
-        id = aid.value;
-        break;
-      }
-    }
-  }
-  if (callback) {
-    if (mod) {
-      mod.call(callback, id);
-    } else {
-      import('/static/pkg/".to_string();
-    js.push_str(&under_wasm);
-    js.push_str(".js').then((module) => {
-        module.default().then(() => {
-          module.start();
-          mod = module;
-          mod.call(callback, id);
-        });
-      });
-    }
-  }
-});");
-    make_file(&wasm_path, "main", ".js", js);
-    let mut sw = "const addResourcesToCache = async (resources) => {
-  const cache = await caches.open('v1');
-  await cache.addAll(resources);
-};
-
-const putInCache = async (request, response) => {
-  const cache = await caches.open('v1');
-  await cache.put(request, response);
-};
-
-const cacheFirst = async ({ request, preloadResponsePromise }) => {
-  const responseFromCache = await caches.match(request);
-  if (responseFromCache) {
-    return responseFromCache;
-  }
-
-  const preloadResponse = await preloadResponsePromise;
-  if (preloadResponse) {
-    console.info('using preload response', preloadResponse);
-    putInCache(request, preloadResponse.clone());
-    return preloadResponse;
-  }
-
-  try {
-    const responseFromNetwork = await fetch(request);
-    putInCache(request, responseFromNetwork.clone());
-    return responseFromNetwork;
-  } catch (error) {
-    return new Response('Network error happened', {
-      status: 408,
-      headers: { 'Content-Type': 'text/plain' },
-    });
-  }
-};
-
-const enableNavigationPreload = async () => {
-  if (self.registration.navigationPreload) {
-    await self.registration.navigationPreload.enable();
-  }
-};
-
-self.addEventListener('activate', (event) => {
-  event.waitUntil(enableNavigationPreload());
-});
-
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    addResourcesToCache([".to_string();
-    sw.push_str(&format!("
-      '/pkg/main.js',
-      '/pkg/{}.js',
-      '/pkg/{0}_bg.wasm',
-    ", under_wasm));
-    sw.push_str("])
-  );
-});
-
-self.addEventListener('fetch', (event) => {
-  event.respondWith(
-    cacheFirst({
-      request: event.request,
-      preloadResponsePromise: event.preloadResponse,
-    })
-  );
-});");
-    make_file(&wasm_path, "sw", ".js", sw);
-    append(wasm_path.to_str().unwrap(), "Cargo.toml", &format!("wasm-bindgen = \"0.2\"
-anansi-aux = \"{}\"
-{} = {{ path = \"../{1}\" , version = \"*\" }}
-
-[lib]
-crate-type = [\"cdylib\"]", VERSION, comps).into_bytes());
-    wasm_path.push("src");
-    wasm_path.push("lib.rs");
-    fs::write(wasm_path, format!("anansi_aux::start!({});", under_comps)).unwrap();
 }
 
 fn new(args: &Vec<String>) {
@@ -533,12 +409,13 @@ fn make(dir: &PathBuf, name: &str, content: String) {
     make_file(dir, name, ".rs", content);
 }
 
-fn template(args: &Vec<String>, mut force: bool, extra: &str) {
+fn template(args: &Vec<String>, mut force: bool, extra: &str) -> bool {
     let (date, dir) = get_src(args, extra);
-    search(&date, &dir, &mut force);
+    search(&date, &dir, &mut force)
 }
 
-fn search(date: &SystemTime, current: &PathBuf, force: &mut bool) {
+fn search(date: &SystemTime, current: &PathBuf, force: &mut bool) -> bool {
+    let mut changed = false;
     let dirs = read_dir(current).unwrap();
     for f in dirs {
         let f = f.unwrap();
@@ -550,7 +427,7 @@ fn search(date: &SystemTime, current: &PathBuf, force: &mut bool) {
                     let f = f.unwrap();
                     let name = f.path();
                     if name.to_str().unwrap().ends_with(".rs.html") {
-                        let b = check_template(f, &parent, &name, *date, *force);
+                        let b = check_template(f, &parent, &name, *date, *force, &mut changed);
                         if b {
                             *force = true;
                         }
@@ -561,7 +438,7 @@ fn search(date: &SystemTime, current: &PathBuf, force: &mut bool) {
                             let f = f.unwrap();
                             let name = f.path();
                             if name.ends_with(".rs.html") {
-                                check_template(f, &parent, &name, *date, *force);
+                                check_template(f, &parent, &name, *date, *force, &mut changed);
                             }
                         }
                     }
@@ -571,9 +448,10 @@ fn search(date: &SystemTime, current: &PathBuf, force: &mut bool) {
             }
         }
     }
+    changed
 }
 
-fn check_template(f: std::fs::DirEntry, parent: &PathBuf, name: &PathBuf, date: std::time::SystemTime, force: bool) -> bool {
+fn check_template(f: std::fs::DirEntry, parent: &PathBuf, name: &PathBuf, date: std::time::SystemTime, force: bool, changed: &mut bool) -> bool {
     let template = f.metadata().unwrap().modified().unwrap();
     let n = f.file_name().into_string().unwrap();
     let (n, _) = n.split_once('.').unwrap();
@@ -586,10 +464,12 @@ fn check_template(f: std::fs::DirEntry, parent: &PathBuf, name: &PathBuf, date: 
         let parsed = fs::metadata(p);
         if parsed.is_err() {
             parser.parse(&name);
+            *changed = true;
         } else {
             let modified = parsed.unwrap().modified().unwrap();
             if force || template > modified || modified < date {
                 parser.parse(&name);
+                *changed = true;
                 return true;
             }
         }
@@ -647,7 +527,7 @@ impl Parser {
         } else {
             let mut view = String::from("{let mut _c = String::new();");
             view.push_str(&self.process(&content));
-            view.push_str("Ok(anansi::web::Response::new(\"HTTP/1.1 200 OK\", _c.into_bytes()))}");
+            view.push_str("Ok(anansi::web::Response::new(200, _c.into_bytes()))}");
             view
         };
         let out = if let Component::Normal(temp) = temp {
@@ -997,8 +877,25 @@ impl Parser {
                 }
             }
             "unescape" => {
-                let (name, ex) = collect_name(chars);
-                view.push_str(&format!("_c.push_str(&format!(\"{{}}\", {}));_c.push_str(\"{}", name, ex));
+                let (mut name, ex) = collect_name(chars);
+                if ex == '(' {
+                    name.push(ex);
+                    let mut n = 1;
+                    while let Some(c) = chars.next() {
+                        name.push(c);
+                        if c == ')' {
+                            n -= 1;
+                            if n == 0 {
+                                view.push_str(&format!("_c.push_str(&format!(\"{{}}\", {}));_c.push_str(\"", name));
+                                break;
+                            }
+                        } else if c == '(' {
+                            n += 1;
+                        }
+                    }
+                } else {
+                    view.push_str(&format!("_c.push_str(&format!(\"{{}}\", {}));_c.push_str(\"{}", name, ex));
+                }
                 return;
             }
             "link" => {
@@ -1128,7 +1025,20 @@ impl Parser {
 
 fn get_var(esc_path: &str, extra: &str, s: &mut String, chars: &mut Chars, view: &mut String) {
     if extra == "(" {
-        unimplemented!();
+        s.push('(');
+        let mut n = 1;
+        while let Some(c) = chars.next() {
+            s.push(c);
+            if c == ')' {
+                n -= 1;
+                if n == 0 {
+                    view.push_str(&format!("_c.push_str(&{}::html_escape(&format!(\"{{}}\", {})));_c.push_str(\"", esc_path, s));
+                    break;
+                }
+            } else if c == '(' {
+                n += 1;
+            }
+        }
     } else {
         s.push_str(&collect_var(chars));
         view.push_str(&format!("_c.push_str(&{}::html_escape(&format!(\"{{}}\", {})));_c.push_str(\"{}", esc_path, s, extra));

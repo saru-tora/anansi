@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use anansi::{form, form_error, err_box, GetData, ToEdit};
 use anansi::web::{BaseRequest, Result};
 use anansi::db::invalid;
-use anansi::records::{Record};
+use anansi::records::{Record, DateTime};
 use anansi::forms::{Form, Field, VarChar, Text, FormError, ToRecord};
 use super::records::{User, user::username, Group, Filter, hash_password};
 use super::admin::Request;
@@ -29,6 +29,8 @@ impl<B: BaseRequest> ToRecord<B> for UserLogin {
 #[form(User)]
 pub struct UserNew {
     pub username: VarChar<150>,
+    #[field(required = "false")]
+    pub email: Text,
     #[field(widget = "Password")]
     pub password: VarChar<150>,
     #[field(widget = "Password")]
@@ -70,7 +72,12 @@ impl<B: BaseRequest> ToRecord<B> for UserNew {
         }
         self.check_field_errors()?;
         let password = hash_password(&data.password)?;
-        User::new(clean_name, password).save(req).await.or(err_box!(FormError::new("Problem adding user.")))
+        let now = DateTime::now();
+        let user = User::new(clean_name, data.email, password, now, now);
+        match user.save(req).await {
+            Ok(_) => Ok(user),
+            Err(_) => err_box!(FormError::new("Problem adding user.")),
+        }
     }
 }
 
@@ -89,8 +96,11 @@ pub struct GroupForm {
 #[async_trait]
 impl<B: Request> ToRecord<B> for GroupForm {
     async fn on_post(&mut self, data: GroupFormData, req: &B) -> Result<Group> {
-        Group::new(data.groupname).save(req).await
-            .or(err_box!(FormError::new("Problem adding group.")))
+        let group = Group::new(data.groupname);
+        match group.save(req).await {
+            Ok(_) => Ok(group),
+            Err(_) => err_box!(FormError::new("Problem adding group.")),
+        }
     }
 }
 
@@ -106,7 +116,9 @@ impl<B: Request> ToRecord<B> for FilterForm {
     async fn on_post(&mut self, data: FilterFormData, req: &B) -> Result<Filter> {
         let table_name = req.params().get("table_name")?.parse()?;
         let raw_query = req.params().get("raw_query")?.parse()?;
-        Filter::new(table_name, data.filter_name, data.filter, raw_query).save(req).await
+        let filter = Filter::new(table_name, data.filter_name, data.filter, raw_query);
+        filter.save(req).await?;
+        Ok(filter)
     }
 }
 

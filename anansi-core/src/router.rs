@@ -13,13 +13,13 @@ pub type Routes<B> = Vec<(Vec<String>, View<B>)>;
 pub struct Router<B: BaseRequest + 'static> {
     pub routes: Routes<B>,
     pub handle_404: View<B>,
-    pub internal_error: Response,
+    pub internal_error: fn() -> Response,
     pub login_url: String,
     files: HashMap<&'static str, &'static [u8]>,
 }
 
 impl<B: BaseRequest> Router<B> {
-    pub fn new(routes: Vec<Route<B>>, handle_404: View<B>, internal_error: Response, login_url: String, files: HashMap<&'static str, &'static [u8]>) -> Result<Self> {
+    pub fn new(routes: Vec<Route<B>>, handle_404: View<B>, internal_error: fn() -> Response, login_url: String, files: HashMap<&'static str, &'static [u8]>) -> Result<Self> {
         let mut router = Self {routes: vec![], handle_404, internal_error, login_url, files};
         let mut v = vec![];
         for route in routes {
@@ -66,9 +66,12 @@ impl<B: BaseRequest> Router<B> {
         };
         let mut base = PathBuf::new();
         BASE_DIR.with(|b| base = b.clone());
-        base.push("static");
+        base.push("src");
         let mut full = base.clone();
-        full.push(url);
+        let path_comps: Vec<&str> = url.split('/').collect();
+        for p in path_comps {
+            full.push(p);
+        }
         let path = fs::canonicalize(&full).await?;
         if path.starts_with(base) {
             self.serve_content(url, fs::read(full).await?)
@@ -84,7 +87,7 @@ impl<B: BaseRequest> Router<B> {
             "wasm" => "application/wasm",
             _ => return Err(invalid()),
         };
-        Ok(Response::content("HTTP/1.1 200 OK", ty, content))
+        Ok(Response::content(200, ty, content))
     }
 }
 

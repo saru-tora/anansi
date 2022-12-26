@@ -14,6 +14,7 @@ pub mod migrations;
 pub mod admin_site;
 pub mod cache;
 pub mod project;
+pub mod email;
 
 #[cfg(test)]
 mod tests {

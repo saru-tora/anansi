@@ -1,4 +1,7 @@
 login_url = "/login"
+smtp_relay = ""
+smtp_username = ""
+smtp_password = ""
 
 [caches]
 
