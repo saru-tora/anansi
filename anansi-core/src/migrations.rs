@@ -98,7 +98,7 @@ impl<D: DbType> ToQuery<D> for CreateRecord {
     }
 }
 
-pub trait ToQuery<D: DbType> {
+pub trait ToQuery<D: DbType>: Send {
     fn to_query(&self) -> String;
 }
 

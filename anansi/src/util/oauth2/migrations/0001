@@ -1,0 +1,54 @@
+anansi::operations! {
+    migrations::CreateRecord {
+        prefix: "sessions",
+        name: "session",
+        fields: vec![
+            (
+                "id",
+                records::BigInt::field().primary_key()
+            ),
+            (
+                "data",
+                records::Text::field()
+            ),
+            (
+                "secret",
+                records::VarChar::<32>::field()
+            ),
+            (
+                "expires",
+                records::DateTime::field()
+            ),
+        ],
+    },
+    migrations::CreateRecord {
+        prefix: "sessions",
+        name: "sessiontuple",
+        fields: vec![
+            (
+                "id",
+                records::BigInt::field().primary_key()
+            ),
+            (
+                "subject_namespace",
+                records::Text::field()
+            ),
+            (
+                "subject_key",
+                records::BigInt::field()
+            ),
+            (
+                "subject_predicate",
+                records::Text::field().null()
+            ),
+            (
+                "object_key",
+                records::BigInt::field()
+            ),
+            (
+                "object_predicate",
+                records::Text::field()
+            ),
+        ],
+    },
+}

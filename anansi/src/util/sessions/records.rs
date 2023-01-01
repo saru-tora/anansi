@@ -5,7 +5,7 @@ use anansi::server::Rng;
 use anansi::web::{Result, BaseRequest, Reverse, RawRequest, View, Response, TokenRef};
 use anansi::db::{invalid, DbPool};
 use anansi::records::{Record, VarChar, Text, DateTime, Relate, generate_id};
-use anansi::{record};
+use anansi::record;
 
 #[record]
 #[derive(Debug, Clone)]
@@ -42,6 +42,14 @@ fn session_expires() -> DateTime {
 }
 
 impl Session  {
+    pub fn test() -> Self {
+        Self {
+            id: generate_id(),
+            data: Text::from(format!("{{\"_user_id\": 0, \"{}\": \"{}\"}}", TokenRef::KEY, 0)),
+            secret: VarChar::new(),
+            expires: session_expires(),
+        }
+    }
     pub fn from_guest(rng: &Rng) -> Self {
         Self {
             id: generate_id(),

@@ -19,6 +19,10 @@ impl<R: Request> AdminSite<R> for BasicAdminSite<R> {
             ("/admin", Self::index),
             ("/admin/login", AuthAdminView::login),
             ("/admin/logout", AuthAdminView::logout),
+            ("/admin/ask_mfa", AuthAdminView::ask_mfa),
+            ("/admin/setup_mfa", AuthAdminView::setup_mfa),
+            ("/admin/verify_mfa", AuthAdminView::verify_mfa),
+            ("/admin/notify_mfa", AuthAdminView::notify_mfa),
         ];
         Self {registered: vec![], urls}
     }

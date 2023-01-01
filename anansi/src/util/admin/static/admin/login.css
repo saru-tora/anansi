@@ -51,3 +51,23 @@ input[type=submit]:hover {
 	list-style: none;
 	color: red;
 }
+.message {
+	padding: 0px 4px;
+}
+.center-div {
+	display: flex;
+	justify-content: center;
+}
+.button {
+	display: block;
+  background-color: mediumseagreen;
+  border: none;
+  color: white;
+  padding: 2px 4px;
+  text-align: center;
+  text-decoration: none;
+  display: inline-block;
+  font-size: 16px;
+  margin: 4px 2px;
+  cursor: pointer;
+}

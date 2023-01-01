@@ -167,6 +167,9 @@ impl DbPool for PgDbPool {
     fn now() -> &'static str {
         "NOW()"
     }
+    async fn test() -> Result<Self> {
+        unimplemented!()
+    }
 }
 
 impl DbType for PgDbPool {

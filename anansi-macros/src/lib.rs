@@ -1087,6 +1087,31 @@ pub fn wasm_statics(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 #[proc_macro]
+pub fn middleware(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as SchemaArgs);
+
+    let mut args = quote! {<anansi::web::SecurityHeaders<anansi::web::ViewService> as Service<B>>::init(vs, settings).await};
+    let retval = if input.vars.is_empty() {
+        quote! {anansi::web::SecurityHeaders<anansi::web::ViewService>}
+    } else {
+        let last = input.vars.last().unwrap();
+        quote! {#last}
+    };
+    for arg in input.vars {
+        args = quote!{#arg::init(#args, settings).await}
+    }
+    let q = quote! {
+        pub fn app_services<B: anansi::web::BaseRequest>(settings: &anansi::server::Settings) -> std::pin::Pin<Box<dyn std::future::Future<Output = #retval> + Send + '_>> {
+            use anansi::web::Service;
+            let vs = anansi::web::ViewService;
+            Box::pin(async {#args})
+        }
+        anansi::setup!();
+    }.into();
+    q
+}
+
+#[proc_macro]
 pub fn app_statics(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as SchemaArgs);
     let mut args = vec![];

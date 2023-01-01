@@ -7,7 +7,7 @@ use anansi::web::{Result, Method, Response, Reverse, BaseUser, BaseRequest, Csrf
 use crate::util::auth;
 use anansi::forms::{Form, Field, ToRecord, HasRecord, ToEdit};
 use anansi::{extend, render, redirect, handle, base_view, handle_or_404};
-use super::forms::{UserLogin, AdminSearch, FilterForm};
+use super::forms::{UserLogin, UserTotp, AdminSearch, FilterForm};
 use anansi::{check, viewer, record_admin};
 use crate::register;
 use super::middleware::Auth;
@@ -57,9 +57,37 @@ impl<R: Request> AuthAdminView<R> {
     pub async fn login(req: &mut R) -> Result<Response> {
         let form = handle!(UserLogin, ToRecord<R>, req, user, {
             req.auth_admin(&user).await?;
-            req.session().set_and_redirect(req, BasicAdminSite::index)
+            if req.user().secret().is_some() {
+              req.session().set_and_redirect(req, BasicAdminSite::index)
+            } else {
+                req.session().set_and_redirect(req, Self::ask_mfa)
+            }
         })?.class("cred");
         render!("login")
+    }
+
+    #[check(Group::is_visitor)]
+    pub async fn ask_mfa(req: &mut R) -> Result<Response> {
+        render!("ask_mfa")
+    }
+
+    #[check(Group::is_visitor)]
+    pub async fn setup_mfa(req: &mut R) -> Result<Response> {
+        let code = format!("data:image/jpeg;base64,{}", req.new_totp(None)?);
+        render!("setup_mfa")
+    }
+
+    #[check(Group::is_admin)]
+    pub async fn verify_mfa(req: &mut R) -> Result<Response> {
+        let form = handle!(UserTotp, ToRecord<R>, req, _user, {
+            req.session().set_and_redirect(req, BasicAdminSite::index)
+        })?.class("cred");
+        render!("verify_mfa")
+    }
+
+    #[check(Group::is_admin)]
+    pub async fn notify_mfa(req: &mut R) -> Result<Response> {
+        render!("notify_mfa")
     }
 
     #[check(Group::is_admin)]

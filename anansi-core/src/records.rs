@@ -645,6 +645,16 @@ impl RecordField {
     }
 }
 
+#[cfg(not(any(feature = "sqlite", feature = "postgres")))]
+impl RecordField {
+    pub fn default(self, _value: &str) -> Self {
+        unimplemented!();
+    }
+    pub fn auto_now_add(self) -> Self {
+        unimplemented!();
+    }
+}
+
 #[cfg(feature = "sqlite")]
 impl RecordField {
     pub fn default(mut self, value: &str) -> Self {

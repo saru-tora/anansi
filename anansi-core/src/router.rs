@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use tokio::fs;
 use std::collections::HashMap;
 use crate::db::invalid;
-use crate::web::{Route, Response, BASE_DIR, Result, View, BaseRequest};
+use crate::web::{Route, Response, BASE_DIR, Result, View, BaseRequest, Service};
 
 const SLASH: u8 = 47;
 const LEFT_BRACE: u8 = 123;
@@ -10,17 +10,18 @@ const RIGHT_BRACE: u8 = 125;
 
 pub type Routes<B> = Vec<(Vec<String>, View<B>)>;
 
-pub struct Router<B: BaseRequest + 'static> {
+pub struct Router<B: BaseRequest + 'static, S: Service<B>> {
     pub routes: Routes<B>,
     pub handle_404: View<B>,
     pub internal_error: fn() -> Response,
     pub login_url: String,
+    pub service: S,
     files: HashMap<&'static str, &'static [u8]>,
 }
 
-impl<B: BaseRequest> Router<B> {
-    pub fn new(routes: Vec<Route<B>>, handle_404: View<B>, internal_error: fn() -> Response, login_url: String, files: HashMap<&'static str, &'static [u8]>) -> Result<Self> {
-        let mut router = Self {routes: vec![], handle_404, internal_error, login_url, files};
+impl<B: BaseRequest, S: Service<B>> Router<B, S> {
+    pub fn new(routes: Vec<Route<B>>, handle_404: View<B>, internal_error: fn() -> Response, login_url: String, service: S, files: HashMap<&'static str, &'static [u8]>) -> Result<Self> {
+        let mut router = Self {routes: vec![], handle_404, internal_error, login_url, service, files};
         let mut v = vec![];
         for route in routes {
             match route {
