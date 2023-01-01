@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<title>Verify multi-factor authentication | Anansi site admin</title>
+		<link rel="stylesheet" href="/static/admin/login.css">
+	</head>
+	<body>
+		<div class="login">
+			<div class="bar">
+				Anansi administration
+			</div>
+			@build form {
+			<div class="message">
+				Enter the 6-digit verification code that was generated.
+			</div>
+			@unescape form.errors()
+			@for field in form.fields() {
+				<div class="box">
+					@unescape field
+				</div>
+			}
+				<div class="subbox">
+					<input type="submit" value="Verify">
+				</div>
+			}
+		</div>
+	</body>
+</html>

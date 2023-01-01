@@ -83,6 +83,7 @@ pub trait DbPool: Clone + Send + Sync + DbType {
     async fn raw_fetch_one(&self, val: &str) -> Result<Self::SqlRow>;
     async fn raw_fetch_all(&self, val: &str) -> Result<Self::SqlRowVec>;
     async fn raw_execute(&self, val: &str) -> Result<()>;
+    async fn test() -> Result<Self> where Self: Sized;
     fn now() -> &'static str;
 }
 

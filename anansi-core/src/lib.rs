@@ -1,6 +1,9 @@
 extern crate self as anansi;
 
 pub use anansi_macros::*;
+pub use tokio;
+pub use tokio::test;
+pub use hyper;
 
 pub mod server;
 pub mod web;
@@ -15,6 +18,8 @@ pub mod admin_site;
 pub mod cache;
 pub mod project;
 pub mod email;
+
+pub mod test;
 
 #[cfg(test)]
 mod tests {

@@ -15,7 +15,7 @@ use hyper::{header::HeaderValue, body::Bytes, StatusCode};
 use http_body_util::{BodyExt, Full};
 
 use crate::cache::BaseCache;
-use crate::server::Rng;
+use crate::server::{Rng, Settings};
 use crate::router::Routes;
 use crate::records::{Record, FromParams, BigInt, DateTime};
 use crate::admin_site::AdminRef;
@@ -58,7 +58,6 @@ fn find_base(dir: &mut PathBuf) -> bool {
     panic!("Could not find Cargo.toml");
 }
 
-
 thread_local!{
     pub static BASE_DIR: PathBuf = {
         let cwd = std::env::current_dir().unwrap();
@@ -82,31 +81,85 @@ pub mod prelude {
     pub use anansi::{import, routes, path};
 }
 
+#[async_trait]
+pub trait Middleware {
+    async fn new<D: DbPool>(raw: &mut RawRequest<D>) -> Self;
+}
+
+#[async_trait]
+pub trait Service<R: BaseRequest>: Send + Sync {
+    type S: Service<R>;
+    async fn init(service: Self::S, settings: &Settings) -> Self;
+    async fn call(&self, view: &View<R>, req: &mut R) -> Result<Response>;
+}
+
+pub struct ViewService;
+
+#[async_trait]
+impl<R: BaseRequest> Service<R> for ViewService {
+    type S = Self;
+    async fn init(_service: Self, _settings: &Settings) -> Self {
+        unimplemented!();
+    }
+    async fn call(&self, view: &View<R>, req: &mut R) -> Result<Response> {
+        view(req).await
+    }
+}
+
+pub struct SecurityHeaders<S> {
+    service: S,
+}
+
+#[async_trait]
+impl<Svc: Service<R>, R: BaseRequest> Service<R> for SecurityHeaders<Svc> {
+    type S = Svc;
+    async fn init(service: Svc, _settings: &Settings) -> Self {
+        Self {service}
+    }
+    async fn call(&self, view: &View<R>, req: &mut R) -> Result<Response> {
+        let mut resp = self.service.call(view, req).await?;
+        {
+            let headers = resp.headers_mut();
+            headers.insert("content-security-policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self' data:; style-src 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests;".parse()?);
+            headers.insert("x-frame-options", "DENY".parse()?);
+        }
+        Ok(resp)
+    }
+}
+
 #[macro_export]
-macro_rules! middleware {
+macro_rules! setup {
     () => {
         #[derive(Debug, Clone)]
         pub struct HttpRequest {
             raw: anansi::web::RawRequest<Pool>,
-            mid: Middleware,
+            mid: AppMiddleware,
             urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>,
             cache: AppCache,
             admin: anansi::util::admin::site::AdminRef<Self>,
             mailer: Option<anansi::email::Mailer>,
         }
         #[derive(Debug, Clone)]
-        pub struct Middleware {
+        pub struct AppMiddleware {
             user: anansi::util::auth::records::User,
             session: anansi::util::sessions::records::Session,
             session_data: anansi::util::sessions::records::SessionData,
         }
-        impl Middleware {
+        #[cfg(not(test))]
+        async fn get_session(raw: &mut anansi::web::RawRequest<Pool>) -> $crate::web::Result<anansi::util::sessions::records::Session> {
+            match anansi::util::sessions::records::Session::from_raw(raw).await {
+                Ok(s) => Ok(s),
+                Err(_) => return Err(Box::new(anansi::web::WebError::from(anansi::web::WebErrorKind::NoSession))),
+            }
+        }
+        #[cfg(test)]
+        async fn get_session(raw: &mut anansi::web::RawRequest<Pool>) -> $crate::web::Result<anansi::util::sessions::records::Session> {
+            Ok(anansi::util::sessions::records::Session::test())
+        }
+        impl AppMiddleware {
             pub async fn new(raw: &mut anansi::web::RawRequest<Pool>) -> $crate::web::Result<Self> {
                 use anansi::records::{Record, DataType};
-                let session = match anansi::util::sessions::records::Session::from_raw(raw).await {
-                    Ok(s) => s,
-                    Err(_) => return Err(Box::new(anansi::web::WebError::from(anansi::web::WebErrorKind::NoSession))),
-                };
+                let session = get_session(raw).await?;
                 let session_data = session.to_data()?;
                 let user_id = session_data.get(anansi::util::auth::records::User::KEY)?.as_i64().expect("could not get user id");
                 let user = if user_id == 0 {
@@ -114,10 +167,10 @@ macro_rules! middleware {
                 } else {
                     anansi::util::auth::records::User::find(anansi::records::BigInt::from_val(user_id)?).raw_get(raw.pool()).await?
                 };
-                Ok(Middleware {user, session, session_data})
+                Ok(AppMiddleware {user, session, session_data})
             }
         }
-        impl anansi::web::BaseMiddleware for Middleware {}
+        impl anansi::web::BaseMiddleware for AppMiddleware {}
         anansi::request_derive!();
         pub trait Request: anansi::web::BaseRequest + anansi::util::sessions::middleware::Sessions + anansi::util::auth::middleware::Auth + anansi::util::admin::site::HasAdmin + anansi::web::CsrfDefense  + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetRecord {}
         impl Request for HttpRequest {}
@@ -371,8 +424,6 @@ impl Response {
             .header("content-type", "text/html")
             .header("charset", "UTF-8")
             .header("Server", "webserver")
-            .header("content-security-policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests;")
-            .header("x-frame-options", "DENY")
             .header("Content-length", contents.len().to_string())
             .body(Full::new(Bytes::from(contents))).unwrap();
         Self {0: builder}
@@ -649,7 +700,7 @@ fn parse_query_string(qs: &str) -> Option<Vec<(String, String)>> {
     Some(queries)
 }
 
-pub async fn route_request<B: BaseRequest + fmt::Debug + 'static>(dirs: Vec<&str>, req: &mut B, routes: &Routes<B>) -> Result<Response> {
+pub async fn route_request<B: BaseRequest + fmt::Debug + 'static, S: Service<B>>(dirs: Vec<&str>, req: &mut B, routes: &Routes<B>, service: &S) -> Result<Response> {
     for (patterns, view) in routes {
         if patterns.len() == dirs.len() {
             let mut b = true;
@@ -683,7 +734,7 @@ pub async fn route_request<B: BaseRequest + fmt::Debug + 'static>(dirs: Vec<&str
             }
             if b {
                 *req.params_mut() = params;
-                return view(req).await;
+                return service.call(view, req).await;
             }
         }
     }
@@ -730,14 +781,14 @@ macro_rules! request_derive {
         impl anansi::web::GetRecord for HttpRequest {}
         #[async_trait::async_trait]
         impl anansi::web::BaseRequest for HttpRequest {
-            type Mid = Middleware;
+            type Mid = AppMiddleware;
             type Usr = anansi::util::auth::records::User;
             type SqlPool = Pool;
             type Cache = AppCache;
 
             async fn new(request: $crate::web::HyperRequest, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: Self::SqlPool, cache: Self::Cache, std_rng: $crate::server::Rng, admin: $crate::admin_site::AdminRef<Self>, mailer: Option<anansi::email::Mailer>) -> $crate::web::Result<Self> where Self: Sized {
                 let mut raw = $crate::web::RawRequest::new(request, pool, std_rng).await?;
-                let mid = Middleware::new(&mut raw).await?;
+                let mid = AppMiddleware::new(&mut raw).await?;
                 Ok(Self {raw, mid, urls, cache, admin, mailer})
             }
             fn method(&self) -> &anansi::web::Method {
@@ -773,7 +824,7 @@ macro_rules! request_derive {
             fn to_form_map(&self) -> anansi::web::Result<anansi::web::FormMap> {
                 self.raw().to_form_map()
             }
-            fn from(raw: anansi::web::RawRequest<Pool>, mid: Middleware, cache: Self::Cache, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, admin: $crate::admin_site::AdminRef<Self>, mailer: Option<anansi::email::Mailer>) -> Self {
+            fn from(raw: anansi::web::RawRequest<Pool>, mid: AppMiddleware, cache: Self::Cache, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, admin: $crate::admin_site::AdminRef<Self>, mailer: Option<anansi::email::Mailer>) -> Self {
                 Self{raw, mid, cache, urls, admin, mailer}
             }
             fn to_raw(self) -> anansi::web::RawRequest<Pool> {
@@ -897,7 +948,9 @@ impl<D: DbPool> RawRequest<D> {
 
 pub trait BaseUser: Record<Pk = BigInt> + Send + Sync {
     type Name: fmt::Display;
+    type Secret: fmt::Display;
     fn username(&self) -> &Self::Name;
+    fn secret(&self) -> &Option<Self::Secret>;
     fn is_auth(&self) -> bool;
 }
 

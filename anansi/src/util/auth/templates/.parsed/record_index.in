@@ -1,4 +1,4 @@
-{_args._content = {let mut _c = String::new();_c.push_str("<div class=\"lower\">
+{_args._title = {let mut _c = String::new();_c.push_str("");_c.push_str(&anansi::web::html_escape(&format!("{}", title)));_c.push_str(""); _c};_args._content = {let mut _c = String::new();_c.push_str("<div class=\"lower\">
 	");_c.push_str(&format!("<a href=\"{}\">", anansi::url!(req,  BasicAdminSite::index )));_c.push_str("Home");_c.push_str("</a>
 </div>
 <div class=\"site\">
@@ -46,4 +46,4 @@
 		</div>
 		</form>");}_c.push_str("
 	");}_c.push_str("
-</div>"); _c};_args._title = {let mut _c = String::new();_c.push_str("");_c.push_str(&anansi::web::html_escape(&format!("{}", title)));_c.push_str(""); _c};_args}
+</div>"); _c};_args}

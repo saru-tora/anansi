@@ -20,6 +20,10 @@ anansi::operations! {
                 records::VarChar::<150>::field()
             ),
             (
+                "secret",
+                records::Text::field().null()
+            ),
+            (
                 "is_active",
                 records::Boolean::field().default("false")
             ),

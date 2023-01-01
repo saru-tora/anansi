@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, oneshot::Sender};
 use tokio::{fs, time};
 use std::pin::Pin;
 use std::future::Future;
@@ -22,7 +22,7 @@ use http_body_util::Full;
 use hyper::server::conn::http1;
 use hyper::body::Bytes;
 use hyper::{Request, body::Incoming as IncomingBody, Response as HyperResponse, header::HeaderValue};
-use hyper::service::Service;
+use hyper::service::Service as HyperService;
 
 use log::{error, info};
 use env_logger::Env;
@@ -30,7 +30,7 @@ use env_logger::Env;
 use crate::db::{DbPool, DbRow};
 use crate::cache::BaseCache;
 use crate::records::{VarChar, DateTime, DataType};
-use crate::web::{BASE_DIR, Result, Static, Route, BaseRequest, HyperRequest, Response, Http404, WebError, WebErrorKind, View, route_request, route_path};
+use crate::web::{BASE_DIR, Result, Static, Route, BaseRequest, HyperRequest, Response, Http404, WebError, WebErrorKind, View, Service, route_request, route_path};
 use crate::router::{Router, get_capture, split_url};
 use crate::migrations::{migrate, sql_migrate, make_migrations, AppMigration};
 use crate::admin_site::AdminRef;
@@ -53,15 +53,37 @@ macro_rules! main {
             pub use anansi::records::Record;
             pub use anansi::util::auth::records::Group;
         }
-        fn main() {
-            use std::sync::{Arc, Mutex};
-            use crate::urls::app_url;
-            use crate::http_errors::views::ErrorView;
-            use anansi::util::admin::site::AdminSite;
-            use anansi::web::Response;
+
+        #[tokio::main]
+        async fn main() {
+            use server_prelude::*;
+
             let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
             let site = Arc::new(Mutex::new(anansi::util::admin::site::BasicAdminSite::new()));
-            anansi::server::Server::new(APP_STATICS, APP_ADMINS).run(app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_migrations, anansi::util::auth::cmd::admin, site);
+            anansi::server::Server::new(APP_STATICS, APP_ADMINS, None)
+                .run(app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, cmd::admin, site)
+                .await;
+        }
+
+        mod server_prelude {
+            pub use std::sync::{Arc, Mutex};
+            pub use crate::urls::app_url;
+            pub use crate::http_errors::views::ErrorView;
+            pub use crate::project::{app_services, HttpRequest};
+            pub use anansi::util::admin::site::AdminSite;
+            pub use anansi::util::auth::cmd;
+            pub use anansi::web::Response;
+        }
+
+        #[cfg(test)]
+        pub async fn test_server(sender: tokio::sync::oneshot::Sender<()>) {
+            use server_prelude::*;
+
+            let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
+            let site = Arc::new(Mutex::new(anansi::util::admin::site::BasicAdminSite::new()));
+            anansi::server::Server::new(APP_STATICS, APP_ADMINS, Some(sender))
+                .run(app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, cmd::admin, site)
+                .await;
         }
     }
 }
@@ -70,148 +92,174 @@ pub struct Server<B: BaseRequest + 'static, D: DbPool> {
     statics: &'static [&'static [Static]],
     admin_inits: AdminInits<B>,
     d: PhantomData<D>,
+    sender: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+async fn get_pool<D: DbPool>(not_test: bool, settings: &Settings, migrations: fn() -> Vec<AppMigration<D>>) -> D {
+    if not_test {
+        match D::new(&settings).await {
+            Ok(p) => p,
+            Err(_) => {
+                let p = D::new(&settings).await.expect("Database connection reattempt failed");
+                migrate(migrations(), &p).await;
+                p
+            }
+        }
+    } else {
+        let p = D::test().await.expect("Database connection attempt failed");
+        migrate(migrations(), &p).await;
+        p
+    }
 }
 
 pub type AdminInits<B> = &'static [fn(AdminRef<B>)];
 
 impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache + 'static, D: DbPool + 'static> Server<B, D> {
-    pub fn new(statics: &'static [&'static [Static]], admin_inits: AdminInits<B>) -> Self {
-        Self {statics, admin_inits, d: PhantomData}
+    pub fn new(statics: &'static [&'static [Static]], admin_inits: AdminInits<B>, sender: Option<Sender<()>>) -> Self {
+        Self {statics, admin_inits, d: PhantomData, sender}
     }
-    pub fn run(&mut self, url_mapper: fn(&mut HashMap<usize, Vec<String>>), routes: &[Route<B>], handle_404: View<B>, internal_error: fn() -> Response, migrations: fn() -> Vec<AppMigration<D>>, admin: fn(D) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>, site: AdminRef<B>) where <<D as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow {
+    pub async fn run<S: Service<B> + 'static>(
+        &mut self,
+        url_mapper: fn(&mut HashMap<usize, Vec<String>>),
+        routes: &'static [Route<B>],
+        handle_404: View<B>,
+        internal_error: fn() -> Response,
+        services: fn(&Settings) -> std::pin::Pin<Box<dyn std::future::Future<Output = S> + Send + '_>>,
+        migrations: fn() -> Vec<AppMigration<D>>,
+        admin: fn(D) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>,
+        site: AdminRef<B>)
+        where <<D as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow
+    {
         env_logger::Builder::from_env(Env::default().default_filter_or("anansi_core")).init();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let addr = "127.0.0.1:9090";
-            let listener = TcpListener::bind(addr).await.unwrap();
+        let addr = "127.0.0.1:9090";
+        let listener = TcpListener::bind(addr).await.unwrap();
 
-            let args: Vec<String> = env::args().collect();
+        let args: Vec<String> = env::args().collect();
 
-            let mut base = PathBuf::new();
-            BASE_DIR.with(|b| base = b.clone());
-            base.push("settings.toml");
-            let s_settings = fs::read_to_string(&base).await.expect(&format!("Could not find {}", base.to_str().unwrap()));
-            let settings: Settings = toml::from_str(&s_settings).expect("Could not parse settings.toml");
+        let mut base = PathBuf::new();
+        BASE_DIR.with(|b| base = b.clone());
+        base.push("settings.toml");
+        let s_settings = fs::read_to_string(&base).await.expect(&format!("Could not find {}", base.to_str().unwrap()));
+        let settings: Settings = toml::from_str(&s_settings).expect("Could not parse settings.toml");
 
-            let pool = match D::new(&settings).await {
-                Ok(p) => p,
-                Err(_) => {
-                    let p = D::new(&settings).await.expect("Database connection reattempt failed");
-                    migrate(migrations(), &p).await;
-                    p
-                }
-            };
+        let not_test = self.sender.is_none();
+        let pool = get_pool(not_test, &settings, migrations).await;
 
-            if args.len() > 1 {
-                match args[1].as_str() {
-                    "make-migrations" => {
-                        if args.len() >= 2 {
-                            make_migrations(&args[2], &pool).await;
-                        } else {
-                            error!("expected app name");
-                        }
-                    }
-                    "sql-migrate" => {
-                        if args.len() >= 3 {
-                            sql_migrate(migrations(), &args[2], &args[3]).await;
-                        } else{
-                            error!("expected app name");
-                        }
-                    }
-                    "migrate" => {
-                        migrate(migrations(), &pool).await;
-                    }
-                    "admin" => {
-                        admin(pool.clone()).await.expect("Could not create admin");
-                    }
-                    _ => error!("Unrecognized argument"),
-                }
-            } else {
-                let mut url_map = HashMap::new();
-                url_mapper(&mut url_map);
-                let mut files = HashMap::new();
-                for stats in self.statics {
-                    for (name, file) in *stats {
-                        files.insert(*name, *file);
-                    }
-                }
-                let mut rv = routes.to_vec();
-                for admin_init in self.admin_inits {
-                    admin_init(site.clone());
-                }
-                for (name, view) in site.lock().unwrap().urls() {
-                    url_map.insert(*view as View<B> as usize, get_capture(name).unwrap());
-                    rv.push(route_path(name, *view));
-                }
-                let login_url = settings.get("login_url").expect("Could not get login url").as_str().expect("Expected string for login url").to_string();
-                let router = Arc::new(Router::new(rv, handle_404, internal_error, login_url, files).unwrap());
-                let urls = Arc::new(url_map);
-                let c_settings = settings.get("caches").expect("Could not get cache settings").as_table().expect("Expected table for cache settings");
-                let cache = C::new(&c_settings).await.expect("Could not start cache");
-                let mailer = if let Ok(mailer) = Mailer::new(&settings) {
-                    Some(mailer)
-                } else {
-                    None
-                };
-
-                let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs().to_string();
-                let std_rng = match settings.get("secret_key") {
-                    Some(key) => {
-                        seed += key.as_str().expect("Could not get secret");
-                        Rng::new(&seed)
-                    }
-                    None => {
-                        let rng = Rng::new(&seed);
-                        let s = format!("secret_key = \"{}\"\n{}", rng.secret_string(), s_settings);
-                        let mut file = fs::OpenOptions::new()
-                          .write(true)
-                          .open(&base)
-                          .await
-                          .expect(&format!("error with {}", base.to_str().unwrap()));
-                       file.write_all(&s.into_bytes()).await.unwrap();
-                        println!("Created new secret");
-                        rng
-                    }
-                };
-                let sem = Arc::new(Semaphore::new(10000000));
-                let timer = Arc::new(Mutex::new(DateTime::now()));
-                let t2 = Arc::clone(&timer);
-                tokio::spawn(async move {
-                    loop {
-                        time::sleep(time::Duration::from_secs(1)).await;
-                        let mut t2 = t2.lock().unwrap();
-                        *t2 = DateTime::now();
-                    }
-                });
-                println!("Server running at http://{addr}/\nPress Ctrl+C to stop");
-                loop {
-                    let (stream, _) = listener.accept().await.unwrap();
-                    let urls = urls.clone();
-                    let pool = pool.clone();
-                    let cache = cache.clone();
-                    let std_rng = std_rng.clone();
-                    let router = router.clone();
-                    let sem = Arc::clone(&sem);
-                    let timer = Arc::clone(&timer);
-                    let aq = sem.try_acquire();
-                    let site = site.clone();
-                    let mailer = mailer.clone();
-                    if aq.is_ok() {
-                        tokio::spawn(async move {
-                            let addr = stream.peer_addr().unwrap();
-                            if let Err(err) = http1::Builder::new()
-                                .serve_connection(stream, Svc { addr, urls, pool, cache, std_rng, router, timer, site, mailer })
-                                .await
-                            {
-                                error!("Failed to serve connection: {:?}", err);
-                            }
-                        });
+        if args.len() > 1 {
+            match args[1].as_str() {
+                "make-migrations" => {
+                    if args.len() >= 2 {
+                        make_migrations(&args[2], &pool).await;
                     } else {
-                        error!("Open socket limit reached");
+                        error!("expected app name");
                     }
+                }
+                "sql-migrate" => {
+                    if args.len() >= 3 {
+                        sql_migrate(migrations(), &args[2], &args[3]).await;
+                    } else{
+                        error!("expected app name");
+                    }
+                }
+                "migrate" => {
+                    migrate(migrations(), &pool).await;
+                }
+                "admin" => {
+                    admin(pool.clone()).await.expect("Could not create admin");
+                }
+                _ => error!("Unrecognized argument"),
+            }
+        } else {
+            let mut url_map = HashMap::new();
+            url_mapper(&mut url_map);
+            let mut files = HashMap::new();
+            for stats in self.statics {
+                for (name, file) in *stats {
+                    files.insert(*name, *file);
                 }
             }
-        })
+            let mut rv = routes.to_vec();
+            for admin_init in self.admin_inits {
+                admin_init(site.clone());
+            }
+            for (name, view) in site.lock().unwrap().urls() {
+                url_map.insert(*view as View<B> as usize, get_capture(name).unwrap());
+                rv.push(route_path(name, *view));
+            }
+            let login_url = settings.get("login_url").expect("Could not get login url").as_str().expect("Expected string for login url").to_string();
+
+            let router = Arc::new(Router::new(rv, handle_404, internal_error, login_url, services(&settings).await, files).unwrap());
+            let urls = Arc::new(url_map);
+            let c_settings = settings.get("caches").expect("Could not get cache settings").as_table().expect("Expected table for cache settings");
+            let cache = C::new(&c_settings).await.expect("Could not start cache");
+            let mailer = if let Ok(mailer) = Mailer::new(&settings) {
+                Some(mailer)
+            } else {
+                None
+            };
+
+            let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs().to_string();
+            let std_rng = match settings.get("secret_key") {
+                Some(key) => {
+                    seed += key.as_str().expect("Could not get secret");
+                    Rng::new(&seed)
+                }
+                None => {
+                    let rng = Rng::new(&seed);
+                    let s = format!("secret_key = \"{}\"\n{}", rng.secret_string(), s_settings);
+                    let mut file = fs::OpenOptions::new()
+                      .write(true)
+                      .open(&base)
+                      .await
+                      .expect(&format!("error with {}", base.to_str().unwrap()));
+                   file.write_all(&s.into_bytes()).await.unwrap();
+                    println!("Created new secret");
+                    rng
+                }
+            };
+            let sem = Arc::new(Semaphore::new(10000000));
+            let timer = Arc::new(Mutex::new(DateTime::now()));
+            let t2 = Arc::clone(&timer);
+            tokio::spawn(async move {
+                loop {
+                    time::sleep(time::Duration::from_secs(1)).await;
+                    let mut t2 = t2.lock().unwrap();
+                    *t2 = DateTime::now();
+                }
+            });
+
+            println!("Server running at http://{addr}/\nPress Ctrl+C to stop");
+            if let Some(sender) = self.sender.take() {
+                sender.send(()).unwrap();
+            }
+
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let urls = urls.clone();
+                let pool = pool.clone();
+                let cache = cache.clone();
+                let std_rng = std_rng.clone();
+                let router = router.clone();
+                let sem = Arc::clone(&sem);
+                let timer = Arc::clone(&timer);
+                let aq = sem.try_acquire();
+                let site = site.clone();
+                let mailer = mailer.clone();
+                if aq.is_ok() {
+                    tokio::spawn(async move {
+                        let addr = stream.peer_addr().unwrap();
+                        if let Err(err) = http1::Builder::new()
+                            .serve_connection(stream, Svc { addr, urls, pool, cache, std_rng, router, timer, site, mailer })
+                            .await
+                        {
+                            error!("Failed to serve connection: {:?}", err);
+                        }
+                    });
+                } else {
+                    error!("Open socket limit reached");
+                }
+            }
+        }
     }
 }
 
@@ -245,19 +293,19 @@ pub async fn sleep(duration: std::time::Duration) {
     tokio::time::sleep(duration).await;
 }
 
-struct Svc<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool, C: BaseCache> {
+struct Svc<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool, C: BaseCache, S: Service<B>> {
     addr: SocketAddr,
     urls: Arc<HashMap<usize, Vec<String>>>,
     pool: D,
     cache: C,
     std_rng: Rng, 
-    router: Arc<Router<B>>,
+    router: Arc<Router<B, S>>,
     timer: Timer,
     site: AdminRef<B>,
     mailer: Option<Mailer>,
 }
 
-impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 'static, C: BaseCache + 'static> Service<Request<IncomingBody>> for Svc<B, D, C> {
+impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 'static, C: BaseCache + 'static, S: Service<B> + 'static> HyperService<Request<IncomingBody>> for Svc<B, D, C, S> {
     type Response = HyperResponse<Full<Bytes>>;
     type Error = hyper::Error;
     type Future = Pin<Box<dyn Future<Output = std::result::Result<Self::Response, Self::Error>> + Send>>;
@@ -294,7 +342,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                     let result = B::new(HyperRequest {0: request}, urls, pool.clone(), cache.clone(), std_rng.clone(), site, mailer).await;
                     match result {
                         Ok(mut req) => {
-                            match route_request(dirs, &mut req, &router.routes).await {
+                            match route_request(dirs, &mut req, &router.routes, &router.service).await {
                                 Ok(res) => {
                                     res
                                 }

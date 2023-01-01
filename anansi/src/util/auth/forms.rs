@@ -6,6 +6,7 @@ use anansi::records::{Record, DateTime};
 use anansi::forms::{Form, Field, VarChar, Text, FormError, ToRecord};
 use super::records::{User, user::username, Group, Filter, hash_password};
 use super::admin::Request;
+use crate::util::auth::middleware::Auth;
 
 #[form(User)]
 pub struct UserLogin {
@@ -23,6 +24,31 @@ impl<B: BaseRequest> ToRecord<B> for UserLogin {
             }
         }
         form_error!("Problem logging in.")
+    }
+}
+
+#[form(User)]
+pub struct UserTotp {
+    pub code: Text,
+}
+
+#[async_trait]
+impl<B: BaseRequest + Auth> ToRecord<B> for UserTotp {
+    async fn on_post(&mut self, data: UserTotpData, req: &B) -> Result<User> {
+        if let Ok(secret) = req.temp_totp() {
+            use anansi::web::BaseUser;
+            let name = req.user().username().to_string();
+            if let Ok(mut user) = User::whose(username().eq(name)).get(req).await {
+                user.secret = Some(anansi::records::Text::from(secret));
+                if user.set_totp(None, data.code.to_string()).is_ok() {
+                    return match user.save(req).await {
+                        Ok(_) => Ok(user),
+                        Err(_) => err_box!(FormError::new("Problem adding totp.")),
+                    };
+                }
+            }
+        }
+        form_error!("Problem verifying code.")
     }
 }
 
@@ -73,7 +99,7 @@ impl<B: BaseRequest> ToRecord<B> for UserNew {
         self.check_field_errors()?;
         let password = hash_password(&data.password)?;
         let now = DateTime::now();
-        let user = User::new(clean_name, data.email, password, now, now);
+        let user = User::new(clean_name, data.email, password, None, now, now);
         match user.save(req).await {
             Ok(_) => Ok(user),
             Err(_) => err_box!(FormError::new("Problem adding user.")),

@@ -150,6 +150,14 @@ impl DbPool for SqliteDbPool {
     fn now() -> &'static str {
         "strftime('%Y-%m-%d %H-%M-%f','now')"
     }
+    async fn test() -> Result<Self> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(thread::available_parallelism().unwrap().get() as u32)
+            .connect(":memory:").await?;
+        sqlx::query(INIT_STR).execute(&pool).await?;
+        let pool = Self {0: pool};
+        Ok(pool)
+    }
 }
 
 impl DbType for SqliteDbPool {
@@ -158,16 +166,19 @@ impl DbType for SqliteDbPool {
     }
 }
 
+static INIT_STR: &str = "CREATE TABLE \"anansi_records\"(\n\t\"name\" text NOT NULL,\n\t\"schema\" text NOT NULL\n);\nCREATE TABLE anansi_migrations(\n\t\"id\" INT PRIMARY KEY,\n\t\"app\" TEXT NOT NULL,\n\t\"name\" TEXT NOT NULL,\n\t\"applied\" DATETIME NOT NULL\n);\n";
+
 impl SqliteDbPool {
     async fn connect(dir: &str) -> Result<sqlx::Pool<Sqlite>> {
         sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(thread::available_parallelism().unwrap().get() as u32)
             .connect(&dir).await.or(Err(invalid()))
     }
+
     async fn init_db(dir: &str) {
         let mut cmd = Command::new("sqlite3");
         cmd.arg(dir);
-        cmd.arg("CREATE TABLE \"anansi_records\"(\n\t\"name\" text NOT NULL,\n\t\"schema\" text NOT NULL\n);\nCREATE TABLE anansi_migrations(\n\t\"id\" INT PRIMARY KEY,\n\t\"app\" TEXT NOT NULL,\n\t\"name\" TEXT NOT NULL,\n\t\"applied\" DATETIME NOT NULL\n);\n");
+        cmd.arg(INIT_STR);
         let mut child = cmd.spawn().expect("Failed to start sqlite3");
         child.wait().await.expect("failed to wait on child");
         println!("Initialized database");

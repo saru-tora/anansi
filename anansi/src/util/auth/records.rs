@@ -10,6 +10,8 @@ use pbkdf2::{
 
 use async_recursion::async_recursion;
 
+use totp_rs::{Algorithm, TOTP, Secret};
+
 use anansi::web::{Result, BaseUser, BaseRequest, WebError, WebErrorKind};
 use anansi::db::{DbPool, DbRowVec, invalid};
 use anansi::records::{Record, BigInt, VarChar, Text, DateTime, DataType};
@@ -22,6 +24,7 @@ pub struct User {
     pub username: VarChar<150>,
     pub email: Option<Text>,
     pub password: VarChar<150>,
+    pub secret: Option<Text>,
     #[field(auto_now_add = "true")]
     pub last_login: DateTime,
     #[field(auto_now_add = "true")]
@@ -30,8 +33,12 @@ pub struct User {
 
 impl BaseUser for User {
     type Name = VarChar<150>;
+    type Secret = Text;
     fn username(&self) -> &Self::Name {
         &self.username
+    }
+    fn secret(&self) -> &Option<Self::Secret> {
+        &self.secret
     }
     fn is_auth(&self) -> bool {
         self.id != BigInt::new(0)
@@ -168,6 +175,7 @@ impl BaseRelation {
 
 impl User {
     pub const KEY: &'static str = "_user_id";
+    pub const TOTP_KEY: &'static str = "_temp_totp";
     
     pub async fn validate_username<D: DbPool>(username: &str, pool: &D) -> result::Result<VarChar<150>, UsernameFeedback> {
         if username.is_empty() {
@@ -218,6 +226,7 @@ impl User {
             username: VarChar::from("guest".to_string()).unwrap(),
             email: None,
             password: VarChar::new(),
+            secret: None,
             last_login: now,
             date_joined: now,
         }
@@ -232,6 +241,28 @@ impl User {
         } else {
             Err(invalid())
         }
+    }
+    pub fn set_totp(&mut self, issuer: Option<String>, secret: String) -> Result<()> {
+        self.check_totp(issuer, &secret)?;
+        self.secret = Some(Text::from(secret));
+        Ok(())
+    }
+    pub fn check_totp(&self, issuer: Option<String>, secret: &str) -> Result<()> {
+        if let Some(s) = &self.secret {
+            let totp = TOTP::new(
+                Algorithm::SHA1,
+                6,
+                1,
+                30,
+                Secret::Raw(s.to_string().into_bytes().to_vec()).to_bytes().unwrap(),
+                issuer,
+                self.username().to_string(),
+            )?;
+            if secret == totp.generate_current()? {
+                return Ok(());
+            }
+        }
+        Err(invalid())
     }
 }
 
