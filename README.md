@@ -7,4 +7,4 @@ It is intended to be safe, fast, and to make web development easier.
 
 For more information, check out its [website](https://saru-tora.github.io/anansi).
 
-Currently not seeking contributions until the api is more stable.
+Although it's still unstable, contributions are now welcome. Please create an issue before submitting any pull requests.
