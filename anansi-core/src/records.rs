@@ -675,11 +675,13 @@ impl RecordField {
 
 #[cfg(feature = "postgres")]
 impl RecordField {
-    pub fn default(mut self, value: &str) {
+    pub fn default(mut self, value: &str) -> Self {
         self.default = value.to_string();
+        self
     }
-    pub fn auto_now_add(mut self) {
+    pub fn auto_now_add(mut self) -> Self {
         self.default = "NOW()".to_string();
+        self
     }
 }
 
