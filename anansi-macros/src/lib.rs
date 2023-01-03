@@ -84,8 +84,8 @@ pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
     }
 
     let name_string = name.to_string();
-    let table = quote! {&format!("{}_{}", super::APP_NAME, #lowercase)};
-    let table_name = quote! {format!("{}_{}", super::APP_NAME, #lowercase)};
+    let table = quote! {&Self::table()};
+    let table_name = quote! {Self::table()};
     let record_fields = format_ident!("{}Fields", name);
     
     let primary = quote! {<#name as #pdt>::pk(&self)};
@@ -140,7 +140,7 @@ pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
                 #table_name
             }
             async fn update<B: anansi::web::BaseRequest>(&mut self, req: &B) -> anansi::web::Result<()> {
-                                                                                                self.raw_update(req.raw().pool()).await
+                self.raw_update(req.raw().pool()).await
             }
             async fn raw_update<D: anansi::db::DbPool>(&mut self, pool: &D) -> anansi::web::Result<()> {
                 let u: anansi::db::Update<Self> = anansi::db::Update::new(#table)
@@ -657,6 +657,24 @@ pub fn form(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> pr
         #has_record
     };
     q.into()
+}
+
+fn expr_attrs(attrs: &Vec<Expr>) -> HashMap<String, String> {
+    let mut hm = HashMap::new();
+    for attr in attrs {
+        if let Expr::Assign(assign) = attr {
+            if let Expr::Path(expr_path) = &*assign.left {
+                if expr_path.path.segments[0].ident.to_owned() == "table_name" {
+                    let tokens = &assign.right;
+                    let tokens = quote! {#tokens}.to_string();
+                    hm.insert("table_name".to_owned(), tokens[1..tokens.len()-1].to_owned());
+                    break;
+                }
+            }
+        }
+        panic!("unexpected argument in macro attribute")
+    }
+    hm
 }
 
 fn get_attrs(attrs: &Vec<Attribute>) -> HashMap<String, String> {
@@ -1445,8 +1463,9 @@ pub fn store(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream)
 }
 
 #[proc_macro_attribute]
-pub fn record(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub fn record(metadata: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut ast = parse_macro_input!(input as DeriveInput);
+    let meta = parse_macro_input!(metadata as SchemaArgs);
     match &mut ast.data {
         syn::Data::Struct(ref mut struct_data) => {
             match &mut struct_data.fields {
@@ -1468,7 +1487,33 @@ pub fn record(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream
                 _ => {},
             }
 
+            let meta_attrs = expr_attrs(&meta.vars);
+            let lowercase = format!("{}", ast.ident.to_string().to_lowercase());
+            let t = if let Some(name) = meta_attrs.get("table_name") {
+                quote! {#name.to_string()}
+            } else {
+                quote! {format!("{}_{}", super::APP_NAME, #lowercase)}
+            };
+            let ident = &ast.ident;
+            let table = quote! {
+                impl #ident {
+                    fn table() -> String {
+                        #t
+                    }
+                }
+            };
+
             let record_tuple = format_ident!("{}Tuple", ast.ident);
+            let record_lower = record_tuple.to_string().to_lowercase();
+            let tt = quote! {format!("{}_{}", super::APP_NAME, #record_lower)};
+            let tuple_table = quote! {
+                impl #record_tuple {
+                    fn table() -> String {
+                        #tt
+                    }
+                }
+            };
+
             let lower = format_ident!("{}", record_tuple.to_string().to_lowercase());
             let tuple = quote! {
                 #[derive(anansi::Record)]
@@ -1482,6 +1527,7 @@ pub fn record(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream
                     pub object_predicate: anansi::records::Text,
                 }
                 impl<B: anansi::web::BaseRequest> anansi::records::Relate<B> for #record_tuple {}
+                #tuple_table
                 
                 #[async_trait::async_trait]
                 impl<R: anansi::web::BaseRequest> anansi::records::RecordTuple<R> for #record_tuple {
@@ -1511,6 +1557,7 @@ pub fn record(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream
                 #[derive(anansi::Record)]
                 #ast
                 #tuple
+                #table
             };
             return q.into();
         }
