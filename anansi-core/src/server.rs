@@ -131,10 +131,10 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         where <<D as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow
     {
         env_logger::Builder::from_env(Env::default().default_filter_or("anansi_core")).init();
-        let addr = "127.0.0.1:9090";
-        let listener = TcpListener::bind(addr).await.unwrap();
 
         let args: Vec<String> = env::args().collect();
+
+        let mut port = None;
 
         let mut base = PathBuf::new();
         BASE_DIR.with(|b| base = b.clone());
@@ -153,6 +153,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                     } else {
                         error!("expected app name");
                     }
+                    return;
                 }
                 "sql-migrate" => {
                     if args.len() >= 3 {
@@ -160,104 +161,113 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                     } else{
                         error!("expected app name");
                     }
+                    return;
                 }
                 "migrate" => {
                     migrate(migrations(), &pool).await;
+                    return;
                 }
                 "admin" => {
                     admin(pool.clone()).await.expect("Could not create admin");
+                    return;
                 }
-                _ => error!("Unrecognized argument"),
+                _ => port = Some(args[1].to_string()),
             }
+        }
+        let addr = if let Some(p) = port {
+            format!("127.0.0.1:{}", p)
         } else {
-            let mut url_map = HashMap::new();
-            url_mapper(&mut url_map);
-            let mut files = HashMap::new();
-            for stats in self.statics {
-                for (name, file) in *stats {
-                    files.insert(*name, *file);
-                }
-            }
-            let mut rv = routes.to_vec();
-            for admin_init in self.admin_inits {
-                admin_init(site.clone());
-            }
-            for (name, view) in site.lock().unwrap().urls() {
-                url_map.insert(*view as View<B> as usize, get_capture(name).unwrap());
-                rv.push(route_path(name, *view));
-            }
-            let login_url = settings.get("login_url").expect("Could not get login url").as_str().expect("Expected string for login url").to_string();
+            "127.0.0.1:9090".to_string()
+        };
+        let listener = TcpListener::bind(&addr).await.unwrap();
 
-            let router = Arc::new(Router::new(rv, handle_404, internal_error, login_url, services(&settings).await, files).unwrap());
-            let urls = Arc::new(url_map);
-            let c_settings = settings.get("caches").expect("Could not get cache settings").as_table().expect("Expected table for cache settings");
-            let cache = C::new(&c_settings).await.expect("Could not start cache");
-            let mailer = if let Ok(mailer) = Mailer::new(&settings) {
-                Some(mailer)
-            } else {
-                None
-            };
-
-            let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs().to_string();
-            let std_rng = match settings.get("secret_key") {
-                Some(key) => {
-                    seed += key.as_str().expect("Could not get secret");
-                    Rng::new(&seed)
-                }
-                None => {
-                    let rng = Rng::new(&seed);
-                    let s = format!("secret_key = \"{}\"\n{}", rng.secret_string(), s_settings);
-                    let mut file = fs::OpenOptions::new()
-                      .write(true)
-                      .open(&base)
-                      .await
-                      .expect(&format!("error with {}", base.to_str().unwrap()));
-                   file.write_all(&s.into_bytes()).await.unwrap();
-                    println!("Created new secret");
-                    rng
-                }
-            };
-            let sem = Arc::new(Semaphore::new(10000000));
-            let timer = Arc::new(Mutex::new(DateTime::now()));
-            let t2 = Arc::clone(&timer);
-            tokio::spawn(async move {
-                loop {
-                    time::sleep(time::Duration::from_secs(1)).await;
-                    let mut t2 = t2.lock().unwrap();
-                    *t2 = DateTime::now();
-                }
-            });
-
-            println!("Server running at http://{addr}/\nPress Ctrl+C to stop");
-            if let Some(sender) = self.sender.take() {
-                sender.send(()).unwrap();
+        let mut url_map = HashMap::new();
+        url_mapper(&mut url_map);
+        let mut files = HashMap::new();
+        for stats in self.statics {
+            for (name, file) in *stats {
+                files.insert(*name, *file);
             }
+        }
+        let mut rv = routes.to_vec();
+        for admin_init in self.admin_inits {
+            admin_init(site.clone());
+        }
+        for (name, view) in site.lock().unwrap().urls() {
+            url_map.insert(*view as View<B> as usize, get_capture(name).unwrap());
+            rv.push(route_path(name, *view));
+        }
+        let login_url = settings.get("login_url").expect("Could not get login url").as_str().expect("Expected string for login url").to_string();
 
+        let router = Arc::new(Router::new(rv, handle_404, internal_error, login_url, services(&settings).await, files).unwrap());
+        let urls = Arc::new(url_map);
+        let c_settings = settings.get("caches").expect("Could not get cache settings").as_table().expect("Expected table for cache settings");
+        let cache = C::new(&c_settings).await.expect("Could not start cache");
+        let mailer = if let Ok(mailer) = Mailer::new(&settings) {
+            Some(mailer)
+        } else {
+            None
+        };
+
+        let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs().to_string();
+        let std_rng = match settings.get("secret_key") {
+            Some(key) => {
+                seed += key.as_str().expect("Could not get secret");
+                Rng::new(&seed)
+            }
+            None => {
+                let rng = Rng::new(&seed);
+                let s = format!("secret_key = \"{}\"\n{}", rng.secret_string(), s_settings);
+                let mut file = fs::OpenOptions::new()
+                  .write(true)
+                  .open(&base)
+                  .await
+                  .expect(&format!("error with {}", base.to_str().unwrap()));
+               file.write_all(&s.into_bytes()).await.unwrap();
+                println!("Created new secret");
+                rng
+            }
+        };
+        let sem = Arc::new(Semaphore::new(10000000));
+        let timer = Arc::new(Mutex::new(DateTime::now()));
+        let t2 = Arc::clone(&timer);
+        tokio::spawn(async move {
             loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let urls = urls.clone();
-                let pool = pool.clone();
-                let cache = cache.clone();
-                let std_rng = std_rng.clone();
-                let router = router.clone();
-                let sem = Arc::clone(&sem);
-                let timer = Arc::clone(&timer);
-                let aq = sem.try_acquire();
-                let site = site.clone();
-                let mailer = mailer.clone();
-                if aq.is_ok() {
-                    tokio::spawn(async move {
-                        let addr = stream.peer_addr().unwrap();
-                        if let Err(err) = http1::Builder::new()
-                            .serve_connection(stream, Svc { addr, urls, pool, cache, std_rng, router, timer, site, mailer })
-                            .await
-                        {
-                            error!("Failed to serve connection: {:?}", err);
-                        }
-                    });
-                } else {
-                    error!("Open socket limit reached");
-                }
+                time::sleep(time::Duration::from_secs(1)).await;
+                let mut t2 = t2.lock().unwrap();
+                *t2 = DateTime::now();
+            }
+        });
+
+        println!("Server running at http://{addr}/\nPress Ctrl+C to stop");
+        if let Some(sender) = self.sender.take() {
+            sender.send(()).unwrap();
+        }
+
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let urls = urls.clone();
+            let pool = pool.clone();
+            let cache = cache.clone();
+            let std_rng = std_rng.clone();
+            let router = router.clone();
+            let sem = Arc::clone(&sem);
+            let timer = Arc::clone(&timer);
+            let aq = sem.try_acquire();
+            let site = site.clone();
+            let mailer = mailer.clone();
+            if aq.is_ok() {
+                tokio::spawn(async move {
+                    let addr = stream.peer_addr().unwrap();
+                    if let Err(err) = http1::Builder::new()
+                        .serve_connection(stream, Svc { addr, urls, pool, cache, std_rng, router, timer, site, mailer })
+                        .await
+                    {
+                        error!("Failed to serve connection: {:?}", err);
+                    }
+                });
+            } else {
+                error!("Open socket limit reached");
             }
         }
     }
