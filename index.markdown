@@ -34,7 +34,6 @@ Work with databases in Rust instead of SQL to write statically checked queries.
 #[derive(Relate, FromParams, ToUrl)]
 pub struct Topic {
     pub title: VarChar<200>,
-    #[field(app = "auth")]
     pub user: ForeignKey<User>,
     pub content: VarChar<40000>,
     pub date: DateTime,
@@ -45,7 +44,6 @@ pub struct Topic {
 #[derive(Relate, FromParams)]
 pub struct Comment {
     pub topic: ForeignKey<Topic>,
-    #[field(app = "auth")]
     pub user: ForeignKey<User>,
     pub content: VarChar<40000>,
     pub date: DateTime,
@@ -67,7 +65,7 @@ routes! {
 ```
 
 ```rust
-#[record_view]
+#[viewer]
 impl<R: Request> TopicView<R> {
     // A view of the last 25 topics.
     #[view(Group::is_visitor)]
