@@ -98,7 +98,6 @@ use anansi::util::auth::records::User;
 #[derive(Relate, FromParams)]
 pub struct Topic {
     pub title: VarChar<200>,
-    #[field(app = "auth")]
     pub user: ForeignKey<User>,
     pub content: VarChar<40000>,
     pub date: DateTime,
@@ -108,16 +107,13 @@ pub struct Topic {
 #[derive(Relate, FromParams)]
 pub struct Comment {
     pub topic: ForeignKey<Topic>,
-    #[field(app = "auth")]
     pub user: ForeignKey<User>,
     pub content: VarChar<40000>,
     pub date: DateTime,
 }
 ```
 
-`#[record]` adds an `id` field by default, and functions that reference the record's fields (like `topic::date`), which can be used with methods like `order_by` to query the database. `Relate` handles access control between records, and `FromParams` will allow you to get a record from a request's parameters.
-
-Both records have `ForeignKey` fields, which means that it has many-to-one relationships with `Topic` and `User`. For `user`, the app name (auth) is specified since it is from another app. Not including the app name will result in an error later on.
+`#[record]` adds an `id` field by default, and functions that reference the record's fields (like `topic::date`), which can be used with methods like `order_by` to query the database. `Relate` handles access control between records, and `FromParams` will allow you to get a record from a request's parameters. Both records have `ForeignKey` fields, which means that they have many-to-one relationships with `Topic` and `User`.
 
 <br>
 
@@ -549,7 +545,6 @@ use serde::{Serialize, Deserialize};
 #[derive(Relate, FromParams, Serialize, Deserialize)]
 pub struct Topic {
     pub title: VarChar<200>,
-    #[field(app = "auth")]
     pub user: ForeignKey<User>,
     pub content: VarChar<40000>,
     pub date: DateTime,
@@ -642,7 +637,6 @@ use anansi::ToUrl;
 #[derive(Relate, FromParams, Serialize, Deserialize, ToUrl)]
 pub struct Topic {
     pub title: VarChar<200>,
-    #[field(app = "auth")]
     pub user: ForeignKey<User>,
     pub content: VarChar<40000>,
     pub date: DateTime,
