@@ -1071,7 +1071,7 @@ pub fn start(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             let mut callbacks = std::collections::HashMap::new();
             for comp in #comps::COMPONENTS {
                 for (name, cb, n) in *comp {
-                    callbacks.insert(name.to_string(), anansi_aux::CallbackData {new: *cb, num: *n});
+                    callbacks.insert(name.to_string(), anansi_aux::CallbackData {new: *cb, num: *n, sender: None});
                 }
             }
             anansi_aux::setup(callbacks);

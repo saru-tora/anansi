@@ -32,12 +32,14 @@ thread_local! {
         window.document().expect("window should have a document")
     };
     pub static CALLBACKS: RefCell<HashMap<String, CallbackData>> = RefCell::new(HashMap::new());
+    pub static RECALLS: RefCell<HashMap<String, RecallData>> = RefCell::new(HashMap::new());
     pub static APP_STATE: RefCell<Option<AppState>> = RefCell::new(None);
     pub static CHANNEL: RefCell<(Sender<Cmd>, Option<Receiver<Cmd>>)> = {
         let (tx, rx) = async_channel::unbounded(); 
         RefCell::new((tx, Some(rx)))
     };
     pub static SENDERS: RefCell<HashMap<usize, Sender<CbCmd>>> = RefCell::new(HashMap::new());
+    pub static RID: RefCell<usize> = RefCell::new(0);
 }
 
 #[macro_export]
@@ -175,7 +177,24 @@ impl Elem {
     fn to_node(&self, document: &Document) -> Node {
         let el = document.create_element(self.name).unwrap();
         for attr in &self.attrs {
-            el.set_attribute(&attr.key, &attr.value).unwrap();
+            if !attr.key.starts_with("on:") {
+                el.set_attribute(&attr.key, &attr.value).unwrap();
+            } else {
+                CALLBACKS.with(|c| {
+                    let c = c.borrow();
+                    let (v, _) = attr.value.split_once('[').unwrap();
+                    let cb = c.get(v).unwrap();
+                    RID.with(|r| {
+                        let mut r = r.borrow_mut();
+                        let rs = r.to_string();
+                        el.set_attribute("rid", &rs).unwrap();
+                        RECALLS.with(|rc| {
+                            rc.borrow_mut().insert(rs, RecallData {sender: cb.sender.as_ref().unwrap().clone(), num: cb.num});
+                        });
+                        *r += 1;
+                    });
+                });
+            }
         }
         for child in &self.children {
             el.append_child(&child.to_node(document)).unwrap();
@@ -204,7 +223,7 @@ impl Elem {
             let parent = node.parent_node().unwrap();
             DOCUMENT.with(|document| {
                 let new = self.to_node(&document);
-                parent.replace_child(&new, &node).unwrap();
+                parent.insert_before(&new, Some(&node)).unwrap();
                 *node = new;
             });
         }
@@ -285,9 +304,15 @@ pub fn html_escape(s: &str) -> String {
     escaped
 }
 
+pub struct RecallData {
+    pub num: u8,
+    pub sender: Sender<CbCmd>,
+}
+
 pub struct CallbackData {
     pub new: fn(Value, Value, Vec<Sub>, Sender<CbCmd>, Receiver<CbCmd>, Sender<Cmd>, String),
     pub num: u8,
+    pub sender: Option<Sender<CbCmd>>,
 }
 
 #[macro_export]
@@ -406,6 +431,21 @@ pub fn setup(callbacks: HashMap<String, CallbackData>) {
 }
 
 #[wasm_bindgen]
+pub fn recall(rid: &str) -> bool {
+    let mut b = false;
+    RECALLS.with(|r| {
+        let recalls = r.borrow();
+        if let Some(rc) = recalls.get(rid) {
+            let sender = rc.sender.clone();
+            let n = rc.num;
+            spawn_local(async move {sender.send(CbCmd::Callback(n)).await.unwrap()});
+            b = true;
+        }
+    });
+    b
+}
+
+#[wasm_bindgen]
 pub fn call(callback: &str, node_id: &str) -> Result<(), JsValue> {
     let (name, arr) = callback.split_once('[').unwrap();
     let (arr, _) = arr.rsplit_once(']').unwrap();
@@ -413,8 +453,8 @@ pub fn call(callback: &str, node_id: &str) -> Result<(), JsValue> {
     let arr: Vec<usize> = arr.iter().map(|e| e.parse().unwrap()).collect();
 
     CALLBACKS.with(|c| {
-        let callbacks = c.borrow();
-        if let Some(cb) = callbacks.get(name) {
+        let mut callbacks = c.borrow_mut();
+        if let Some(cb) = callbacks.get_mut(name) {
             CHANNEL.with(|channel| {
                 let gtx = channel.borrow().0.clone();
                 APP_STATE.with(|a| {
@@ -448,6 +488,7 @@ pub fn call(callback: &str, node_id: &str) -> Result<(), JsValue> {
                         let sender = sender.clone();
                         
                         let n = cb.num;
+                        cb.sender = Some(sender.clone());
                         spawn_local(async move {sender.send(CbCmd::Callback(n)).await.unwrap()});
                     });
                 });
@@ -467,7 +508,7 @@ fn update(rsx: &Rsx, node: &mut Node) {
             }
         }
         Rsx::Text(text) => {
-            set_content(&node, &text);
+            set_content(node, &text);
         }
         Rsx::Component(comp) => {
             check_siblings(&comp.children, node);
@@ -479,50 +520,16 @@ fn check_siblings(children: &Vec<Rsx>, node: &mut Node) {
     let mut children = children.iter();
     let l = children.len();
     let mut n = 0;
-    let mut button = false;
-    
+
     loop {
         if let Some(child) = children.next() {
-            if node.node_name() == "BUTTON" {
-                match child {
-                    Rsx::Element(el) => {
-                        if el.name == "BUTTON" {
-                            button = true;
-                            continue;
-                        }
-                    }
-                    _ => {}
-                }
-                DOCUMENT.with(|document| {
-                    let parent = node.parent_node().unwrap();
-                    let new = child.to_node(&document);
-                    parent.insert_before(&new, Some(&node)).unwrap();
-                });
-                continue;
-            } else if node.node_name() == "DIV" {
-                if let Some(sib) = node.next_sibling() {
-                    let parent = node.parent_node().unwrap();
-                    parent.remove_child(&node).unwrap();
-                    *node = sib;
-                }
-            } else {
-                update(child, node);
-            }
+            update(child, node);
             
             if let Some(sib) = node.next_sibling() {
                 if sib.node_type() == Node::COMMENT_NODE && sib.text_content().unwrap() == "/av" {
                     while let Some(c) = children.next() {
-                        if node.node_name() == "BUTTON" {
-                            DOCUMENT.with(|document| {
-                                let parent = node.parent_node().unwrap();
-                                let new = c.to_node(&document);
-                                parent.insert_before(&new, Some(&node)).unwrap();
-                            });
-                            continue;
-                        } else {
-                            c.edit(&node);
-                            *node = node.next_sibling().unwrap();
-                        }
+                        c.edit(&node);
+                        *node = node.next_sibling().unwrap();
                     }
                     return;
                 }
@@ -534,24 +541,30 @@ fn check_siblings(children: &Vec<Rsx>, node: &mut Node) {
                 if n < l - 1 {
                     child.edit(&node);
                     while let Some(c) = children.next() {
-                        *node = node.next_sibling().unwrap();
-                        c.edit(&node);
+                        if let Some(sib) = node.next_sibling() {
+                            *node = sib;
+                            c.edit(&node);
+                        } else {
+                            c.edit(&node);
+                            while let Some(d) = children.next() {
+                                d.edit(&node);
+                            }
+                            return;
+                        }
                     }
                 }
                 return;
             };
         } else {
-            if !button && node.node_name() == "BUTTON" {
-                let parent = node.parent_node().unwrap();
-                parent.remove_child(&node).unwrap();
-                return;
-            }
             if let Some(s) = node.next_sibling() {
                 let parent = node.parent_node().unwrap();
-                parent.remove_child(&s).unwrap();
-                while let Some(sib) = node.next_sibling() {
-                    parent.remove_child(&sib).unwrap();
-                }
+                RECALLS.with(|r| {
+                    let mut recall = r.borrow_mut();
+                    remove_recall(&mut recall, &parent, &s);
+                    while let Some(sib) = node.next_sibling() {
+                        remove_recall(&mut recall, &parent, &sib);
+                    }
+                });
             }
             return;
         }
@@ -559,10 +572,37 @@ fn check_siblings(children: &Vec<Rsx>, node: &mut Node) {
     }
 }
 
-fn set_content(n: &Node, content: &str) {
-    if n.text_content().unwrap() != content {
-        n.set_text_content(Some(content));
+fn remove_recall(recalls: &mut HashMap<String, RecallData>, parent: &Node, child: &Node) {
+    if child.node_type() == Node::ELEMENT_NODE {
+        let el = child.dyn_ref::<Element>().unwrap();
+        let attrs = el.attributes();
+        if let Some(rid) = attrs.get_named_item("rid") {
+            recalls.remove(&rid.value());
+        }
     }
+    parent.remove_child(child).unwrap();
+}
+
+fn replace_recall(recalls: &mut HashMap<String, RecallData>, parent: &Node, child: &Node, new: &Node) {
+    if child.node_type() == Node::ELEMENT_NODE {
+        let el = child.dyn_ref::<Element>().unwrap();
+        let attrs = el.attributes();
+        if let Some(rid) = attrs.get_named_item("rid") {
+            recalls.remove(&rid.value());
+        }
+    }
+    parent.replace_child(new, child).unwrap();
+}
+
+fn set_content(node: &mut Node, content: &str) {
+    let text = Text::new_with_data(content).unwrap();
+    let parent = node.parent_node().unwrap();
+    RECALLS.with(|r| {
+        let mut recall = r.borrow_mut();
+        let text_node = text.dyn_into::<Node>().unwrap();
+        replace_recall(&mut recall, &parent, node, &text_node);
+        *node = text_node;
+    });
 }
 
 fn close_vnode(document: &Document, node: &Node) {
