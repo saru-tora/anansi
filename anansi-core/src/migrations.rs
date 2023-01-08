@@ -1,11 +1,9 @@
 use std::{str, fs, path::PathBuf};
 use std::collections::HashMap;
 use quote::quote;
-use syn::Type;
-use syn::Field;
+use syn::{Type, Field, Attribute, UseTree};
 use syn::Item::Struct;
 use syn::Fields::Named;
-use syn::Attribute;
 use anansi::raw_transact;
 use crate::db::{DbPool, DbType, unescape, DbRow};
 use crate::records::RecordField;
@@ -248,11 +246,50 @@ fn get_attrs(attrs: &Vec<Attribute>) -> HashMap<String, String> {
     hm
 }
 
+fn get_use_path(tree: &syn::UseTree, idents: &mut Vec<Vec<String>>) {
+    match tree {
+        UseTree::Path(use_path) => {
+            idents[0].push(use_path.ident.to_string());
+            get_use_path(&*use_path.tree, idents);
+        }
+        UseTree::Name(use_name) => {
+            idents[0].push(use_name.ident.to_string());
+        }
+        UseTree::Rename(_) => {}
+        UseTree::Glob(_) => {}
+        UseTree::Group(use_group) => {
+            for _ in 0..use_group.items.len() - 1 {
+                idents.push(vec![]);
+            }
+            for (ident, item) in idents.iter_mut().zip(use_group.items.iter()) {
+                let mut r = vec![];
+                r.push(vec![]);
+                get_use_path(item, &mut r);
+                ident.append(&mut r[0]);
+            }
+        }
+    }
+}
+
 pub fn process_syntax(db: &str, content: String, v: &mut Vec<(String, String, String)>) {
     let alter = false;
     let syntax = syn::parse_file(&content).expect("Unable to parse file");
+    let mut use_paths = vec![];
     for item in syntax.items {
         match item {
+            syn::Item::Use(item_use) => {
+                match item_use.tree {
+                    syn::UseTree::Path(use_path) => {
+                        let mut paths = vec![];
+                        paths.push(vec![]);
+                        get_use_path(&*use_path.tree, &mut paths);
+                        for path in paths {
+                            use_paths.push(path);
+                        }
+                    }
+                    _ => unimplemented!(),
+                }
+            }
             Struct(item) => {
                 let mut sql = String::new();
                 let name = item.ident.to_string().to_lowercase();
@@ -276,7 +313,7 @@ pub fn process_syntax(db: &str, content: String, v: &mut Vec<(String, String, St
                         let mut meta = Vec::new();
                         for field in named.named {
                             let fieldname = field.ident.as_ref().unwrap().to_string();
-                            if let Some(ty) = get_type(&fieldname, &field, &mut meta, db, &name) {
+                            if let Some(ty) = get_type(&fieldname, &field, &mut meta, db, &name, &use_paths) {
                                 sql.push_str(&format!("            (\n                \"{}\",\n                records::{}\n            ),\n", fieldname, ty));
                             }
                         }
@@ -298,7 +335,7 @@ pub fn process_syntax(db: &str, content: String, v: &mut Vec<(String, String, St
     }
 }
 
-fn get_type(fieldname: &String, field: &Field, meta: &mut Vec<Vec<String>>, db: &str, name: &str) -> Option<String> {
+fn get_type(fieldname: &String, field: &Field, meta: &mut Vec<Vec<String>>, db: &str, name: &str, use_paths: &Vec<Vec<String>>) -> Option<String> {
     let ty = &field.ty;
     Some(
         match ty {
@@ -331,12 +368,25 @@ fn get_type(fieldname: &String, field: &Field, meta: &mut Vec<Vec<String>>, db: 
                         let m: Vec<&str> = m.split(',').collect();
                         let m = m[0].trim().to_lowercase();
                         let parent: Vec<&str> = m.split("::").collect();
+                        let parent_name = parent.last().unwrap().trim().to_string();
                         let parent_app = if let Some(p) = attrs.get("app") {
                             p.to_string()
                         } else {
-                            format!("\"{}\"", db)
+                            let mut pa = None;
+                            for use_path in use_paths {
+                                let last = use_path.last().unwrap().to_lowercase();
+                                if last == parent_name {
+                                    let p = use_path[use_path.len() - 3].to_lowercase();
+                                    pa = Some(p);
+                                    break;
+                                }
+                            }
+                            if let Some(pa) = pa {
+                                format!("\"{pa}\"")
+                            } else {
+                                format!("\"{}\"", db)
+                            }
                         };
-                        let parent_name = parent.last().unwrap().trim().to_string();
                         s.push_str(&format!(".foreign_key({}, \"{}\", \"id\")\n                    .index(\"{}_{}\", \"{}\")", parent_app, parent_name, db, name, fieldname));
                         s
                     }
