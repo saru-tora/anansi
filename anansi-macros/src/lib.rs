@@ -72,7 +72,7 @@ pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
             }
             impl<'a> #recordset<'a> {
                 pub fn new(&self, #(#mtv),*) -> #name {
-                    #name::new(#(#mv),*)
+                    #name::_new(#(#mv),*)
                 }
                 pub fn order_by(&self, o: anansi::db::OrderByArg<#name>) -> anansi::db::OrderBy<#name> {
                     use anansi::records::Record;
@@ -134,7 +134,7 @@ pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
                 Ok(mv)
             }
             fn order_by(w: anansi::db::OrderByArg<Self>) -> anansi::db::OrderBy<Self> {
-                anansi::db::OrderBy::from(anansi::db::Builder::select(&[#(#members),*], #table).order_by().push_str(&w.builder().val()))
+                anansi::db::OrderBy::from(anansi::db::Builder::select(&[#(#members),*], #table).order_by().append(w.builder()))
             }
             fn table_name() -> String {
                 #table_name
@@ -169,7 +169,7 @@ pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
             }
         }
         impl #name {
-            pub fn new(#(#params)*) -> Self {
+            pub fn _new(#(#params)*) -> Self {
                 Self {#(#values),*}
             }
         }
@@ -233,6 +233,15 @@ fn get_names(data: &Data) -> Vec<Ident> {
 
 #[proc_macro_derive(Properties)]
 pub fn properties_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    builder(true, input)
+}
+
+#[proc_macro_derive(Builder)]
+pub fn builder_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    builder(false, input)
+}
+
+fn builder(properties: bool, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = input.ident;
     let mut fv = vec![];
@@ -245,24 +254,39 @@ pub fn properties_macro_derive(input: proc_macro::TokenStream) -> proc_macro::To
     let mut ids = vec![];
     let mut n = 0;
     let mut field_structs = vec![];
+    let mut options = vec![];
+    let mut opt_ids = vec![];
+    let mut id_field = quote!{};
     match &input.data {
         syn::Data::Struct(data_struct) => {
             for named in &data_struct.fields {
-                let id = named.ident.as_ref().unwrap();
                 let ty = &named.ty;
-                let gty = format_ident!("T{}", n.to_string());
-                let f = format_ident!("{}", quote!{#id}.to_string().to_uppercase());
-                let no = format_ident!("No{}", f);
-                n += 1;
-                field_structs.push(f.clone());
-                no_ids.push(no.clone());
-                gtv.push(quote!{#gty});
-                tv.push(quote!{#ty});
-                fv.push(quote!{#id: #gty});
-                no_init.push(quote!{#id: #no});
-                ids.push(id.clone());
-                nov.push(quote!{pub struct #f(#ty); pub struct #no;});
-                data.push((id, gty, no, ty, f));
+                let ty_quote = quote!{#ty};
+                let id = named.ident.as_ref().unwrap();
+                if ty_quote.to_string().starts_with("Option") {
+                    options.push((id, ty));
+                    no_init.push(quote!{#id: None});
+                    fv.push(quote!{#id: #ty});
+                    opt_ids.push(id.clone());
+                } else {
+                    if id == "id" {
+                        id_field = quote! {id: anansi::records::generate_id(),};
+                    } else {
+                        let gen_ty = format_ident!("T{}", n.to_string());
+                        let f = format_ident!("{}{}", name, quote!{#id}.to_string().replace("_", "").to_uppercase());
+                        let no = format_ident!("No{}", f);
+                        n += 1;
+                        field_structs.push(f.clone());
+                        no_ids.push(no.clone());
+                        gtv.push(quote!{#gen_ty});
+                        tv.push(ty_quote);
+                        fv.push(quote!{#id: #gen_ty});
+                        no_init.push(quote!{#id: #no});
+                        ids.push(id.clone());
+                        nov.push(quote!{pub struct #f(#ty); pub struct #no;});
+                        data.push((id, gen_ty, no, ty, f));
+                    }
+                }
             }
         }
         _ => unimplemented!(),
@@ -271,35 +295,118 @@ pub fn properties_macro_derive(input: proc_macro::TokenStream) -> proc_macro::To
     let mut n = 0;
     let l = data.len();
     let mut methods = vec![];
-    for (id, gty, no, ty, f) in data {
+    for (id, _gty, no, ty, f) in data {
         let mut t1 = vec![];
         let mut t2 = vec![];
         let mut t3 = vec![];
         let mut sv = vec![];
         for i in 0..l {
             if i != n {
-                t1.push(&gty);
-                t2.push(&gty);
-                t3.push(&gty);
+                let gty = format_ident!("T{}", i);
+                t1.push(gty.clone());
+                t2.push(gty.clone());
+                t3.push(gty);
                 sv.push(&ids[i]);
             } else {
-                t2.push(&no);
-                t3.push(&f);
+                t2.push(no.clone());
+                t3.push(f.clone());
             }
         }
         n += 1;
-        methods.push(quote! {
-            impl<#(#t1),*> #builder<#(#t2),*> {
-                pub fn #id(self, #id: impl Into<#ty>) -> #builder<#(#t3),*> {
-                    let Self {#(#sv,)* ..} = self;
-                    #builder {
-                        #id: #f(#id.into()),
-                        #(#sv),*
+        let q = if properties {
+            quote! {
+                impl<#(#t1),*> #builder<#(#t2),*> {
+                    pub fn #id(self, #id: impl Into<#ty>) -> #builder<#(#t3),*> {
+                        let Self {#(#sv,)* #(#opt_ids,)* ..} = self;
+                        #builder {
+                            #id: #f(#id.into()),
+                            #(#sv,)*
+                            #(#opt_ids,)*
+                        }
                     }
                 }
             }
-        });
+        } else {
+            quote! {
+                impl<#(#t1),*> #builder<#(#t2),*> {
+                    pub fn #id(self, #id: #ty) -> #builder<#(#t3),*> {
+                        let Self {#(#sv,)* #(#opt_ids,)* ..} = self;
+                        #builder {
+                            #id: #f(#id),
+                            #(#sv,)*
+                            #(#opt_ids,)*
+                        }
+                    }
+                }
+            }
+        };
+        methods.push(q);
     }
+    
+    let opts = if options.is_empty() {
+        vec![]
+    } else {
+        let mut gen_tys = vec![];
+        let mut option_methods = vec![];
+        for i in 0..methods.len() {
+            gen_tys.push(format_ident!("T{}", i));
+        }
+        for (id, ty) in options {
+            option_methods.push(quote! {
+                impl<#(#gen_tys),*> #builder<#(#gen_tys),*> {
+                    pub fn #id(mut self, #id: #ty) -> Self {
+                        self.#id = #id;
+                        self
+                    }
+                }
+            });
+        }
+        option_methods
+    };
+
+    let last = if properties {
+        quote! {
+            #(#opts)*
+            impl #builder<#(#field_structs),*> {
+                pub fn build(self) -> #name {
+                    let Self {#(#ids),*} = self;
+                    #name {
+                        #(#ids: #ids.0),*
+                    }
+                }
+            }
+        }
+    } else {
+        let q = quote! {
+            #(#opts)*
+            impl #builder<#(#field_structs),*> {
+                pub async fn saved<B: anansi::web::BaseRequest>(self, req: &B) -> anansi::web::Result<#name> {
+                    use anansi::records::Record;
+                    let Self {#(#ids),*, #(#opt_ids),*} = self;
+                    let model = #name {
+                        #id_field
+                        #(#ids: #ids.0),*,
+                        #(#opt_ids),*
+                    };
+                    model.save(req).await?;
+                    Ok(model)
+                }
+                pub async fn raw_saved<D: anansi::db::DbPool>(self, pool: &D) -> anansi::web::Result<#name> {
+                    use anansi::records::Record;
+                    let Self {#(#ids),*, #(#opt_ids),*} = self;
+                    let model = #name {
+                        #id_field
+                        #(#ids: #ids.0),*,
+                        #(#opt_ids),*
+                    };
+                    model.raw_save(pool).await?;
+                    Ok(model)
+                }
+            }
+        };
+        q
+    };
+
     let expanded = quote! {
         #(#nov)*
 
@@ -315,17 +422,11 @@ pub fn properties_macro_derive(input: proc_macro::TokenStream) -> proc_macro::To
             }
         }
         
-        impl #builder<#(#field_structs),*> {
-            pub fn build(self) -> #name {
-                let Self {#(#ids),*} = self;
-                #name {
-                    #(#ids: #ids.0),*
-                }
-            }
-        }
+        #last
     };
+
     expanded.into()
-} 
+}
 
 #[proc_macro_derive(GetData)]
 pub fn get_data_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -394,7 +495,7 @@ pub fn relate_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
         impl<R: anansi::web::BaseRequest> anansi::records::Relate<R> for #name {
             async fn on_save(&self, req: &R) -> anansi::web::Result<()> {
                 use anansi::records::Record;
-                #record_tuple::new(anansi::records::Text::from("auth_user".to_string()), req.user().pk(), None, self.pk(), anansi::records::Text::from("owner".to_string())).save(req).await?;
+                #record_tuple::_new(anansi::records::Text::from("auth_user".to_string()), req.user().pk(), None, self.pk(), anansi::records::Text::from("owner".to_string())).save(req).await?;
                 Ok(())
             }
             async fn on_delete(&self, req: &R) -> anansi::web::Result<()> {
@@ -839,7 +940,7 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                         let name = &f.ident;
                         let member = name.as_ref().unwrap().to_string();
                         let m2 = member.clone();
-                        let column = quote! {&format!("{}_{}.{}", super::APP_NAME, #fname, #member)};
+                        let column = quote! {format!("{}_{}.{}", super::APP_NAME, #fname, #member)};
                         let lowcolumn = quote! {&format!("{}_{}.{}", super::super::APP_NAME, #fname, #member)};
                         let attrs = get_attrs(&f.attrs);
                         let mut fty = f.ty.clone();
@@ -908,7 +1009,7 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                                     },
                                     "BigInt" => {
                                         let q = quote! {pub fn #name() -> anansi::db::Column<#mname, anansi::records::BigInt> {anansi::db::Column::new(#lowcolumn)}};
-                                        let q2 = quote! {pub fn #name(self) -> anansi::db::Column<F, anansi::records::BigInt> {anansi::db::Column::from(self.b.push_str(#column))}};
+                                        let q2 = quote! {pub fn #name(self) -> anansi::db::Column<F, anansi::records::BigInt> {anansi::db::Column::from(self.b.push_val(anansi::db::Clause::Column(#column)))}};
                                         fv.push(q);
                                         if is_pk {
                                             let q3 = quote! {pub fn pk() -> anansi::db::Column<#mname, anansi::records::BigInt> {anansi::db::Column::new(#lowcolumn)}};
@@ -923,7 +1024,7 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                                     "ForeignKey" => {
                                         if pkd.ty == "BigInt" {
                                             let q = quote! {pub fn #name() -> anansi::db::Column<#mname, anansi::records::BigInt> {anansi::db::Column::new(#lowcolumn)}};
-                                            let q2 = quote! {pub fn #name(self) -> anansi::db::Column<F, anansi::records::BigInt> {anansi::db::Column::from(self.b.push_str(#column))}};
+                                            let q2 = quote! {pub fn #name(self) -> anansi::db::Column<F, anansi::records::BigInt> {anansi::db::Column::from(self.b.push_val(anansi::db::Clause::Column(#column)))}};
 
                                             fv.push(q);
                                             fv2.push(q2);
@@ -956,7 +1057,7 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                                     },
                                     "DateTime" => {
                                         let q = quote! {pub fn #name<'a>() -> anansi::db::Column<#mname, anansi::records::DateTime> {anansi::db::Column::new(#lowcolumn)}};
-                                        let q2 = quote! {pub fn #name<'a>(self) -> anansi::db::Column<F, anansi::records::DateTime> {anansi::db::Column::from(self.b.push_str(#column))}};
+                                        let q2 = quote! {pub fn #name<'a>(self) -> anansi::db::Column<F, anansi::records::DateTime> {anansi::db::Column::from(self.b.push_val(anansi::db::Clause::Column(#column)))}};
                                         fv.push(q);
                                         fv2.push(q2);
                                         members.push(member);
@@ -966,7 +1067,7 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                                     },
                                     "Boolean" => {
                                         let q = quote! {pub fn #name() -> anansi::db::Column<#mname, anansi::records::Boolean> {anansi::db::Column::new(#lowcolumn)}};
-                                        let q2 = quote! {pub fn #name(self) -> anansi::db::Column<F, anansi::records::Boolean> {anansi::db::Column::from(self.b.push_str(#column))}};
+                                        let q2 = quote! {pub fn #name(self) -> anansi::db::Column<F, anansi::records::Boolean> {anansi::db::Column::from(self.b.push_val(anansi::db::Clause::Column(#column)))}};
                                         fv.push(q);
                                         fv2.push(q2);
                                         members.push(member);
@@ -976,7 +1077,7 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                                     },
                                     "VarChar" => {
                                         let q = quote! {pub fn #name<'a>() -> anansi::db::Column<#mname, anansi::records::#fty> {anansi::db::Column::new(#lowcolumn)}};
-                                        let q2 = quote! {pub fn #name<'a>(self) -> anansi::db::Column<F, anansi::records::#fty> {anansi::db::Column::from(self.b.push_str(#column))}};
+                                        let q2 = quote! {pub fn #name<'a>(self) -> anansi::db::Column<F, anansi::records::#fty> {anansi::db::Column::from(self.b.push_val(anansi::db::Clause::Column(#column)))}};
                                         fv.push(q);
                                         fv2.push(q2);
                                         members.push(member);
@@ -1000,7 +1101,7 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                                     },
                                     "Text" => {
                                         let q = quote! {pub fn #name<'a>() -> anansi::db::Column<#mname, anansi::records::Text> {anansi::db::Column::new(#lowcolumn)}};
-                                        let q2 = quote! {pub fn #name<'a>(self) -> anansi::db::Column<F, anansi::records::Text> {anansi::db::Column::from(self.b.push_str(#column))}};
+                                        let q2 = quote! {pub fn #name<'a>(self) -> anansi::db::Column<F, anansi::records::Text> {anansi::db::Column::from(self.b.push_val(anansi::db::Clause::Column(#column)))}};
                                         fv.push(q);
                                         fv2.push(q2);
                                         members.push(member);
@@ -1413,25 +1514,36 @@ pub fn store(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream)
     let s = parse_macro_input!(input as syn::ItemStruct);
  
     let fields = match &s.fields {
-        syn::Fields::Named(fields_named) => &fields_named.named,
+        syn::Fields::Named(fields_named) => {
+            &fields_named.named
+        }
         _ => unimplemented!(),
     };
     let state = &s.ident;
     let _state = format_ident!("_{}", s.ident);
     let vis = &s.vis;
     let mut nfields = vec![];
-    let mut init = vec![];
-    let mut inner = vec![];
     let mut names = vec![];
+    let mut methods = vec![];
     let mut n: i64 = 1;
     let attrs = &s.attrs;
     for field in fields {
         let name = field.ident.as_ref().unwrap();
+        let ty = &field.ty;
         let upper = format_ident!("{}", name.to_string().to_uppercase());
+        let name_mut = format_ident!("{}_mut", name);
+        methods.push(quote! {
+            pub fn #name(&mut self) -> &#ty {
+                self._proxy.set(Self::#upper);
+                &self._state.#name
+            }
+            pub fn #name_mut(&mut self) -> &mut #ty {
+                self._proxy._invalid = true;
+                &mut self._state.#name
+            }
+        });
         nfields.push(quote! {#vis const #upper: i64 = #n;});
         n *= 2;
-        init.push(quote! {#name: state.#name});
-        inner.push(quote! {#name: self.#name});
         names.push(name);
     }
     let c = quote! {
@@ -1442,20 +1554,21 @@ pub fn store(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream)
 
         #vis struct #state {
             _proxy: Proxy,
-            #fields
+            _state: #_state
         }
 
         impl #state {
             #(#nfields)*
+            #(#methods)*
             #vis fn new(v: Value, subs: Vec<Sub>) -> Self {
                 let state: #_state = serde_json::from_value(v).unwrap();
-                Self {_proxy: Proxy::new(subs), #(#init),*}
+                Self {_proxy: Proxy::new(subs), _state: state}
             }
             #vis fn store(#fields) -> Self {
-                Self {_proxy: Proxy::new(vec![]), #(#names),*}
+                Self {_proxy: Proxy::new(vec![]), _state: #_state {#(#names),*}}
             }
             #vis fn into_inner(self) -> #_state {
-                #_state {#(#inner),*}
+                self._state
             }
         }
     };
@@ -1516,7 +1629,7 @@ pub fn record(metadata: proc_macro::TokenStream, input: proc_macro::TokenStream)
 
             let lower = format_ident!("{}", record_tuple.to_string().to_lowercase());
             let tuple = quote! {
-                #[derive(anansi::Record)]
+                #[derive(anansi::Record, anansi::Builder)]
                 pub struct #record_tuple {
                     #[field(primary_key = "true", default_fn = "anansi::records::generate_id")]
                     id: anansi::records::BigInt,
@@ -1554,7 +1667,7 @@ pub fn record(metadata: proc_macro::TokenStream, input: proc_macro::TokenStream)
             };
             
             let q = quote! {
-                #[derive(anansi::Record)]
+                #[derive(anansi::Record, anansi::Builder)]
                 #ast
                 #tuple
                 #table

@@ -7,8 +7,9 @@ use sqlx::{Type, Database};
 use sqlx::sqlite::Sqlite;
 
 use crate::server::Settings;
+use crate::records::Record;
 use crate::web::{Result, BASE_DIR};
-use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, invalid};
+use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt, invalid};
 
 #[derive(Clone)]
 pub struct SqliteDb;
@@ -157,6 +158,9 @@ impl DbPool for SqliteDbPool {
         sqlx::query(INIT_STR).execute(&pool).await?;
         let pool = Self {0: pool};
         Ok(pool)
+    }
+    fn to_stmt<R: Record>(val: Builder<R>) -> String {
+        sql_stmt(val)
     }
 }
 

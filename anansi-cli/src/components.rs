@@ -159,11 +159,11 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
                     let var = format_ident!("{}", var.trim());
                     comp = Some(var.clone());
                     let e: syn::Expr = syn::parse_str(&expr).unwrap();
-                    init.push(quote!{let #var = #e;});
+                    init.push(quote!{let mut #var = #e;});
                     restart_init.push(quote!{let mut #var = #e;});
                 } else {
                     let parsed: syn::Expr = syn::parse_str(&expr).unwrap();
-                    let mut add_proxy = AddProxy::new(comp.clone(), component.clone());
+                    let mut add_proxy = AddProxy::new();
                     let mut members = vec![];
 
                     let p = match &parsed {
@@ -176,7 +176,6 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
                                     let t = add_proxy.proxy(&block);
 
                                     let name = format_ident!("{}_{}", component.to_string().to_lowercase(), var);
-                                    let _cb = quote!{#cbn => #name(&mut #comp, &#props, &_sender),};
                                     let ns = name.to_string();
                                     start.push(quote! {(#ns, #comp_mount, #cbn)});
                                     cbn += 1;
@@ -186,7 +185,6 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
                                             #(#t)*
                                         }
                                     };
-                                    resources.append(&mut add_proxy.callbacks);
                                     callbacks.push(q);
                                     continue;
                                 }
@@ -217,7 +215,7 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
 
                                     callbacks.push(quote! {
                                         fn #name(#comp: &mut #component, #props: &#properties, _sender: &async_channel::Sender<CbCmd>) {
-                                            #comp._proxy._dirty = 0;
+                                            #comp._proxy._invalid = true;
                                             let req = {
                                                 #block
                                             };
@@ -299,7 +297,7 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
                 resource_calls.append(&mut c_parser.resource_calls);
                 res_fn.append(&mut c_parser.res_fn);
                 let parsed: syn::Expr = syn::parse_str(&c_parsed).unwrap();
-                let mut add_proxy = AddProxy::new(comp.clone(), component.clone());
+                let mut add_proxy = AddProxy::new();
                 let mut members = vec![];
                 rsx = add_proxy.check_expr(&parsed, &mut members);
                 add_proxy.vars.insert(props.clone());
@@ -395,10 +393,10 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
                 #comp._proxy.stop_proxy(_subs);
             },
             quote! {
-                #comp._proxy._dirty = 0;
+                #comp._proxy._invalid = true;
             },
             quote! {
-                if #comp._proxy._dirty > -1
+                if #comp._proxy._invalid
             }
         )
     } else {
@@ -479,253 +477,15 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
 }
 
 struct AddProxy {
-    comp: Option<Ident>,
-    component: TokenStream,
-    callbacks: Vec<TokenStream>,
     vars: HashSet<Ident>,
 }
 
 impl AddProxy {
-    fn new(comp: Option<Ident>, component: TokenStream) -> Self {
-        Self {comp, component, callbacks: vec![], vars: HashSet::new()}
+    fn new() -> Self {
+        Self {vars: HashSet::new()}
     }
-    fn get_members(&self, members: &mut Vec<Ident>) -> Vec<TokenStream> {
-        let mut v = vec![];
-        for member in members {
-            let name = format_ident!("{}", member.to_string().to_uppercase());
-            let comp = self.comp.as_ref().unwrap();
-            let component = &self.component;
-            v.push(quote! {#comp._proxy.set(#component::#name);});
-        }
-        v
-    }
-    fn check_pat(&self, pat: &syn::Pat, _members: &mut Vec<Ident>) -> TokenStream {
-        match pat {
-            syn::Pat::Ident(pat_ident) => {
-                quote! {#pat_ident}
-            }
-            syn::Pat::Path(pat_path) => {
-                if pat_path.path.segments.first().unwrap().ident != *self.comp.as_ref().unwrap() {
-                    quote! {#pat_path}
-                } else {
-                    unimplemented!();
-                }
-            }
-            syn::Pat::Range(range) => {
-                quote! {#range}
-            }
-            _ => unimplemented!(),
-        }
-    }
-    fn check_expr(&mut self, expr: &syn::Expr, members: &mut Vec<Ident>) -> TokenStream {
-        match expr {
-            Assign(assign) => {
-                self.check_expr(&*assign.left, members);
-                let mv = self.get_members(members);
-                members.clear();
-                let cv = self.check_expr(&*assign.right, members);
-                let left = &assign.left;
-                let q = quote! {#(#mv)* #left = #cv};
-                q
-            }
-            AssignOp(assign) => {
-                let op = assign.op;
-                self.check_expr(&*assign.left, members);
-                let mv = self.get_members(members);
-                let cv = self.check_expr(&*assign.right, members);
-                members.clear();
-                let left = &assign.left;
-                let q = quote! {#(#mv)* #left #op #cv};
-                q
-            }
-            Await(a) => {
-                let base = self.check_expr(&*a.base, members);
-                quote! {#base.await}
-            }
-            Array(array) => {
-                let mut av = vec![];
-                for elem in &array.elems {
-                    av.push(self.check_expr(&elem, members));
-                }
-                quote! {[#(#av),*]}
-            }
-            Binary(binary) => {
-                let left = self.check_expr(&*binary.left, members);
-                let right = self.check_expr(&*binary.right, members);
-                let op = binary.op;
-                quote! {#left #op #right}
-            }
-            Block(expr_block) => {
-                let t = self.proxy(&expr_block.block);
-                quote! {{#(#t)*}}
-            }
-            Call(call) => {
-                let mut av = vec![];
-                for arg in &call.args {
-                    av.push(self.check_expr(&arg, members));
-                }
-                let func = &call.func;
-                quote! {#func(#(#av)*)}
-            }
-            Cast(cast) => {
-                let e = self.check_expr(&*cast.expr, members);
-                let ty = &cast.ty;
-                quote! {#e as #ty}
-            }
-            ForLoop(for_loop) => {
-                let pat = self.check_pat(&for_loop.pat, members);
-                let expr = self.check_expr(&*for_loop.expr, members);
-                let body = self.proxy(&for_loop.body);
-                quote! {for #pat in #expr {#(#body)*}}
-            }
-            Field(expr_field) => {
-                match &*expr_field.base {
-                    syn::Expr::Path(expr_path) => {
-                        if expr_path.path.segments.first().unwrap().ident == *self.comp.as_ref().unwrap() {
-                            match &expr_field.member {
-                                syn::Member::Named(ident) => {
-                                    members.push(ident.clone());
-                                    let mv = self.get_members(members);
-                                    let q = quote! {{#(#mv)* #expr_field}};
-                                    q
-                                }
-                                _ => unimplemented!(),
-                            }
-                        } else {
-                            quote! {#expr_field}
-                        }
-                    }
-                    _ => unimplemented!(),
-                }
-            }
-            If(expr_if) => {
-                let cond = self.check_expr(&*expr_if.cond, members);
-                let b = self.proxy(&expr_if.then_branch);
-                let q_if = quote! {if #cond {#(#b)*}};
-                let q_else = if let Some((_, else_branch)) = &expr_if.else_branch {
-                    let e = self.check_expr(&*else_branch, members);
-                    quote! {else {#e}}
-                } else {
-                    quote! {}
-                };
-                quote! {#q_if #q_else}
-            }
-            Index(expr_index) => {
-                let expr = self.check_expr(&*expr_index.expr, members);
-                let index = self.check_expr(&*expr_index.index, members);
-                quote! {#expr[#index]}
-            }
-            Lit(lit) => {
-                quote! {#lit}
-            }
-            Let(expr_let) => {
-                let e = self.check_expr(&*expr_let.expr, members);
-                let pat = &expr_let.pat;
-                quote! {let #pat = #e}
-            }
-            Macro(expr_macro) => {
-                match expr_macro.mac.path.segments.last().unwrap().ident.to_string().as_str() {
-                    _ => quote! {#expr_macro}
-                }
-            }
-            Match(expr_match) => {
-                let mut av = vec![];
-                let mut members = vec![];
-                for arm in &expr_match.arms {
-                    let a = self.check_expr(&*arm.body, &mut members);
-                    let pat = &arm.pat;
-                    av.push(quote! {#pat => {#a}});
-                }
-                let expr = &expr_match.expr;
-                quote! {match #expr {#(#av)*}}
-            }
-            MethodCall(call) => {
-                let receiver = &call.receiver;
-                let method = &call.method;
-                let turbofish = if let Some(t) = &call.turbofish {
-                    quote! {#t}
-                } else {
-                    quote! {}
-                };
-                self.check_expr(&*call.receiver, members);
-                let mv = self.get_members(members);
-                members.clear();
-                let mut av = vec![];
-                for arg in &call.args {
-                    let e = self.check_expr(&arg, members);
-                    av.push(e);
-                }
-                if mv.is_empty() {
-                    quote! {#receiver.#method #turbofish(#(#av),*)}
-                } else {
-                    quote! {{#(#mv)* #receiver.#method #turbofish(#(#av),*)}}
-                }
-            }
-            Paren(paren) => {
-                let e = self.check_expr(&*paren.expr, members);
-                quote!{#e}
-            }
-            syn::Expr::Path(expr_path) => {
-                if self.comp.is_none() || expr_path.path.segments.first().unwrap().ident != *self.comp.as_ref().unwrap() {
-                    quote! {#expr_path}
-                } else {
-                    unimplemented!();
-                }
-            }
-            Range(expr_range) => {
-                quote!{#expr_range}
-            }
-            Reference(reference) => {
-                let r = self.check_expr(&*reference.expr, members);
-                let mutability = if reference.mutability.is_some() {
-                    quote! {mut}
-                } else {
-                    quote! {}
-                };
-                let q = if members.is_empty() {
-                    quote! {&#mutability #r}
-                } else {
-                    let e = &reference.expr;
-                    let mem = self.get_members(members);
-                    quote! {{#(#mem)* &#mutability #e}}
-                };
-                q
-            }
-            Return(expr_return) => {
-                let t = if let Some(expr) = &expr_return.expr {
-                    let q = self.check_expr(&*expr, members);
-                    quote!{#q}
-                } else {
-                    quote! {}
-                };
-                quote! {return {#t}}
-            }
-            syn::Expr::Struct(expr_struct) => {
-                let mut fv = vec![];
-                for field in &expr_struct.fields {
-                    let member = &field.member;
-                    let e = self.check_expr(&field.expr, members);
-                    fv.push(quote!{#member: #e})
-                }
-                let path = &expr_struct.path;
-                quote! {
-                    #path {#(#fv),*}
-                }
-            }
-            Tuple(tuple) => {
-                let mut ev = vec![];
-                for elem in &tuple.elems {
-                    ev.push(self.check_expr(&elem, members))
-                }
-                quote! {(#(#ev),*)}
-            }
-            Unary(unary) => {
-                let expr = self.check_expr(&*unary.expr, members);
-                let op = unary.op;
-                quote! {#op {#expr}}
-            }
-            _ => panic!("problem parsing `{}`", quote!{#expr}), 
-        }
+    fn check_expr(&mut self, expr: &syn::Expr, _members: &mut Vec<Ident>) -> TokenStream {
+        quote! {#expr}
     }
     fn proxy(&mut self, b: &Block) -> Vec<TokenStream> {
         let mut qv = vec![];

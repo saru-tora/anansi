@@ -99,9 +99,14 @@ impl<B: BaseRequest> ToRecord<B> for UserNew {
         self.check_field_errors()?;
         let password = hash_password(&data.password)?;
         let now = DateTime::now();
-        let user = User::new(clean_name, data.email, password, None, now, now);
-        match user.save(req).await {
-            Ok(_) => Ok(user),
+        let user = User::new()
+            .username(clean_name)
+            .email(data.email)
+            .password(password)
+            .last_login(now)
+            .date_joined(now);
+        match user.saved(req).await {
+            Ok(u) => Ok(u),
             Err(_) => err_box!(FormError::new("Problem adding user.")),
         }
     }
@@ -122,9 +127,10 @@ pub struct GroupForm {
 #[async_trait]
 impl<B: Request> ToRecord<B> for GroupForm {
     async fn on_post(&mut self, data: GroupFormData, req: &B) -> Result<Group> {
-        let group = Group::new(data.groupname);
-        match group.save(req).await {
-            Ok(_) => Ok(group),
+        let group = Group::new()
+            .groupname(data.groupname);
+        match group.saved(req).await {
+            Ok(g) => Ok(g),
             Err(_) => err_box!(FormError::new("Problem adding group.")),
         }
     }
@@ -142,8 +148,12 @@ impl<B: Request> ToRecord<B> for FilterForm {
     async fn on_post(&mut self, data: FilterFormData, req: &B) -> Result<Filter> {
         let table_name = req.params().get("table_name")?.parse()?;
         let raw_query = req.params().get("raw_query")?.parse()?;
-        let filter = Filter::new(table_name, data.filter_name, data.filter, raw_query);
-        filter.save(req).await?;
+        let filter = Filter::new()
+            .table_name(table_name)
+            .filter_name(data.filter_name)
+            .filter(data.filter)
+            .raw_query(raw_query)
+            .saved(req).await?;
         Ok(filter)
     }
 }

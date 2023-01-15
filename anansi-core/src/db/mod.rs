@@ -84,6 +84,7 @@ pub trait DbPool: Clone + Send + Sync + DbType {
     async fn raw_fetch_all(&self, val: &str) -> Result<Self::SqlRowVec>;
     async fn raw_execute(&self, val: &str) -> Result<()>;
     async fn test() -> Result<Self> where Self: Sized;
+    fn to_stmt<R: Record>(val: Builder<R>) -> String;
     fn now() -> &'static str;
 }
 
@@ -246,105 +247,291 @@ struct Statement<S: Record> {
 }
 
 #[derive(Debug)]
-pub struct Builder<B: Record> {
-    start: String,
-    join: String,
-    val: String,
-    m: PhantomData<B>,
+pub struct Builder<R: Record> {
+    start: Vec<Clause<R>>,
+    join: Vec<Join>,
+    val: Vec<Clause<R>>
 }
 
-impl<B: Record> Clone for Builder<B> {
+impl<R: Record> Clone for Builder<R> {
     fn clone(&self) -> Self {
-        Self {start: self.start.clone(), join: self.join.clone(), val: self.val.clone(), m: PhantomData.clone()}
+        Self {start: self.start.clone(), join: self.join.clone(), val: self.val.clone()}
     }
+}
+
+#[derive(Debug)]
+pub enum Clause<R: Record> {
+    _M(PhantomData<R>),
+    Count(String),
+    Select(Vec<String>),
+    From(String),
+    Insert(String),
+    Columns(Vec<String>),
+    Delete(String),
+    Update(String),
+    And(Vec<Clause<R>>),
+    Or(Vec<Clause<R>>),
+    Comma,
+    Whose,
+    Column(String),
+    OrderBy,
+    Limit(u32),
+    Offset(u32),
+    Contains(String),
+    Lower(Vec<Clause<R>>),
+    LowerString(String),
+    Like(String),
+    LikeLower(String),
+    Eq(String),
+    Neq(String),
+    Gt(String),
+    Lt(String),
+    Gte(String),
+    Lte(String),
+    In(Vec<String>),
+    Asc,
+    Desc,
+    Case(Vec<Clause<R>>),
+    When(String),
+    Then(String),
+    End,
+    Set(String),
+    Where(String),
+    Value(String),
+    Close,
+    CloseInsert,
+    Raw(String),
+}
+    
+impl<R: Record> Clone for Clause<R> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::_M(p) => Self::_M(p.clone()),
+            Self::Count(s) => Self::Count(s.clone()),
+            Self::Select(v) => Self::Select(v.clone()),
+            Self::From(s) => Self::From(s.clone()),
+            Self::Insert(s) => Self::Insert(s.clone()),
+            Self::Columns(v) => Self::Columns(v.clone()),
+            Self::Delete(s) => Self::Delete(s.clone()),
+            Self::Update(s) => Self::Update(s.clone()),
+            Self::And(v) => Self::And(v.clone()),
+            Self::Or(v) => Self::Or(v.clone()),
+            Self::Comma => Self::Comma,
+            Self::Whose => Self::Whose,
+            Self::Column(s) => Self::Column(s.clone()),
+            Self::OrderBy => Self::OrderBy,
+            Self::Limit(u) => Self::Limit(*u),
+            Self::Offset(u) => Self::Offset(*u),
+            Self::Contains(s) => Self::Contains(s.clone()),
+            Self::Lower(v) => Self::Lower(v.clone()),
+            Self::LowerString(s) => Self::LowerString(s.clone()),
+            Self::Like(s) => Self::Like(s.clone()),
+            Self::LikeLower(s) => Self::LikeLower(s.clone()),
+            Self::Eq(s) => Self::Eq(s.clone()),
+            Self::Neq(s) => Self::Neq(s.clone()),
+            Self::Gt(s) => Self::Gt(s.clone()),
+            Self::Lt(s) => Self::Lt(s.clone()),
+            Self::Gte(s) => Self::Gte(s.clone()),
+            Self::Lte(s) => Self::Lte(s.clone()),
+            Self::In(v) => Self::In(v.clone()),
+            Self::Asc => Self::Asc,
+            Self::Desc => Self::Desc,
+            Self::Case(v) => Self::Case(v.clone()),
+            Self::When(s) => Self::When(s.clone()),
+            Self::Then(s) => Self::Then(s.clone()),
+            Self::End => Self::End,
+            Self::Set(s) => Self::Set(s.clone()),
+            Self::Where(s) => Self::Where(s.clone()),
+            Self::Value(s) => Self::Value(s.clone()),
+            Self::Close => Self::Close,
+            Self::CloseInsert => Self::CloseInsert,
+            Self::Raw(s) => Self::Raw(s.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Join {
+    pub t1: String,
+    pub t2: String,
+    pub c: String,
+    pub d: String,
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub fn sql_stmt<R: Record>(builder: Builder<R>) -> String {
+    let mut s = String::new();
+    s.push_str(&mut clause_stmt(builder.start));
+    for j in builder.join {
+        s.push_str(&format!(" INNER JOIN {} ON {1}.{2} = {0}.{3}", j.t1, j.t2, j.c, j.d));
+    }
+    s.push_str(&mut clause_stmt(builder.val));
+    s
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub fn clause_stmt<R: Record>(clauses: Vec<Clause<R>>) -> String {
+    let mut stmt = String::new();
+    let mut setn = 0;
+    let mut valn = 0;
+    for clause in clauses {
+        let s = match clause {
+            Clause::_M(_) => unimplemented!(),
+            Clause::Count(s) => format!("SELECT COUNT(*) FROM {}", s),
+            Clause::Select(columns) => {
+                let mut select = format!("SELECT {}", columns[0]);
+                for column in &columns[1..] {
+                    select.push_str(&format!(", {}", column));
+                }
+                select
+            }
+            Clause::From(s) => format!(" FROM {s}"),
+            Clause::Insert(s) => format!("INSERT INTO {s}"),
+            Clause::Columns(v) => {
+                let mut columns = format!("({}", v[0]);
+                for col in &v[1..] {
+                    columns.push_str(&format!(", {}", col));
+                }
+                columns.push_str(") VALUES (");
+                columns
+            }
+            Clause::Delete(s) => format!("DELETE FROM {s}"),
+            Clause::Update(s) => format!("UPDATE {} SET", s),
+            Clause::And(v) => format!(" AND {}", clause_stmt(v)),
+            Clause::Or(v) => format!(" OR {}", clause_stmt(v)),
+            Clause::Comma => " , ".to_string(),
+            Clause::Whose => " WHERE ".to_string(),
+            Clause::Column(s) => format!("{} ", s),
+            Clause::OrderBy => " ORDER BY ".to_string(),
+            Clause::Limit(u) => format!(" LIMIT {u}"),
+            Clause::Offset(u) => format!(" OFFSET {u}"),
+            Clause::Contains(s) => format!(" LIKE '%{s}%'"),
+            Clause::Lower(v) => format!(" LOWER({})", clause_stmt(v)),
+            Clause::LowerString(s) => format!(" LOWER({s})"),
+            Clause::Like(s) => format!(" LIKE {s}"),
+            Clause::LikeLower(s) => format!(" LIKE LOWER({s})"),
+            Clause::Eq(s) => format!(" = {s}"),
+            Clause::Neq(s) => format!(" <> {s}"),
+            Clause::Gt(s) => format!(" > {s}"),
+            Clause::Lt(s) => format!(" < {s}"),
+            Clause::Gte(s) => format!(" >= {s}"),
+            Clause::Lte(s) => format!(" <= {s}"),
+            Clause::In(v) => {
+                let mut i = format!(" IN ({}", v[0]);
+                for s in &v[1..] {
+                    i.push_str(&format!(", {s}"));
+                }
+                i.push(')');
+                i
+            }
+            Clause::Asc => " ASC".to_string(),
+            Clause::Desc => " DESC".to_string(),
+            Clause::Case(v) => format!("CASE {}", clause_stmt(v)),
+            Clause::When(s) => format!(" WHEN {s}"),
+            Clause::Then(s) => format!("THEN {s}"),
+            Clause::End => " END".to_string(),
+            Clause::Set(s) => {
+                setn += 1;
+                if setn > 1 {
+                    format!(", \"{s}\"")
+                } else {
+                    format!(" \"{s}\"")
+                }
+            }
+            Clause::Where(s) => format!(" WHERE {}", s),
+            Clause::Value(s) => {
+                valn += 1;
+                if valn > 1 {
+                    format!(", \"{s}\"")
+                } else {
+                    format!(" \"{s}\"")
+                }
+            }
+            Clause::Close => ";\n".to_string(),
+            Clause::CloseInsert => ");\n".to_string(),
+            Clause::Raw(s) => s,
+        };
+        stmt.push_str(&s);
+    }
+    stmt
 }
 
 impl<B: Record> Builder<B> {
     pub fn new() -> Self {
-        Self {start: String::new(), join: String::new(), val: String::new(), m: PhantomData}
+        Self {start: vec![], join: vec![], val: vec![]}
     }
-    fn from(start: String) -> Self {
-        Self {start, join: String::new(), val: String::new(), m: PhantomData}
+    fn from(start: Vec<Clause<B>>) -> Self {
+        Self {start, join: vec![], val: vec![]}
     }
     pub fn count(database: &str) -> Self {
-        let start = format!("SELECT COUNT(*) FROM {}", database);
-        Self::from(start)
+        let start = Clause::Count(database.to_string());
+        Self::from(vec![start])
     }
     pub fn select(columns: &[&str], database: &str) -> Self {
-        let mut start = format!("SELECT {}.{}", database, columns[0]);
-        if columns.len() > 1 {
-            for column in &columns[1..] {
-                start.push_str(&format!(", {}.{}", database, column));
-            }
+        let mut cols = vec![];
+        for column in columns {
+            cols.push(format!("{}.{}", database, column));
         }
-        start.push_str(&format!(" FROM {}", database));
+        let start = vec![Clause::Select(cols), Clause::From(database.to_string())];
         Self::from(start)
     }
     pub fn insert_into(database: &str, columns: &[&str])  -> Self {
-        let mut start = format!("INSERT INTO {} (\"{}\"", database, columns[0]);
-        if columns.len() > 1 {
-            for column in &columns[1..] {
-                start.push_str(&format!(", \"{}\"", column));
-            }
+        let mut start = vec![Clause::Insert(database.to_string())];
+        let mut cols = vec![];
+        for column in columns {
+            cols.push(column.to_string());
         }
-        start.push_str(") VALUES (");
+        start.push(Clause::Columns(cols));
         Self::from(start)
     }
     pub fn delete(database: &str)  -> Self {
-        let start = format!("DELETE FROM {}", database);
+        let start = vec![Clause::Delete(database.to_string())];
         Self::from(start)
     }
     pub fn update(database: &str)  -> Self {
-        let start = format!("UPDATE {} SET", database);
+        let start = vec![Clause::Update(database.to_string())];
         Self::from(start)
     }
-    pub fn push(&mut self, s: &str) {
-        self.val.push_str(s);
+    pub fn push(&mut self, s: Clause<B>) {
+        self.val.push(s);
     }
-    pub fn push_str(mut self, s: &str) -> Self {
-        self.val.push_str(s);
+    pub fn push_val(mut self, s: Clause<B>) -> Self {
+        self.val.push(s);
         self
     }
-    pub fn append(mut self, other: Self) -> Self {
-        self.val.push_str(&other.val);
-        self.join.push_str(&other.join);
-        self
-    }
-    pub fn and(mut self) -> Self {
-        self.val.push_str(" AND ");
+    pub fn append(mut self, mut other: Self) -> Self {
+        self.val.append(&mut other.val);
+        self.join.append(&mut other.join);
         self
     }
     pub fn comma(mut self) -> Self {
-        self.val.push_str(" , ");
+        self.val.push(Clause::Comma);
         self
     }
     pub fn whose(mut self) -> Self {
-        self.val.push_str(" WHERE ");
+        self.val.push(Clause::Whose);
         self
     }
     pub fn column(mut self, c: &str) -> Self {
-        self.val.push_str(c);
+        self.val.push(Clause::Column(c.to_string()));
         self
     }
     pub fn inner_join(mut self, t1: &str, t2: &str, c: &str, d: &str) -> Self {
-        let s = format!(" INNER JOIN {} ON {1}.{2} = {0}.{3}", t1, t2, c, d);
-        self.join.push_str(&s);
+        let s = Join {t1: t1.to_string(), t2: t2.to_string(), c: c.to_string(), d: d.to_string()};
+        self.join.push(s);
         self
     }
     pub fn order_by(mut self) -> Self {
-        self.val.push_str(" ORDER BY ");
+        self.val.push(Clause::OrderBy);
         self
     }
     pub fn limit(mut self, n: u32) -> Self {
-        self.val.push_str(&format!(" LIMIT {}", n));
+        self.val.push(Clause::Limit(n));
         self
     }
     pub fn offset(mut self, n: u32) -> Self {
-        self.val.push_str(&format!(" OFFSET {}", n));
+        self.val.push(Clause::Offset(n));
         self
-    }
-    pub fn val(self) -> String {
-        self.start + &self.join + &self.val
     }
 }
 
@@ -426,8 +613,7 @@ impl<M: Record> DeleteWhose<M>  {
         if !req.raw().valid_token() {
             return Err(invalid());
         }
-        let mut val = self.stmt.val.val();
-        val.push_str(";\n");
+        let val = B::SqlPool::to_stmt(self.stmt.val.push_val(Clause::Close));
        
         req.raw().pool().raw_execute(&val).await
     }
@@ -530,29 +716,26 @@ impl<S: Record> Statement<S> {
         Self {val}
     }
     fn order_by(self, arg: OrderByArg<S>) -> OrderBy<S> {
-        OrderBy::from(self.val.push_str(&format!(" ORDER BY {}", arg.b.val())))
+        OrderBy::from(self.val.push_val(arg.b.val[0].clone()))
     }
     fn order_by_count(self, arg: OrderByArg<S>) -> OrderByCount<S> {
-        OrderByCount::from(self.val.push_str(&format!(" ORDER BY {}", arg.b.val())))
+        OrderByCount::from(self.val.push_val(arg.b.val[0].clone()))
     }
     fn group_by_count<D: DataType>(self, arg: Column<S, D>) -> GroupByCount<S> {
-        GroupByCount::from(self.val.push_str(&format!(" GROUP BY {}", arg.b.val)))
+        GroupByCount::from(self.val.push_val(arg.b.val[0].clone()))
     }
-    fn and(mut self, val: Builder<S>) -> Self {
-        let s = format!(" AND {}", val.val);
-        self.val.val.push_str(&s);
-        self.val.join.push_str(&val.join);
+    fn and(mut self, mut val: Builder<S>) -> Self {
+        self.val.val.push(Clause::And(val.val));
+        self.val.join.append(&mut val.join);
         self
     }
-    fn or(mut self, val: Builder<S>) -> Self {
-        let s = format!(" OR {}", val.val);
-        self.val.val.push_str(&s);
-        self.val.join.push_str(&val.join);
+    fn or(mut self, mut val: Builder<S>) -> Self {
+        self.val.val.push(Clause::Or(val.val));
+        self.val.join.append(&mut val.join);
         self
     }
     pub async fn raw_get_count<'r, D: DbPool>(self, pool: &D) -> Result<i64> {
-        let mut val = self.val.val();
-        val.push_str(";\n");
+        let val = D::to_stmt(self.val.push_val(Clause::Close));
 
         match pool.raw_fetch_one(&val).await {
             Ok(row) => Ok(row.try_count()?),
@@ -563,8 +746,7 @@ impl<S: Record> Statement<S> {
         self.raw_get_count(req.raw().pool()).await
     }
     async fn raw_get<D: DbPool>(self, pool: &D) -> Result<S> {
-        let mut val = self.val.val();
-        val.push_str(";\n");
+        let val = D::to_stmt(self.val.push_val(Clause::Close));
 
         match pool.raw_fetch_one(&val).await {
             Ok(row) => {
@@ -602,105 +784,97 @@ impl<M: Record, T: ToSql> Clone for Column<M, T> {
 
 impl<M: Record, D: DataType<T = String>> Column<M, D> {
     pub fn contains<'a, U: ToSql + PartialEq<&'a str>>(self, u: U) -> WhoseArg<M> {
-        WhoseArg::from(self.b.push_str(&format!(" LIKE '%{}%'", percent_escape(&u.to_sql()))))
+        WhoseArg::from(self.b.push_val(Clause::Contains(percent_escape(&u.to_sql()))))
     }
     pub fn icontains<'a, U: ToSql + std::fmt::Display + PartialEq<&'a str>>(mut self, u: U) -> WhoseArg<M> {
-        self.b.val = format!("LOWER({}) LIKE LOWER('%{}%')", self.b.val, percent_escape(&u.to_string()));
+        self.b.val.push(Clause::Lower(self.b.val.clone()));
+        self.b.val.push(Clause::LikeLower(format!("'%{}%'", percent_escape(&u.to_string()))));
         WhoseArg::from(self.b)
     }
     pub fn iexact<'a, U: ToSql + PartialEq<&'a str>>(mut self, u: U) -> WhoseArg<M> {
-        self.b.val = format!("LOWER({}) = LOWER({})", self.b.val, u.to_sql());
+        self.b.val.push(Clause::Lower(self.b.val.clone()));
+        self.b.val.push(Clause::LowerString(u.to_sql()));
         WhoseArg::from(self.b)
     }
     pub fn starts_with<'a, U: ToSql + PartialEq<&'a str>>(self, u: U) -> WhoseArg<M> {
-        WhoseArg::from(self.b.push_str(&format!(" LIKE \"{}%\"", percent_escape(&u.to_sql()))))
+        WhoseArg::from(self.b.push_val(Clause::Like(format!("\"{}%\"", percent_escape(&u.to_sql())))))
     }
     pub fn ends_with<'a, U: ToSql + PartialEq<&'a str>>(self, u: U) -> WhoseArg<M> {
-        WhoseArg::from(self.b.push_str(&format!(" LIKE \"%{}\"", percent_escape(&u.to_sql()))))
+        WhoseArg::from(self.b.push_val(Clause::Like(format!("\"%{}\"", percent_escape(&u.to_sql())))))
     }
 }
 
 impl<M: Record, D: DataType> Column<M, D> {
     pub fn new(s: &str) -> Self {
-        let b = Builder::new().push_str(s);
+        let b = Builder::new().push_val(Clause::Column(s.to_string()));
         Self {b, t: PhantomData}
     }
     pub fn from(b: Builder<M>) -> Self {
         Self {b, t: PhantomData}
     }
     pub fn eq<U: ToSql + PartialEq<D::T>>(self, u: U) -> WhoseArg<M> {
-        WhoseArg::from(self.b.push_str(&format!(" = {}", u.to_sql())))
+        WhoseArg::from(self.b.push_val(Clause::Eq(u.to_sql())))
     }
     pub fn neq<U: ToSql + PartialEq<D::T>>(self, u: U) -> WhoseArg<M> {
-        WhoseArg::from(self.b.push_str(&format!(" <> {}", u.to_sql())))
+        WhoseArg::from(self.b.push_val(Clause::Neq(u.to_sql())))
     }
     pub fn gt<U: ToSql + PartialEq<D::T>>(self, u: U) -> WhoseArg<M> {
-        WhoseArg::from(self.b.push_str(&format!(" > {}", u.to_sql())))
+        WhoseArg::from(self.b.push_val(Clause::Gt(u.to_sql())))
     }
     pub fn lt<U: ToSql + PartialEq<D::T>>(self, u: U) -> WhoseArg<M> {
-        WhoseArg::from(self.b.push_str(&format!(" < {}", u.to_sql())))
+        WhoseArg::from(self.b.push_val(Clause::Lt(u.to_sql())))
     }
     pub fn gte<U: ToSql + PartialEq<D::T>>(self, u: U) -> WhoseArg<M> {
-        WhoseArg::from(self.b.push_str(&format!(" >= {}", u.to_sql())))
+        WhoseArg::from(self.b.push_val(Clause::Gte(u.to_sql())))
     }
     pub fn lte<U: ToSql + PartialEq<D::T>>(self, u: U) -> WhoseArg<M> {
-        WhoseArg::from(self.b.push_str(&format!(" <= {}", u.to_sql())))
+        WhoseArg::from(self.b.push_val(Clause::Lte(u.to_sql())))
     }
-    pub fn is_in<U: ToSql + PartialEq<D::T>>(mut self, v: &Vec<U>) -> WhoseArg<M> {
-        self.b.push(" IN(");
-        let mut i = 0;
+    pub fn is_in<U: ToSql + PartialEq<D::T>>(self, v: &Vec<U>) -> WhoseArg<M> {
+        let mut tv = vec![];
         for t in v {
-            if i > 0 {
-                self.b.push(&format!(", {}", t.to_sql()));
-            } else {
-                self.b.push(&format!(" {}", t.to_sql()));
-            }
-            i += 1;
+            tv.push(t.to_sql());
         }
-        WhoseArg::from(self.b.push_str(")"))
+        WhoseArg::from(self.b.push_val(Clause::In(tv)))
     }
     pub fn asc(self) -> OrderByArg<M> {
-        OrderByArg {b: self.b.push_str(" ASC")}
+        OrderByArg {b: self.b.push_val(Clause::Asc)}
     }
     pub fn desc(self) -> OrderByArg<M> {
-        OrderByArg {b: self.b.push_str(" DESC")}
+        OrderByArg {b: self.b.push_val(Clause::Desc)}
     }
     pub fn field(self, v: &Vec<D>) -> OrderByArg<M> {
         let mut b = Builder::new();
-        b.push(&format!("CASE {}", self.b.val));
+        b.push(Clause::Case(self.b.val.clone()));
         let mut i = 0;
         for d in v {
-            b.push(&format!(" WHEN {} THEN {i}", d.to_sql()));
+            b.push(Clause::When(d.to_sql()));
+            b.push(Clause::Then(i.to_string()));
             i += 1;
         }
-        OrderByArg {b: b.push_str(" END")}
+        OrderByArg {b: b.push_val(Clause::End)}
     }
 }
 
 pub struct Update<U: Record> {
     val: Builder<U>,
-    count: u32,
 }
 
 impl<U: Record> Update<U> {
     pub fn new(database: &str) -> Self {
         let val = Builder::update(database);
-        let count = 0;
-        Self {val, count}
+        Self {val}
     }
     pub fn set<D: DataType>(mut self, name: &str, data: &D) -> Self {
         let s = data.to_sql();
-        self.count += 1;
-        let val = if self.count > 1 {
-            self.val.push_str(&format!(", \"{}\" = {}", name, s))
-        } else {
-            self.val.push_str(&format!(" \"{}\" = {}", name, s))
-        };
-        Self {val, count: self.count}
+        self.val.push(Clause::Set(name.to_string()));
+        let val = self.val.push_val(Clause::Eq(s));
+        Self {val}
     }
-    pub fn pk<D: DataType + std::fmt::Display>(self, name: &str, id: D) -> Self {
-        let val = self.val.push_str(&format!(" WHERE {} = {}", name, id));
-        Self {val, count: self.count}
+    pub fn pk<D: DataType + std::fmt::Display>(mut self, name: &str, id: D) -> Self {
+        self.val.push(Clause::Where(name.to_string()));
+        let val = self.val.push_val(Clause::Eq(id.to_string()));
+        Self {val}
     }
     pub async fn update<B: BaseRequest>(self, req: &B) -> Result<()> {
         if !req.raw().valid_token() {
@@ -709,31 +883,24 @@ impl<U: Record> Update<U> {
         self.raw_update(req.raw().pool()).await
     }
     pub async fn raw_update<D: DbPool>(self, pool: &D) -> Result<()> {
-        let mut val = self.val.val();
-        val.push_str(";\n");
+        let val = D::to_stmt(self.val.push_val(Clause::Close));
         pool.raw_execute(&val).await
     }
 }
 
 pub struct Insert<I: Record> {
     val: Builder<I>,
-    n: usize,
 }
 
 impl<I: Record> Insert<I> {
     pub fn new(database: &str, columns: &[&str]) -> Self {
         let val = Builder::insert_into(database, columns);
-        Self {val, n: 0}
+        Self {val}
     }
-    pub fn value<D: DataType>(mut self, data: &D) -> Self {
+    pub fn value<D: DataType>(self, data: &D) -> Self {
         let s = data.to_sql();
-        let val = if self.n > 0 {
-            self.val.push_str(&format!(", {}", s))
-        } else {
-            self.val.push_str(&format!(" {}", s))
-        };
-        self.n += 1;
-        Self {val, n: self.n}
+        let val = self.val.push_val(Clause::Value(s));
+        Self {val}
     }
     pub async fn save<B: BaseRequest>(self, req: &B) -> Result<()> {
         if req.raw().valid_token() {
@@ -743,8 +910,7 @@ impl<I: Record> Insert<I> {
         }
     }
     pub async fn raw_save<D: DbPool>(self, pool: &D) -> Result<()> {
-        let mut val = self.val.val();
-        val.push_str(");\n");
+        let val = D::to_stmt(self.val.push_val(Clause::CloseInsert));
 
         match pool.raw_execute(&val).await {
             Ok(_) => {
@@ -778,8 +944,7 @@ impl<M: Record> Offset<M> {
         self.raw_query(req.raw().pool()).await
     }
     async fn raw_query<D: DbPool>(self, pool: &D) -> Result<Objects<M>> {
-        let mut val = self.val.val();
-        val.push_str(";\n");
+        let val = D::to_stmt(self.val.push_val(Clause::Close));
 
         match pool.raw_fetch_all(&val).await {
             Ok(rows) => {
@@ -807,8 +972,7 @@ impl<M: Record> Limit<M> {
         self.raw_query(req.raw().pool()).await
     }
     async fn raw_query<D: DbPool>(self, pool: &D) -> Result<Objects<M>> {
-        let mut val = self.val.val();
-        val.push_str(";\n");
+        let val = D::to_stmt(self.val.push_val(Clause::Close));
 
         match pool.raw_fetch_all(&val).await {
             Ok(rows) => {
@@ -833,8 +997,7 @@ impl<M: Record> LimitCount<M> {
         self.raw_query(req.raw().pool()).await
     }
     async fn raw_query<D: DbPool>(self, pool: &D) -> Result<Vec<i64>> where <D::SqlRowVec as IntoIterator>::Item: DbRow {
-        let mut val = self.val.val();
-        val.push_str(";\n");
+        let val = D::to_stmt(self.val.push_val(Clause::Close));
         let mut v = vec![];
         match pool.raw_fetch_all(&val).await {
             Ok(rows) => {

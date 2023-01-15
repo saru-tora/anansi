@@ -109,6 +109,7 @@ pub enum Cmd {
 
 pub struct Proxy {
     pub _learning: bool,
+    pub _invalid: bool,
     pub _node: u32,
     pub _dirty: i64,
     pub _subs: Vec<Sub>,
@@ -116,7 +117,7 @@ pub struct Proxy {
 
 impl Proxy {
     pub fn new(subs: Vec<Sub>) -> Self {
-        Self {_learning: false, _node: 0, _dirty: -1, _subs: subs}
+        Self {_learning: false, _invalid: false, _node: 0, _dirty: -1, _subs: subs}
     }
     pub fn set(&mut self, n: i64) {
         if self._learning {
@@ -130,6 +131,7 @@ impl Proxy {
     }
     pub fn start_proxy(&mut self) -> Vec<Sub> {
         self._learning = true;
+        self._invalid = false;
         self._dirty = -1;
         let mut subs = vec![];
         subs.append(&mut self._subs);

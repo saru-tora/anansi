@@ -64,10 +64,24 @@ async fn _admin<D: DbPool>(pool: D) -> Result<()> {
         } else {
             break raw_transact!(pool, {
                 let now = DateTime::now();
-                let u = User::new(name, email, hash_password(&password).unwrap(), None, now, now);
-                u.raw_save(&pool).await.expect("Problem creating admin.");
+                let u = User::new()
+                    .username(name)
+                    .email(email)
+                    .password(hash_password(&password).unwrap())
+                    .last_login(now)
+                    .date_joined(now)
+                    .raw_saved(&pool)
+                    .await
+                    .expect("Problem creating admin.");
                 let group = Group::whose(groupname().eq("admin")).raw_get(&pool).await?;
-                GroupTuple::new(Text::from("auth_user".to_string()), u.pk(), None, group.pk(), Text::from("member".to_string())).raw_save(&pool).await.expect("Problem adding admin.");
+                GroupTuple::new()
+                    .subject_namespace(Text::from("auth_user".to_string()))
+                    .subject_key(u.pk())
+                    .object_key(group.pk())
+                    .object_predicate(Text::from("member".to_string()))
+                    .raw_saved(&pool)
+                    .await
+                    .expect("Problem adding admin.");
                 println!("Created admin \"{}\"", u.username);
                 Ok(())
             })

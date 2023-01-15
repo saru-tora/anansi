@@ -8,7 +8,8 @@ use sqlx::postgres::Postgres;
 
 use crate::server::Settings;
 use crate::web::Result;
-use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, invalid};
+use crate::records::Record;
+use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, Builder sql_stmt, invalid};
 
 #[derive(Clone)]
 pub struct PgDb;
@@ -169,6 +170,9 @@ impl DbPool for PgDbPool {
     }
     async fn test() -> Result<Self> {
         unimplemented!()
+    }
+    fn to_stmt<R: Record>(val: Builder<R>) -> String {
+        sql_stmt(val)
     }
 }
 
