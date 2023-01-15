@@ -136,13 +136,13 @@ fn init(props: LoaderProps) -> Rsx {
     let mut state = Self::store(true, 1, vec![]);
 
     let (data_resource, handle_click) = resource!(Vec<Data>, || {
-        state.visible = false;
+        *state.visible_mut() = false;
         Request::get(&props.load_url)
-            .query([("page", state.page.to_string())])
+            .query([("page", state.page().to_string())])
     });
 
     rsx! {
-        @for data in &state.fetched {
+        @for data in state.fetched() {
             <li>@href props.show_url, data.id {@data.title}</li>
         }
         @resource data_resource {
@@ -150,18 +150,18 @@ fn init(props: LoaderProps) -> Rsx {
                 <Spinner />
             }
             Resource::Rejected(_) => {
-                state.visible = true;
+                *state.visible_mut() = true;
                 <div>Problem loading topics</div>
             }
             Resource::Resolved(mut f) => {
-                if f.len() == 25 && state.page < 3 {
-                    state.page += 1;
-                    state.visible = true;
+                if f.len() == 25 && *state.page() < 3 {
+                    *state.page_mut() += 1;
+                    *state.visible_mut() = true;
                 }
-                state.fetched.append(&mut f);
+                state.fetched_mut().append(&mut f);
             }
         }
-        @if state.visible {
+        @if *state.visible() {
             <button @onclick(handle_click)>Load more</button>
         }       
     }

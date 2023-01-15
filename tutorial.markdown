@@ -281,13 +281,13 @@ fn init(props: LoaderProps) -> Rsx {
     let mut state = Self::store(true, 1, vec![]);
 
     let (data_resource, handle_click) = resource!(Vec<Data>, || {
-        state.visible = false;
+        *state.visible_mut() = false;
         let request = Request::get(&props.load_url)
-            .query([("page", state.page.to_string())]);
+            .query([("page", state.page().to_string())]);
     });
 
     rsx! {
-        @for data in &state.fetched {
+        @for data in state.fetched() {
             <li>@href props.show_url, data.id {@data.title}</li>
         }
 	@resource data_resource {
@@ -295,18 +295,18 @@ fn init(props: LoaderProps) -> Rsx {
                 <div>Loading...</div>
             }
             Resource::Rejected(_) => {
-                state.visible = true;
+                *state.visible_mut() = true;
                 <div>Problem loading topics</div>
             }
             Resource::Resolved(mut f) => {
-                if f.len() == 25 && state.page < 3 {
-                    state.page += 1;
-                    state.visible = true;
+                if f.len() == 25 && *state.page() < 3 {
+                    *state.page_mut() += 1;
+                    *state.visible_mut() = true;
                 }
-                state.fetched.append(&mut f);
+                state.fetched_mut().append(&mut f);
             }
         }
-        @if state.visible {
+        @if *state.visible() {
             <button @onclick(handle_click)>Load more</button>
         }
     }
@@ -815,9 +815,13 @@ pub struct TopicForm {
 #[async_trait]
 impl<R: Request> ToRecord<R> for TopicForm {
     async fn on_post(&mut self, data: TopicFormData, req: &R) -> Result<Topic> {
-        let now = DateTime::now();
-        let user_fk = ForeignKey::from_data(req.user().pk())?;
-        Topic::new(data.title, user_fk, data.content, now).save(req).await
+        Topic::new()
+            .title(data.title)
+            .user(ForeignKey::from_data(req.user().pk())?)
+            .content(data.content)
+            .date(DateTime::now())
+            .saved(req)
+            .await
             .or(form_error!("Problem adding topic"))
     }
 }
