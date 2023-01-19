@@ -134,7 +134,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
 
         let args: Vec<String> = env::args().collect();
 
-        let mut port = None;
+        let mut ip = None;
 
         let mut base = PathBuf::new();
         BASE_DIR.with(|b| base = b.clone());
@@ -171,11 +171,15 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                     admin(pool.clone()).await.expect("Could not create admin");
                     return;
                 }
-                _ => port = Some(args[1].to_string()),
+                _ => ip = Some(args[1].to_string()),
             }
         }
-        let addr = if let Some(p) = port {
-            format!("127.0.0.1:{}", p)
+        let addr = if let Some(s) = ip {
+            if s.contains('.') {
+                s
+            } else {
+                format!("127.0.0.1:{}", s)
+            }
         } else {
             "127.0.0.1:9090".to_string()
         };

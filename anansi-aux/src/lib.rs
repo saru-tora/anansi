@@ -107,6 +107,63 @@ pub enum Cmd {
     Set(HashMap<String, Ctx>),
 }
 
+pub struct Signal<T> {
+    _proxy: SignalProxy,
+    value: T,
+}
+
+impl<'de, T: Serialize + Deserialize<'de>> Signal<T> {
+    pub fn new(t: T) -> Self {
+        Self {_proxy: SignalProxy::new(), value: t}
+    }
+    pub fn value(&mut self) -> &T {
+        self._proxy.set();
+        &self.value
+    }
+    pub fn value_mut(&mut self) -> &mut T {
+        self._proxy._invalid = true;
+        &mut self.value
+    }
+}
+
+#[derive(Clone)]
+pub struct SignalProxy {
+    pub _learning: bool,
+    pub _invalid: bool,
+    pub _node: u32,
+    pub _dirty: i64,
+    pub _sub: Sub,
+}
+
+impl SignalProxy {
+    pub fn new() -> Self {
+        Self {_learning: false, _invalid: false, _node: 0, _dirty: -1, _sub: (0, 0)}
+    }
+    pub fn set(&mut self) {
+        if self._learning {
+            self._sub = (self._node, 0);
+        } else {
+            if self._dirty == -1 {
+                self._dirty = 0;
+            }
+            self._dirty |= 1;
+        }
+    }
+    pub fn start_proxy(&mut self) -> Sub {
+        self._learning = true;
+        self._invalid = false;
+        self._dirty = -1;
+        self._sub
+    }
+    pub fn stop_proxy(&mut self, sub: Sub) {
+        self._sub = sub;
+        self._learning = false;
+    }
+    pub fn get_subs(&self) -> String {
+        format!("{} {}", self._sub.0, self._sub.1)
+    }
+}
+
 pub struct Proxy {
     pub _learning: bool,
     pub _invalid: bool,

@@ -9,7 +9,7 @@ use sqlx::postgres::Postgres;
 use crate::server::Settings;
 use crate::web::Result;
 use crate::records::Record;
-use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, Builder sql_stmt, invalid};
+use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt, invalid};
 
 #[derive(Clone)]
 pub struct PgDb;
