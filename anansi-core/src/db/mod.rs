@@ -442,9 +442,9 @@ pub fn clause_stmt<R: Record>(clauses: Vec<Clause<R>>) -> String {
             Clause::Value(s) => {
                 valn += 1;
                 if valn > 1 {
-                    format!(", \"{s}\"")
+                    format!(", {s}")
                 } else {
-                    format!(" \"{s}\"")
+                    format!(" {s}")
                 }
             }
             Clause::Close => ";\n".to_string(),
