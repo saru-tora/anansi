@@ -10,6 +10,7 @@ use anansi::{extend, render, redirect, handle, base_view, handle_or_404};
 use super::forms::{UserLogin, UserTotp, AdminSearch, FilterForm};
 use anansi::{check, viewer, record_admin};
 use crate::register;
+use crate::site::Site;
 use super::middleware::Auth;
 use super::super::sessions::middleware::Sessions;
 use super::super::admin::site::{HasAdmin, BasicAdminSite};
@@ -53,7 +54,7 @@ pub fn initialize_admin<R: Request>(site: AdminRef<R>) {
 
 #[viewer]
 impl<R: Request> AuthAdminView<R> {
-    #[check(Group::is_visitor)]
+    #[check(Site::is_visitor)]
     pub async fn login(req: &mut R) -> Result<Response> {
         let form = handle!(UserLogin, ToRecord<R>, req, user, {
             req.auth_admin(&user).await?;
@@ -66,12 +67,12 @@ impl<R: Request> AuthAdminView<R> {
         render!("login")
     }
 
-    #[check(Group::is_visitor)]
+    #[check(Site::is_visitor)]
     pub async fn ask_mfa(req: &mut R) -> Result<Response> {
         render!("ask_mfa")
     }
 
-    #[check(Group::is_visitor)]
+    #[check(Site::is_visitor)]
     pub async fn setup_mfa(req: &mut R) -> Result<Response> {
         let code = format!("data:image/jpeg;base64,{}", req.new_totp(None)?);
         render!("setup_mfa")

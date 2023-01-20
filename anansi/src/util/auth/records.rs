@@ -12,7 +12,7 @@ use async_recursion::async_recursion;
 
 use totp_rs::{Algorithm, TOTP, Secret};
 
-use anansi::web::{Result, BaseUser, BaseRequest, WebError, WebErrorKind};
+use anansi::web::{Result, BaseUser, BaseRequest};
 use anansi::db::{DbPool, DbRowVec, invalid};
 use anansi::records::{Record, BigInt, VarChar, Text, DateTime, DataType};
 use anansi::{record, FromParams, ToUrl, Relate};
@@ -273,16 +273,6 @@ pub struct Group {
 }
 
 impl Group {
-    pub async fn is_visitor<B: BaseRequest>(_req: &B) -> Result<()> {
-        Ok(())
-    }
-    pub async fn is_auth<B: BaseRequest>(req: &B) -> Result<()> {
-        if req.user().is_auth() {
-            Ok(())
-        } else {
-            Err(Box::new(WebError::from(WebErrorKind::Unauthenticated)))
-        }
-    }
     pub async fn is_admin<B: BaseRequest>(req: &B) -> Result<()> {
         BaseRelation::check("auth_group", 1, "member", req).await
     }

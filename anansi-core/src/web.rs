@@ -18,8 +18,10 @@ use crate::cache::BaseCache;
 use crate::server::{Rng, Settings};
 use crate::router::Routes;
 use crate::records::{Record, FromParams, BigInt, DateTime};
-use crate::admin_site::AdminRef;
 use crate::email::{EmailBuilder, Mailer};
+
+#[cfg(not(feature = "minimal"))]
+use crate::admin_site::AdminRef;
 
 pub type Result<T> = result::Result<T, Box<dyn Error + Send + Sync>>;
 pub type View<B> = fn(&mut B) -> Pin<Box<dyn Future<Output = Result<Response>> + Send + '_>>;
@@ -127,6 +129,7 @@ impl<Svc: Service<R>, R: BaseRequest> Service<R> for SecurityHeaders<Svc> {
     }
 }
 
+#[cfg(not(feature = "minimal"))]
 #[macro_export]
 macro_rules! setup {
     () => {
@@ -217,6 +220,32 @@ macro_rules! setup {
                 Err(anansi::db::invalid())
             }
         }
+    }
+}
+
+#[cfg(feature = "minimal")]
+#[macro_export]
+macro_rules! setup {
+    () => {
+        #[derive(Debug, Clone)]
+        pub struct HttpRequest {
+            raw: anansi::web::RawRequest<Pool>,
+            mid: AppMiddleware,
+            urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>,
+            cache: AppCache,
+            mailer: Option<anansi::email::Mailer>,
+        }
+        #[derive(Debug, Clone)]
+        pub struct AppMiddleware {}
+        impl AppMiddleware {
+            pub async fn new(_raw: &mut anansi::web::RawRequest<Pool>) -> $crate::web::Result<Self> {
+                Ok(AppMiddleware {})
+            }
+        }
+        impl anansi::web::BaseMiddleware for AppMiddleware {}
+        anansi::request_derive!();
+        pub trait Request: anansi::web::BaseRequest + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetRecord {}
+        impl Request for HttpRequest {}
     }
 }
 
@@ -650,6 +679,7 @@ pub trait GetRecord: BaseRequest {
     }
 }
 
+#[cfg(not(feature = "minimal"))]
 #[async_trait]
 pub trait BaseRequest: Send + Sync {
     type Mid: BaseMiddleware;
@@ -672,6 +702,35 @@ pub trait BaseRequest: Send + Sync {
     fn from(raw: RawRequest<Self::SqlPool>, mid: Self::Mid, cache: Self::Cache, urls: Arc<HashMap<usize, Vec<String>>>, admin: AdminRef<Self>, mailer: Option<Mailer>) -> Self where Self: Sized;
     fn user(&self) -> &Self::Usr;
     fn user_mut(&mut self) -> &mut Self::Usr;
+    fn cache(&self) -> &Self::Cache;
+    fn cache_mut(&mut self) -> &mut Self::Cache;
+    fn email(&self) -> EmailBuilder;
+    fn to_raw(self) -> RawRequest<Self::SqlPool>;
+    async fn handle_no_session(response: Response, pool: Self::SqlPool, std_rng: Rng) -> Result<Response> where Self: Sized;
+}
+
+#[cfg(feature = "minimal")]
+#[async_trait]
+pub trait BaseRequest: Send + Sync {
+    type Mid: BaseMiddleware;
+    type Usr: BaseUser;
+    type SqlPool: DbPool;
+    type Cache: BaseCache;
+
+    async fn new(request: HyperRequest, url: Arc<HashMap<usize, Vec<String>>>, pool: Self::SqlPool, cache: Self::Cache, rng: Rng, mailer: Option<Mailer>) -> Result<Self> where Self: Sized;
+    fn method(&self) -> &Method;
+    fn url(&self) -> &str;
+    fn query(&self) -> Option<&str>;
+    fn headers(&self) -> &HeaderMap;
+    fn body(&self) -> &Option<Body>;
+    fn cookies(&self) -> &Cookies;
+    fn params(&self) -> &Parameters;
+    fn params_mut(&mut self) -> &mut Parameters;
+    fn raw(&self) -> &RawRequest<Self::SqlPool>;
+    fn mid(&self) -> &Self::Mid;
+    fn to_form_map(&self) -> Result<FormMap>;
+    fn from(raw: RawRequest<Self::SqlPool>, mid: Self::Mid, cache: Self::Cache, urls: Arc<HashMap<usize, Vec<String>>>, mailer: Option<Mailer>) -> Self where Self: Sized;
+    fn user(&self) -> &Self::Usr;
     fn cache(&self) -> &Self::Cache;
     fn cache_mut(&mut self) -> &mut Self::Cache;
     fn email(&self) -> EmailBuilder;
@@ -754,6 +813,7 @@ macro_rules! path {
     }
 }
 
+#[cfg(not(feature = "minimal"))]
 #[macro_export]
 macro_rules! request_derive {
     () => {
@@ -848,6 +908,102 @@ macro_rules! request_derive {
             async fn handle_no_session(response: anansi::web::Response, pool: Self::SqlPool, std_rng: anansi::server::Rng) -> anansi::web::Result<anansi::web::Response> {
                 let session = anansi::util::sessions::records::Session::gen(&pool, &std_rng).await?;
                 Ok(response.set_persistent("st", &session.secret, &session.expires))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "minimal")]
+#[macro_export]
+macro_rules! request_derive {
+    () => {
+        impl anansi::web::Reverse for HttpRequest {
+            fn reverse(&self, view: anansi::web::View<Self>, disps: &[&dyn std::fmt::Display]) -> String {
+                let mut disp = disps.iter();
+                let patterns = self.urls.get(&(view as anansi::web::View<Self> as usize)).expect("could not get url");
+                let mut s = String::new();
+                for pattern in patterns {
+                    match pattern.as_bytes()[0] {
+                        anansi::web::SLASH => {
+                            s.push_str(pattern);
+                        }
+                        anansi::web::LEFT_BRACE => {
+                            let d = format!("/{}", disp.next().expect("too few arguments to reverse url").to_string());
+                            s.push_str(&d);
+                        }
+                        _ => panic!("could not reverse url"),
+                    }
+                }
+                s
+            }
+        }
+        #[async_trait::async_trait]
+        impl anansi::web::GetRecord for HttpRequest {}
+        #[async_trait::async_trait]
+        impl anansi::web::BaseRequest for HttpRequest {
+            type Mid = AppMiddleware;
+            type Usr = anansi::dummy::records::DummyUser;
+            type SqlPool = Pool;
+            type Cache = AppCache;
+
+            async fn new(request: $crate::web::HyperRequest, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: Self::SqlPool, cache: Self::Cache, std_rng: $crate::server::Rng, mailer: Option<anansi::email::Mailer>) -> $crate::web::Result<Self> where Self: Sized {
+                let mut raw = $crate::web::RawRequest::new(request, pool, std_rng).await?;
+                let mid = AppMiddleware::new(&mut raw).await?;
+                Ok(Self {raw, mid, urls, cache, mailer})
+            }
+            fn method(&self) -> &anansi::web::Method {
+                self.raw.method()
+            }
+            fn url(&self) -> &str {
+                self.raw.url()
+            }
+            fn query(&self) -> Option<&str> {
+                self.raw.query()
+            }
+            fn headers(&self) -> &anansi::web::HeaderMap {
+                self.raw.headers()
+            }
+            fn body(&self) -> &Option<anansi::web::Body> {
+                &self.raw.body
+            }
+            fn cookies(&self) -> &anansi::web::Cookies {
+                &self.raw.cookies
+            }
+            fn params(&self) -> &anansi::web::Parameters {
+                &self.raw.params
+            }
+            fn params_mut(&mut self) -> &mut anansi::web::Parameters {
+                &mut self.raw.params
+            }
+            fn mid(&self) -> &Self::Mid {
+                &self.mid
+            }
+            fn raw(&self) -> &anansi::web::RawRequest<Pool> {
+                &self.raw
+            }
+            fn to_form_map(&self) -> anansi::web::Result<anansi::web::FormMap> {
+                self.raw().to_form_map()
+            }
+            fn from(raw: anansi::web::RawRequest<Pool>, mid: AppMiddleware, cache: Self::Cache, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, mailer: Option<anansi::email::Mailer>) -> Self {
+                Self{raw, mid, cache, urls, mailer}
+            }
+            fn to_raw(self) -> anansi::web::RawRequest<Pool> {
+                self.raw
+            }
+            fn user(&self) -> &Self::Usr {
+                unimplemented!()
+            }
+            fn cache(&self) -> &Self::Cache {
+                &self.cache
+            }
+            fn cache_mut(&mut self) -> &mut Self::Cache {
+                &mut self.cache
+            }
+            fn email(&self) -> anansi::email::EmailBuilder {
+                anansi::email::Email::builder(&self.mailer)
+            }
+            async fn handle_no_session(response: anansi::web::Response, pool: Self::SqlPool, std_rng: anansi::server::Rng) -> anansi::web::Result<anansi::web::Response> {
+                unimplemented!();
             }
         }
     }
