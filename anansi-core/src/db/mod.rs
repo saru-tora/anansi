@@ -401,7 +401,7 @@ pub fn clause_stmt<R: Record>(clauses: Vec<Clause<R>>) -> String {
             Clause::Or(v) => format!(" OR {}", clause_stmt(v)),
             Clause::Comma => " , ".to_string(),
             Clause::Whose => " WHERE ".to_string(),
-            Clause::Column(s) => format!("{} ", s),
+            Clause::Column(s) => format!("{}", s),
             Clause::OrderBy => " ORDER BY ".to_string(),
             Clause::Limit(u) => format!(" LIMIT {u}"),
             Clause::Offset(u) => format!(" OFFSET {u}"),

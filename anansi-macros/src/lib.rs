@@ -940,8 +940,8 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                         let name = &f.ident;
                         let member = name.as_ref().unwrap().to_string();
                         let m2 = member.clone();
-                        let column = quote! {format!("{}_{}.{}", super::APP_NAME, #fname, #member)};
-                        let lowcolumn = quote! {&format!("{}_{}.{}", super::super::APP_NAME, #fname, #member)};
+                        let column = quote! {format!("{}.{}", #mname::table(), #member)};
+                        let lowcolumn = quote! {&format!("{}.{}", super::#mname::table(), #member)};
                         let attrs = get_attrs(&f.attrs);
                         let mut fty = f.ty.clone();
                         match &f.ty {
