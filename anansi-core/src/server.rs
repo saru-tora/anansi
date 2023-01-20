@@ -622,7 +622,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
             };
             {
                 let timer = timer.lock().unwrap();
-                response.headers_mut().insert("Date", HeaderValue::from_str(&format!("{timer}")).unwrap());
+                response.headers_mut().insert("Date", HeaderValue::from_str(&format!("{}", timer.to_gmt())).unwrap());
             }
             info!("{} {}", req_info, response.status().as_u16());
             Ok(response.into_inner())
@@ -732,7 +732,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
             };
             {
                 let timer = timer.lock().unwrap();
-                response.headers_mut().insert("Date", HeaderValue::from_str(&format!("{timer}")).unwrap());
+                response.headers_mut().insert("Date", HeaderValue::from_str(&format!("{}", timer.to_gmt())).unwrap());
             }
             info!("{} {}", req_info, response.status().as_u16());
             Ok(response.into_inner())
