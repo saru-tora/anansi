@@ -104,13 +104,11 @@ impl fmt::Display for RecordErrorKind {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Boolean {
-    b: bool,
-}
+pub struct Boolean(bool);
 
 impl Boolean {
     pub fn new(b: bool) -> Self {
-        Self {b}
+        Self {0: b}
     }
     pub fn from(s: &str) -> Result<Self> {
             let b = match s {
@@ -120,7 +118,7 @@ impl Boolean {
                 "1" => true,
                 _ => return Err(RecordErrorKind::BadBool.to_box()),
             };
-            Ok(Self{b})
+            Ok(Self{0: b})
     }
     pub fn field() -> RecordField {
         RecordField::new("boolean".to_string())
@@ -129,13 +127,13 @@ impl Boolean {
 
 impl fmt::Display for Boolean {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.b)
+        write!(f, "{}", self.0)
     }
 }
 
 impl PartialEq<bool> for Boolean {
     fn eq(&self, other: &bool) -> bool {
-        self.b == *other
+        self.0 == *other
     }
 }
 
@@ -143,13 +141,13 @@ impl DataType for Boolean {
     type T = bool;
 
     fn from_val(b: bool) -> Result<Self> {
-        Ok(Self{b})
+        Ok(Self{0: b})
     }
 }
 
 impl ToSql for Boolean {
     fn to_sql(&self) -> String {
-        format!("{}", self.b)
+        format!("{}", self.0)
     }
 }
 
@@ -162,25 +160,23 @@ impl FromStr for Boolean {
 }
 
 #[derive(Clone, PartialEq, Copy, Debug, Serialize, Deserialize)]
-pub struct BigInt {
-    n: i64,
-}
+pub struct BigInt(i64);
 
 impl BigInt {
     pub fn new(n: i64) -> Self {
-        Self {n}
+        Self {0: n}
     }
     pub fn from(s: &str) -> result::Result<Self, ParseIntError> {
         match s.parse() {
-            Ok(n) => Ok(Self {n}),
+            Ok(n) => Ok(Self {0: n}),
             Err(e) => Err(e),
         }
     }
     pub fn as_i64(&self) -> i64 {
-        self.n
+        self.0
     }
     pub fn into(self) -> i64 {
-        self.n
+        self.0
     }
     pub fn field() -> RecordField {
         RecordField::new("bigint".to_string())
@@ -189,7 +185,7 @@ impl BigInt {
 
 impl fmt::Display for BigInt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.n)
+        write!(f, "{}", self.0)
     }
 }
 
@@ -197,13 +193,13 @@ impl DataType for BigInt {
     type T = i64;
 
     fn from_val(n: i64) -> Result<Self> {
-        Ok(Self {n})
+        Ok(Self {0: n})
     }
 }
 
 impl ToSql for BigInt {
     fn to_sql(&self) -> String {
-        format!("{}", self.n)
+        format!("{}", self.0)
     }
 }
 
@@ -217,7 +213,7 @@ where i64: Decode<'r, DB> {
 
 impl PartialEq<i64> for BigInt {
     fn eq(&self, other: &i64) -> bool {
-        self.n == *other
+        self.0 == *other
     }
 }
 
@@ -227,25 +223,23 @@ pub fn generate_id() -> BigInt {
 }
 
 #[derive(Clone, PartialEq, Copy, Debug, Serialize, Deserialize)]
-pub struct Int {
-    n: i32,
-}
+pub struct Int(i32);
 
 impl Int {
     pub fn new(n: i32) -> Self {
-        Self {n}
+        Self {0: n}
     }
     pub fn from(s: &str) -> result::Result<Self, ParseIntError> {
         match s.parse() {
-            Ok(n) => Ok(Self {n}),
+            Ok(n) => Ok(Self {0: n}),
             Err(e) => Err(e),
         }
     }
     pub fn as_i32(&self) -> i32 {
-        self.n
+        self.0
     }
     pub fn into(self) -> i32 {
-        self.n
+        self.0
     }
     pub fn field() -> RecordField {
         RecordField::new("int".to_string())
@@ -254,7 +248,7 @@ impl Int {
 
 impl fmt::Display for Int {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.n)
+        write!(f, "{}", self.0)
     }
 }
 
@@ -262,13 +256,13 @@ impl DataType for Int {
     type T = i32;
 
     fn from_val(n: i32) -> Result<Self> {
-        Ok(Self {n})
+        Ok(Self {0: n})
     }
 }
 
 impl ToSql for Int {
     fn to_sql(&self) -> String {
-        format!("{}", self.n)
+        format!("{}", self.0)
     }
 }
 
@@ -282,7 +276,7 @@ where i32: Decode<'r, DB> {
 
 impl PartialEq<i32> for Int {
     fn eq(&self, other: &i32) -> bool {
-        self.n == *other
+        self.0 == *other
     }
 }
 
@@ -292,34 +286,32 @@ pub fn random_int() -> Int {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Text {
-    s: String,
-}
+pub struct Text(String);
 
 impl Text {
     pub fn new() -> Self {
-        Self {s: String::new()}
+        Self {0: String::new()}
     }
     pub fn from(s: String) -> Self {
-        Self {s}
+        Self {0: s}
     }
     pub fn field() -> RecordField {
         RecordField::new("text".to_string())
     }
     pub fn as_str(&self) -> &str {
-        &self.s
+        &self.0
     }
 }
 
 impl PartialEq<&str> for Text {
     fn eq(&self, other: &&str) -> bool {
-        self.s == *other
+        self.0 == *other
     }
 }
 
 impl PartialEq<String> for Text {
     fn eq(&self, other: &String) -> bool {
-        self.s == *other
+        self.0 == *other
     }
 }
 
@@ -327,19 +319,19 @@ impl DataType for Text {
     type T = String;
 
     fn from_val(s: String) -> Result<Self> {
-        Ok(Self {s})
+        Ok(Self {0: s})
     }
 }
 
 impl ToSql for Text {
     fn to_sql(&self) -> String {
-        escape(&self.s)
+        escape(&self.0)
     }
 }
 
 impl fmt::Display for Text {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", &self.s)
+        write!(f, "{}", &self.0)
     }
 }
 
@@ -348,7 +340,7 @@ impl Deref for Text {
 
     #[inline]
     fn deref(&self) -> &str {
-        &self.s
+        &self.0
     }
 }
 
@@ -361,19 +353,17 @@ where String: Decode<'r, DB> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct VarChar<const N: u16> {
-    s: String,
-}
+pub struct VarChar<const N: u16>(String);
 
 impl<const N: u16> VarChar<N> {
     pub fn new() -> Self {
-        Self {s: String::new()}
+        Self {0: String::new()}
     }
     pub fn from(s: String) -> Result<Self> {
         Self::from_val(s)
     }
     pub fn as_str(&self) -> &str {
-        &self.s
+        &self.0
     }    
     pub fn field() -> RecordField {
         RecordField::new(format!("varchar({})", N))
@@ -398,13 +388,13 @@ impl FromStr for Text {
 
 impl<const N: u16> PartialEq<&str> for VarChar<N> {
     fn eq(&self, other: &&str) -> bool {
-        self.s == *other
+        self.0 == *other
     }
 }
 
 impl<'a, const N: u16> PartialEq<String> for &'a VarChar<N> {
     fn eq(&self, other: &String) -> bool {
-        self.s == *other
+        self.0 == *other
     }
 }
 
@@ -415,26 +405,26 @@ impl<const N: u16> DataType for VarChar<N> {
         if s.len() > N as usize {
             Err(RecordErrorKind::BadVarChar.to_box())
         } else {
-            Ok(Self {s})
+            Ok(Self {0: s})
         }
     }
 }
 
 impl<const N: u16> ToSql for VarChar<N> {
     fn to_sql(&self) -> String {
-        escape(&self.s)
+        escape(&self.0)
     }
 }
 
 impl<'a, const N: u16> ToSql for &'a VarChar<N> {
     fn to_sql(&self) -> String {
-        escape(&self.s)
+        escape(&self.0)
     }
 }
 
 impl<const N: u16> fmt::Display for VarChar<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", &self.s)
+        write!(f, "{}", &self.0)
     }
 }
 
@@ -443,7 +433,7 @@ impl<const N: u16> Deref for VarChar<N> {
 
     #[inline]
     fn deref(&self) -> &str {
-        &self.s
+        &self.0
     }
 }
 
