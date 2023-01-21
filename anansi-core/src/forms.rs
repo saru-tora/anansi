@@ -4,8 +4,7 @@ use std::fmt;
 use std::collections::HashMap;
 use std::error::Error;
 
-use crate::web::{Reverse, TokenRef, CsrfDefense, Result, View, FormMap, BaseRequest, GetRecord};
-use crate::db::invalid;
+use crate::web::{Reverse, TokenRef, CsrfDefense, Result, View, FormMap, BaseRequest, GetRecord, WebErrorKind};
 use crate::records::{Record, FromParams};
 
 #[macro_export]
@@ -89,7 +88,7 @@ macro_rules! _handle_or_404 {
                 use anansi::forms::Form;
                 let mut form = match <$form as $trait>::on_get($req).await {
                     Ok(form) => form,
-                    Err(_) => return Err(anansi::db::invalid()),
+                    Err(e) => return Err(e),
                 };
                 form.post(&$req.token()?);
                 Ok(form)
@@ -246,7 +245,11 @@ impl Attributes {
         Self {attrs: HashMap::new()}
     }
     pub fn get(&self, key: &str) -> Result<&String> {
-        self.attrs.get(key).ok_or(invalid())
+        if let Some(v) = self.attrs.get(key) {
+            Ok(v)
+        } else {
+            Err(WebErrorKind::NoAttribute.to_box())
+        }
     }
     pub fn insert(&mut self, key: &str, value: &str) {
         self.attrs.insert(key.to_string(), value.to_string());

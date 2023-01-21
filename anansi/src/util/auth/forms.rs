@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use anansi::{form, form_error, err_box, GetData, ToEdit};
-use anansi::web::{BaseRequest, Result};
-use anansi::db::invalid;
+use anansi::web::{WebErrorKind, BaseRequest, Result};
 use anansi::records::{Record, DateTime};
 use anansi::forms::{Form, Field, VarChar, Text, FormError, ToRecord};
 use super::records::{User, user::username, Group, Filter, hash_password};
@@ -68,7 +67,7 @@ impl UserNew {
         if data.password == &data.confirm {
             Ok(())
         } else {
-            Err(invalid())
+            Err(WebErrorKind::BadPassword.to_box())
         }
     }
 }
@@ -84,7 +83,7 @@ impl<B: BaseRequest> ToRecord<B> for UserNew {
                 self.username.add_error(Box::new(FormError::new(feedback.suggestion())));
                 match feedback.into_username() {
                     Some(username) => username,
-                    None => return Err(invalid()),
+                    None => return Err(WebErrorKind::BadUsername.to_box()),
                 }
             },
         };

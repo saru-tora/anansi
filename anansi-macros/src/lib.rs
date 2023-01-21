@@ -647,14 +647,14 @@ pub fn form_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStr
                     #(#members2)*
                     Ok(())
                 } else {
-                    Err(anansi::db::invalid())
+                    Err(anansi::web::WebErrorKind::BadFill.to_box())
                 }
             }
             fn validate(&mut self) -> anansi::web::Result<#record_data> {
                 if let Some(data) = self.data.take() {
                     Ok(data)
                 } else {
-                    Err(anansi::db::invalid())
+                    Err(anansi::web::WebErrorKind::BadValidate.to_box())
                 }
             }
             fn errors(&self) -> &anansi::forms::FormErrors {
@@ -691,7 +691,7 @@ pub fn form_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStr
             pub fn check_field_errors(&self) -> anansi::web::Result<()> {
                 for field in self {
                     if !field.errors().is_empty() {
-                        return Err(anansi::db::invalid());
+                        return Err(anansi::web::WebErrorKind::FieldError.to_box());
                     }
                 }
                 Ok(())
@@ -858,7 +858,7 @@ fn form_init(data: &Data, data_members: &mut Vec<TokenStream>, members: &mut Vec
                                     if !s.is_empty() {
                                         s.parse()?
                                     } else {
-                                        return Err(anansi::db::invalid());
+                                        return Err(anansi::web::WebErrorKind::BadField.to_box());
                                     }
                                 },
                             }
@@ -1661,7 +1661,7 @@ pub fn record(metadata: proc_macro::TokenStream, input: proc_macro::TokenStream)
                                 },
                             }
                         }
-                        Err(anansi::db::invalid())
+                        Err(anansi::web::WebErrorKind::NoPermission.to_box())
                     }
                 }
             };

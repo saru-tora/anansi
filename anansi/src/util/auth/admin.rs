@@ -2,8 +2,8 @@ use std::str::Chars;
 use std::fmt::Debug;
 use anansi::records::{Record, ToUrl, FromParams, VarChar};
 use anansi::admin_site::{AdminRef};
-use anansi::db::{invalid, WhoseArg, Builder, Clause};
-use anansi::web::{Result, Method, Response, Reverse, BaseUser, BaseRequest, CsrfDefense, GetRecord};
+use anansi::db::{WhoseArg, Builder, Clause};
+use anansi::web::{Result, WebErrorKind, Method, Response, Reverse, BaseUser, BaseRequest, CsrfDefense, GetRecord};
 use crate::util::auth;
 use anansi::forms::{Form, Field, ToRecord, HasRecord, ToEdit};
 use anansi::{extend, render, redirect, handle, base_view, handle_or_404};
@@ -220,7 +220,7 @@ impl<'a> FilterChecker<'a> {
         let mut c = if let Some(d) = f.next()  {
             d
         } else {
-            return Err(invalid());
+            return Err(WebErrorKind::Invalid.to_box());
         };
         loop {
             match c {
@@ -235,7 +235,7 @@ impl<'a> FilterChecker<'a> {
                         break;
                     };
                 } else {
-                    return Err(invalid());
+                    return Err(WebErrorKind::Invalid.to_box());
                 },
             } 
             c = if let Some(d) = f.next() {
@@ -247,7 +247,7 @@ impl<'a> FilterChecker<'a> {
         if self.depth == 0 && !self.logic {
             Ok(self.query)
         } else {
-            Err(invalid())
+            Err(WebErrorKind::Invalid.to_box())
         }
     }
     fn lhs(&mut self, c: char, f: &mut Chars) -> Result<()> {
@@ -268,16 +268,16 @@ impl<'a> FilterChecker<'a> {
                     }
                     self.operator(d, f)
                 } else {
-                    Err(invalid())
+                    Err(WebErrorKind::Invalid.to_box())
                 };
             }
         }
-        Err(invalid())
+        Err(WebErrorKind::Invalid.to_box())
     }
     fn operator(&mut self, c: char, f: &mut Chars) -> Result<()> {
         if let Some(d) = f.next() {
             if ['=', '!', '>', '<', '~'].iter().find(|&&t| t == c).is_none() {
-                return Err(invalid());
+                return Err(WebErrorKind::Invalid.to_box());
             }
             return if (d.is_alphanumeric() || d == ' ') && c != '!' {
                 self.op = c.to_string();
@@ -289,14 +289,14 @@ impl<'a> FilterChecker<'a> {
                         self.op = s;
                         self.rhs(g, f)
                     } else {
-                        Err(invalid())
+                        Err(WebErrorKind::Invalid.to_box())
                     }
                 } else {
-                    Err(invalid())
+                    Err(WebErrorKind::Invalid.to_box())
                 };
             }
         }
-        Err(invalid())
+        Err(WebErrorKind::Invalid.to_box())
     }
     fn rhs(&mut self, mut c: char, f: &mut Chars) -> Result<()> {
         if c == ' ' {
@@ -360,12 +360,12 @@ impl<'a> FilterChecker<'a> {
                         } else if s == "false" {
                             self.query.push_str(&format!("{} {} 0", self.left, self.op));
                         } else {
-                            return Err(invalid());
+                            return Err(WebErrorKind::Invalid.to_box());
                         }
                     } else {
                         for e in s.chars() {
                             if !e.is_ascii_digit() {
-                                return Err(invalid());
+                                return Err(WebErrorKind::Invalid.to_box());
                             }
                         }
                         self.query.push_str(&format!("{} {} {}", self.left, self.op, self.right));
@@ -426,11 +426,11 @@ impl<'a> FilterChecker<'a> {
                         };
                         Ok(())
                     } else {
-                        Err(invalid())
+                        Err(WebErrorKind::Invalid.to_box())
                     }
                 };
             }
         }
-        Err(invalid())
+        Err(WebErrorKind::Invalid.to_box())
     }
 }

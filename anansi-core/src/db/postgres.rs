@@ -6,10 +6,11 @@ use sqlx::{Type, Database};
 use sqlx::types::chrono::NaiveDateTime;
 use sqlx::postgres::Postgres;
 
+use crate::try_sql;
 use crate::server::Settings;
-use crate::web::Result;
+use crate::web::{Result, WebErrorKind};
 use crate::records::Record;
-use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt, invalid};
+use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt};
 
 #[derive(Clone)]
 pub struct PgDb;
@@ -32,36 +33,32 @@ impl DbRow for PgDbRow {
         Self {row}
     }
     fn try_bool(&self, index: &str) -> Result<bool> {
-        use sqlx::Row;
-        self.row.try_get(index).or(Err(invalid()))
+        try_sql!(self, index)
     }
     fn try_count(&self) -> Result<i64> {
         use sqlx::Row;
-        self.row.try_get(0).or(Err(invalid()))
-    }
-    fn try_i64(&self, index: &str) -> Result<i64> {
-        use sqlx::Row;
-        self.row.try_get(index).or(Err(invalid()))
-    }
-    fn try_option_string(&self, index: &str) -> Result<Option<String>> {
-        use sqlx::Row;
-        self.row.try_get(index).or(Err(invalid()))
-    }
-    fn try_string(&self, index: &str) -> Result<String> {
-        use sqlx::Row;
-        match self.row.try_get(index) {
-            Ok(s) => Ok(s),
-            Err(_) => {
-                Err(invalid())
+        match self.row.try_get(0) {
+            Ok(c) => Ok(c),
+            Err(e) => {
+                Err(Box::new(e))
             }
         }
+    }
+    fn try_i64(&self, index: &str) -> Result<i64> {
+        try_sql!(self, index)
+    }
+    fn try_option_string(&self, index: &str) -> Result<Option<String>> {
+        try_sql!(self, index)
+    }
+    fn try_string(&self, index: &str) -> Result<String> {
+        try_sql!(self, index)
     }
     fn try_date_time(&self, index: &str) -> Result<String> {
         use sqlx::Row;
         let dt: NaiveDateTime = match self.row.try_get(index) {
             Ok(s) => s,
-            Err(_) => {
-                return Err(invalid());
+            Err(e) => {
+                return Err(Box::new(e));
             }
         };
         Ok(dt.to_string())
@@ -116,9 +113,9 @@ impl DbPool for PgDbPool {
         let databases = match settings.get("databases") {
             Some(v) => match v {
                 Table(t) => t,
-                _ => return Err(invalid()),
+                _ => return Err(WebErrorKind::BadDb.to_box()),
             }
-            None => return Err(invalid()),
+            None => return Err(WebErrorKind::BadDb.to_box()),
         };
         let database = databases.get("default").expect("Could not get database information");
         let name = database.get("name").expect("Could not get database name").as_str().expect("Could not convert database name to string");

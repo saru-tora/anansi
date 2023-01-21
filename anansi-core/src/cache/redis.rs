@@ -1,9 +1,8 @@
 use std::fmt;
 use std::sync::Arc;
 use super::BaseCache;
-use crate::db::invalid;
 use crate::server::Settings;
-use crate::web::Result;
+use crate::web::{Result, WebErrorKind};
 
 use tokio::sync::RwLock;
 
@@ -48,7 +47,7 @@ impl RedisConnection {
     async fn set(&mut self, key: &str, value: &[u8]) -> Result<()> {
         match self.set_ex(key, value, self.default_timeout).await {
             Ok(()) => Ok(()),
-            Err(_) => Err(invalid()),
+            Err(e) => Err(e),
         }
     }
     async fn set_ex(&mut self, key: &str, value: &[u8], timeout: Option<usize>) -> Result<()> {
@@ -59,7 +58,7 @@ impl RedisConnection {
         };
         match r {
             Ok(()) => Ok(()),
-            Err(_) => Err(invalid()),
+            Err(e) => Err(Box::new(e)),
         }
     }
     async fn get(&mut self, key: &str) -> Result<Vec<u8>> {
@@ -68,11 +67,11 @@ impl RedisConnection {
                 if !r.is_empty() {
                   Ok(r)
                 } else {
-                    Err(invalid())
+                    Err(WebErrorKind::NoCache.to_box())
                 }
             }
             Err(_) => {
-                Err(invalid())
+                Err(WebErrorKind::NoCache.to_box())
             }
         }
     }

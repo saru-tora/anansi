@@ -3,9 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::result;
 use std::error::Error;
 
-use crate::db::invalid;
 use crate::web::Result;
-use crate::records::{DataType, RecordField, ToSql};
+use crate::records::{DataType, RecordField, ToSql, RecordErrorKind};
 use sqlx::{Decode, Database, database::HasValueRef};
 use serde::{Serialize, Deserialize};
 
@@ -29,15 +28,15 @@ impl Date {
     pub fn from(s: &str) -> Result<Self> {
         let v: Vec<&str> = s.split('-').collect();
         if v.len() != 3 {
-            Err(invalid())
+            Err(RecordErrorKind::BadDate.to_box())
         } else {
             let year: u16 = v[0].parse()?;
             if year < 100 || year > 9999 {
-                return Err(invalid());
+                return Err(RecordErrorKind::BadDate.to_box());
             }
             let month: u8 = v[1].parse()?;
             if month > 12 {
-                return Err(invalid());
+                return Err(RecordErrorKind::BadDate.to_box());
             }
             let day: u8 = v[2].parse()?;
             let last = if month != 2 {
@@ -58,7 +57,7 @@ impl Date {
                 }
             };
             if day > last {
-                return Err(invalid());
+                return Err(RecordErrorKind::BadDate.to_box());
             }
             Ok(Self {year, month, day})
         }
@@ -102,19 +101,19 @@ impl Time {
     pub fn from(s: &str) -> Result<Self> {
         let v: Vec<&str> = s.split(':').collect();
         if v.len() != 3 {
-            Err(invalid())
+            Err(RecordErrorKind::BadTime.to_box())
         } else {
             let hour: u8 = v[0].parse()?;
             if hour > 23 {
-                return Err(invalid());
+                return Err(RecordErrorKind::BadTime.to_box());
             }
             let minute: u8 = v[1].parse()?;
             if minute > 59 {
-                return Err(invalid());
+                return Err(RecordErrorKind::BadTime.to_box());
             }
             let second: u8 = v[2].parse()?;
             if second > 59 {
-                return Err(invalid());
+                return Err(RecordErrorKind::BadTime.to_box());
             }
             Ok(Self {hour, minute, second})
         }
@@ -209,7 +208,7 @@ impl DataType for DateTime {
     fn from_val(s: String) -> Result<Self> {
         let v: Vec<&str> = s.split(' ').collect();
         if v.len() != 2 {
-            Err(invalid())
+            Err(RecordErrorKind::BadDateTime.to_box())
         } else {
             let date = Date::from(v[0])?;
             let time = Time::from(v[1])?;

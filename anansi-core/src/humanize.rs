@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
 use crate::web::Result;
-use crate::db::invalid;
-use crate::records::{DateTime, BigInt, DataType};
+use crate::records::{DateTime, BigInt, DataType, RecordErrorKind};
 
 const ENCODE: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_";
 
@@ -42,7 +41,7 @@ pub fn decode(s: &str) -> Result<BigInt> {
                 n += o * m;
                 Ok(())
             }
-            None => return Err(invalid()),
+            None => return Err(RecordErrorKind::BadIntDecode.to_box()),
         })?;
         c += 1;
         if c < s.len() {

@@ -6,10 +6,11 @@ use async_trait::async_trait;
 use sqlx::{Type, Database};
 use sqlx::sqlite::Sqlite;
 
+use crate::try_sql;
 use crate::server::Settings;
 use crate::records::Record;
-use crate::web::{Result, BASE_DIR};
-use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt, invalid};
+use crate::web::{Result, BASE_DIR, WebErrorKind};
+use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt};
 
 #[derive(Clone)]
 pub struct SqliteDb;
@@ -32,28 +33,26 @@ impl DbRow for SqliteDbRow {
         Self {row}
     }
     fn try_bool(&self, index: &str) -> Result<bool> {
-        use sqlx::Row;
-        self.row.try_get(index).or(Err(invalid()))
+        try_sql!(self, index)
     }
     fn try_i64(&self, index: &str) -> Result<i64> {
-        use sqlx::Row;
-        self.row.try_get(index).or(Err(invalid()))
+        try_sql!(self, index)
     }
     fn try_count(&self) -> Result<i64> {
         use sqlx::Row;
-        self.row.try_get(0).or(Err(invalid()))
+        match self.row.try_get(0) {
+            Ok(o) => Ok(o),
+            Err(e) => Err(Box::new(e))
+        }
     }
     fn try_option_string(&self, index: &str) -> Result<Option<String>> {
-        use sqlx::Row;
-        self.row.try_get(index).or(Err(invalid()))
+        try_sql!(self, index)
     }
     fn try_string(&self, index: &str) -> Result<String> {
-        use sqlx::Row;
-        self.row.try_get(index).or(Err(invalid()))
+        try_sql!(self, index)
     }
     fn try_date_time(&self, index: &str) -> Result<String> {
-        use sqlx::Row;
-        self.row.try_get(index).or(Err(invalid()))
+        try_sql!(self, index)
     }
 }
 
@@ -107,13 +106,13 @@ impl DbPool for SqliteDbPool {
         let databases = match settings.get("databases") {
             Some(v) => match v {
                 Table(t) => t,
-                _ => return Err(invalid()),
+                _ => return Err(WebErrorKind::BadDb.to_box()),
             }
-            None => return Err(invalid()),
+            None => return Err(WebErrorKind::BadDb.to_box()),
         };
         let name = match databases.get("default") {
             Some(d) => d.get("name").expect("Could not get database name").as_str().expect("Could not convert database name to string"),
-            None => return Err(invalid()),
+            None => return Err(WebErrorKind::BadDb.to_box()),
         };
         dir.push(name);
         let ds = dir.to_str().unwrap();
@@ -176,7 +175,7 @@ impl SqliteDbPool {
     async fn connect(dir: &str) -> Result<sqlx::Pool<Sqlite>> {
         sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(thread::available_parallelism().unwrap().get() as u32)
-            .connect(&dir).await.or(Err(invalid()))
+            .connect(&dir).await.or(Err(WebErrorKind::BadDb.to_box()))
     }
 
     async fn init_db(dir: &str) {

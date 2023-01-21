@@ -1,8 +1,7 @@
 use std::path::PathBuf;
 use tokio::fs;
 use std::collections::HashMap;
-use crate::db::invalid;
-use crate::web::{Route, Response, BASE_DIR, Result, View, BaseRequest, Service};
+use crate::web::{WebErrorKind, Route, Response, BASE_DIR, Result, View, BaseRequest, Service};
 
 const SLASH: u8 = 47;
 const LEFT_BRACE: u8 = 123;
@@ -60,7 +59,7 @@ impl<B: BaseRequest, S: Service<B>> Router<B, S> {
                     continue;
                 }
             }
-            return Err(invalid());
+            return Err(WebErrorKind::BadName.to_box());
         }
         if let Some(f) = self.files.get(url) {
             return self.serve_content(url, f.to_vec());
@@ -77,16 +76,20 @@ impl<B: BaseRequest, S: Service<B>> Router<B, S> {
         if path.starts_with(base) {
             self.serve_content(url, fs::read(full).await?)
         } else {
-            Err(invalid())
+            Err(WebErrorKind::BadPath.to_box())
         }
     }
     fn serve_content(&self, url: &str, content: Vec<u8>) -> Result<Response> {
-        let n = url.rfind('.').ok_or(invalid())?;
+        let n = if let Some(idx) = url.rfind('.') {
+            idx
+        } else {
+            return Err(WebErrorKind::NoExtension.to_box());
+        };
         let ty = match &url[n+1..] {
             "css" => "text/css",
             "js" => "application/javascript",
             "wasm" => "application/wasm",
-            _ => return Err(invalid()),
+            _ => return Err(WebErrorKind::BadExtension.to_box()),
         };
         Ok(Response::content(200, ty, content))
     }
@@ -97,7 +100,7 @@ pub fn get_capture(url: &str) -> Result<Vec<String>> {
     let mut n = 0;
     let mut iter = url.as_bytes().iter();
     if *iter.next().unwrap() != SLASH {
-        return Err(invalid())
+        return Err(WebErrorKind::BadCapture.to_box())
     }
     let mut m = 1;
     while m < url.len() {
@@ -147,7 +150,7 @@ pub fn split_url<'a>(url: &'a str) -> Result<Vec<&'a str>> {
     let mut n = 0;
     let mut iter = url.as_bytes().iter();
     if *iter.next().unwrap() != SLASH {
-        return Err(invalid())
+        return Err(WebErrorKind::BadSplit.to_box())
     }
     let mut m = 1;
     while m < url.len() {

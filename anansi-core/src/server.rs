@@ -565,7 +565,10 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                 if dirs[0] == "/static" {
                     match router.serve_static(url.path()).await {
                         Ok(r) => r,
-                        Err(_) => (router.internal_error)(),
+                        Err(e) => {
+                            error!("{:?}", e);
+                            (router.internal_error)()
+                        }
                     }
                 } else {
                     let result = B::new(HyperRequest {0: request}, urls, pool.clone(), cache.clone(), std_rng.clone(), site, mailer).await;
@@ -580,28 +583,34 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                                         if web_error.kind() == &WebErrorKind::Unauthenticated {
                                             Response::redirect(&router.login_url)
                                         } else {
+                                            error!("{:?}", web_error);
                                             (router.internal_error)()
                                         }
-                                    } else if let Ok(_http_404) = error.downcast::<Http404>() {
+                                    } else if let Some(_) = error.downcast_ref::<Http404>() {
                                         match (router.handle_404)(&mut req).await {
                                             Ok(r) => r,
-                                            Err(_) => (router.internal_error)()
+                                            Err(e) => {
+                                                error!("{:?}", e);
+                                                (router.internal_error)()
+                                            }
                                         }
                                     } else {
+                                        error!("{:?}", error);
                                         (router.internal_error)()
                                     }
                                 }
                             }
                         }
                         Err(error) => {
-                            if let Ok(web_error) = error.downcast::<WebError>() {
+                            if let Some(web_error) = error.downcast_ref::<WebError>() {
                                 match web_error.kind() {
                                     WebErrorKind::NoSession => {
                                         match B::handle_no_session(Response::redirect(url.path()), pool, std_rng).await {
                                             Ok(r) => {
                                                 r
                                             }
-                                            Err(_) => {
+                                            Err(e) => {
+                                                error!("{:?}", e);
                                                 (router.internal_error)()
                                             }
                                         }
@@ -609,11 +618,13 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                                     WebErrorKind::Unauthenticated => {
                                         Response::redirect(&router.login_url)
                                     }
-                                    WebErrorKind::Invalid => {
+                                    _ => {
+                                        error!("{:?}", web_error);
                                         (router.internal_error)()
                                     }
                                 }
                             } else {
+                                error!("{:?}", error);
                                 (router.internal_error)()
                             }
                         }
@@ -675,7 +686,10 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                 if dirs[0] == "/static" {
                     match router.serve_static(url.path()).await {
                         Ok(r) => r,
-                        Err(_) => (router.internal_error)(),
+                        Err(e) => {
+                            error!("{:?}", e);
+                            (router.internal_error)()
+                        }
                     }
                 } else {
                     let result = B::new(HyperRequest {0: request}, urls, pool.clone(), cache.clone(), std_rng.clone(), mailer).await;
@@ -690,28 +704,34 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                                         if web_error.kind() == &WebErrorKind::Unauthenticated {
                                             Response::redirect(&router.login_url)
                                         } else {
+                                            error!("{:?}", web_error);
                                             (router.internal_error)()
                                         }
-                                    } else if let Ok(_http_404) = error.downcast::<Http404>() {
+                                    } else if let Some(_) = error.downcast_ref::<Http404>() {
                                         match (router.handle_404)(&mut req).await {
                                             Ok(r) => r,
-                                            Err(_) => (router.internal_error)()
+                                            Err(e) => {
+                                                error!("{:?}", e);
+                                                (router.internal_error)()
+                                            }
                                         }
                                     } else {
+                                        error!("{:?}", error);
                                         (router.internal_error)()
                                     }
                                 }
                             }
                         }
                         Err(error) => {
-                            if let Ok(web_error) = error.downcast::<WebError>() {
+                            if let Some(web_error) = error.downcast_ref::<WebError>() {
                                 match web_error.kind() {
                                     WebErrorKind::NoSession => {
                                         match B::handle_no_session(Response::redirect(url.path()), pool, std_rng).await {
                                             Ok(r) => {
                                                 r
                                             }
-                                            Err(_) => {
+                                            Err(e) => {
+                                                error!("{:?}", e);
                                                 (router.internal_error)()
                                             }
                                         }
@@ -719,11 +739,13 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                                     WebErrorKind::Unauthenticated => {
                                         Response::redirect(&router.login_url)
                                     }
-                                    WebErrorKind::Invalid => {
+                                    _ => {
+                                        error!("{:?}", web_error.kind());
                                         (router.internal_error)()
                                     }
                                 }
                             } else {
+                                error!("{:?}", error);
                                 (router.internal_error)()
                             }
                         }

@@ -2,8 +2,8 @@ use serde_json::Value;
 use serde_json::map::Map;
 
 use anansi::server::Rng;
-use anansi::web::{Result, BaseRequest, Reverse, RawRequest, View, Response, TokenRef};
-use anansi::db::{invalid, DbPool};
+use anansi::web::{Result, BaseRequest, Reverse, RawRequest, View, Response, TokenRef, WebErrorKind};
+use anansi::db::DbPool;//{invalid, DbPool};
 use anansi::records::{Record, VarChar, Text, DateTime, Relate, generate_id};
 use anansi::record;
 
@@ -24,10 +24,18 @@ pub struct SessionData {
 
 impl SessionData {
     pub fn get(&self, key: &str) -> Result<&Value> {
-        self.data_map.get(key).ok_or(invalid())
+        if let Some(v) = self.data_map.get(key) {//.ok_or(invalid())
+            Ok(v)
+        } else {
+            Err(WebErrorKind::NoData.to_box())
+        }
     }
     pub fn get_mut(&mut self, key: &str) -> Result<&mut Value> {
-        self.data_map.get_mut(key).ok_or(invalid())
+        if let Some(v) = self.data_map.get_mut(key) {//.ok_or(invalid())
+            Ok(v)
+        } else {
+            Err(WebErrorKind::NoData.to_box())
+        }
     }
     pub fn insert(&mut self, k: String, v: Value) -> Option<Value> {
         self.data_map.insert(k, v)
@@ -84,7 +92,7 @@ impl Session  {
         if session.expires > DateTime::now() {
             Ok(session)
         } else {
-            Err(invalid())
+            Err(WebErrorKind::ExpiredSession.to_box())
         }
     }
     pub fn set_and_redirect<B: BaseRequest + Reverse>(&self, req: &B, v: View<B>) -> Result<Response> {

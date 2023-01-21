@@ -3,8 +3,7 @@ use lettre::transport::smtp::{response::Response, authentication::Credentials};
 use lettre::{Message, AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use lettre::message::{Mailbox, MessageBuilder};
 
-use crate::db::invalid;
-use crate::web::Result;
+use crate::web::{Result, WebErrorKind};
 use crate::server::Settings;
 
 pub struct Email<'a> {
@@ -20,7 +19,7 @@ impl<'a> Email<'a> {
         if let Some(mailer) = self.mailer {
             Ok(EmailResponse {0: mailer.0.send(self.message).await?})
         } else {
-            Err(invalid())
+            Err(WebErrorKind::BadEmail.to_box())
         }
     }
 }
@@ -47,7 +46,7 @@ impl Mailer {
                 }
             }
         }
-        Err(invalid())
+        Err(WebErrorKind::BadMailer.to_box())
     }
 }
 

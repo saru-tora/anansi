@@ -12,8 +12,8 @@ use async_recursion::async_recursion;
 
 use totp_rs::{Algorithm, TOTP, Secret};
 
-use anansi::web::{Result, BaseUser, BaseRequest};
-use anansi::db::{DbPool, DbRowVec, invalid};
+use anansi::web::{Result, BaseUser, BaseRequest, WebErrorKind};
+use anansi::db::{DbPool, DbRowVec};//, invalid};
 use anansi::records::{Record, BigInt, VarChar, Text, DateTime, DataType};
 use anansi::{record, FromParams, ToUrl, Relate};
 
@@ -49,7 +49,7 @@ pub fn hash_password(password: &str) -> Result<VarChar<150>> {
     let salt = SaltString::generate(&mut OsRng);
     let password_hash = match Pbkdf2.hash_password(password.as_bytes(), &salt) {
         Ok(o) => o,
-        Err(_) => return Err(invalid()),
+        Err(_) => return Err(WebErrorKind::BadPassword.to_box()),
     };
     VarChar::from_val(password_hash.to_string())
 }
@@ -169,7 +169,7 @@ impl BaseRelation {
                 },
             }
         }
-        Err(anansi::db::invalid() as Box<dyn std::error::Error + Send + Sync + 'static>)
+        Err(WebErrorKind::BadRelation.to_box() as Box<dyn std::error::Error + Send + Sync + 'static>)
     }
 }
 
@@ -234,12 +234,12 @@ impl User {
     pub fn verify(&self, password: &VarChar<150>) -> Result<()> {
         let parsed_hash = match PasswordHash::new(&self.password) {
             Ok(p) => p,
-            Err(_) => return Err(invalid()),
+            Err(_) => return Err(WebErrorKind::BadPassword.to_box()),
         };
         if Pbkdf2.verify_password(&password.as_bytes(), &parsed_hash).is_ok() { 
             Ok(())
         } else {
-            Err(invalid())
+            Err(WebErrorKind::BadPassword.to_box())
         }
     }
     pub fn set_totp(&mut self, issuer: Option<String>, secret: String) -> Result<()> {
@@ -262,7 +262,7 @@ impl User {
                 return Ok(());
             }
         }
-        Err(invalid())
+        Err(WebErrorKind::BadTotp.to_box())
     }
 }
 

@@ -15,7 +15,7 @@ use sqlx::{Decode, Database, database::HasValueRef};
 use rand::Rng;
 
 use crate::web::{BaseRequest, Parameters, Result};
-use crate::db::{DbRow, DbRowVec, DbPool, DbType, invalid, escape, Count, Whose, WhoseArg, DeleteWhose, OrderBy, OrderByArg, Limit};
+use crate::db::{DbRow, DbRowVec, DbPool, DbType, escape, Count, Whose, WhoseArg, DeleteWhose, OrderBy, OrderByArg, Limit};
 use crate::admin_site::AdminField;
 pub use crate::datetime::DateTime;
 
@@ -50,6 +50,59 @@ impl AdminField for Text {
     }
 }
 
+#[derive(Debug)]
+pub struct RecordError {
+    kind: RecordErrorKind,
+}
+
+impl RecordError {
+    pub fn from(kind: RecordErrorKind) -> Self {
+        Self {kind}
+    }
+    pub fn kind(&self) -> &RecordErrorKind {
+        &self.kind
+    }
+}
+
+impl fmt::Display for RecordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+impl Error for RecordError {}
+
+#[derive(Debug, PartialEq)]
+#[non_exhaustive]
+pub enum RecordErrorKind {
+    BadBool,
+    BadIntDecode,
+    BadVarChar,
+    BadDate,
+    BadTime,
+    BadDateTime,
+}
+
+impl RecordErrorKind {
+    pub fn to_box(self) -> Box<RecordError> {
+        Box::new(RecordError::from(self))
+    }
+}
+
+impl fmt::Display for RecordErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::BadBool => "could not create boolean",
+            Self::BadDate => "could not create date",
+            Self::BadTime => "could not create time",
+            Self::BadDateTime => "could not create datetime",
+            Self::BadIntDecode => "could not decode int",
+            Self::BadVarChar => "could not create varchar"
+        };
+        write!(f, "{}", s)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Boolean {
     b: bool,
@@ -65,7 +118,7 @@ impl Boolean {
                 "0" => false,
                 "true" => true,
                 "1" => true,
-                _ => return Err(invalid()),
+                _ => return Err(RecordErrorKind::BadBool.to_box()),
             };
             Ok(Self{b})
     }
@@ -295,7 +348,7 @@ impl<const N: u16> DataType for VarChar<N> {
 
     fn from_val(s: String) -> Result<Self> {
         if s.len() > N as usize {
-            Err(invalid())
+            Err(RecordErrorKind::BadVarChar.to_box())
         } else {
             Ok(Self {s})
         }

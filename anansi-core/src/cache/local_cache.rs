@@ -4,8 +4,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use super::BaseCache;
 use crate::server::Settings;
-use crate::web::Result;
-use crate::db::invalid;
+use crate::web::{Result, WebErrorKind};
 
 #[derive(Debug)]
 struct LocalValue {
@@ -64,10 +63,10 @@ impl Lru {
                 }
                 lv.index
             } else {
-                return Err(invalid());
+                return Err(WebErrorKind::NoCache.to_box());
             }
         } else {
-            return Err(invalid());
+            return Err(WebErrorKind::NoCache.to_box());
         };
         if change {
             self.touch(index);
@@ -76,7 +75,7 @@ impl Lru {
         } else {
             self.remove(index);
             self.storage.remove(key);
-            return Err(invalid());
+            return Err(WebErrorKind::NoCache.to_box());
         }
     }
     fn push_front(&mut self, index: usize) {

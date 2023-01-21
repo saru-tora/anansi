@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::collections::{HashMap, hash_map::Iter};
-use crate::db::{DbPool, invalid};
+use crate::db::DbPool;
 use std::string::FromUtf8Error;
 use std::error::Error;
 use std::result;
@@ -217,7 +217,7 @@ macro_rules! setup {
                         return Ok(form_map);
                     }
                 }
-                Err(anansi::db::invalid())
+                Err(err_box!(WebError::from(WebErrorKind::BadToken)))
             }
         }
     }
@@ -379,6 +379,37 @@ pub enum WebErrorKind {
     Invalid,
     NoSession,
     Unauthenticated,
+    BadToken,
+    NoParam,
+    NoField,
+    NoCookie,
+    NoAttribute,
+    BadDecode,
+    BadUri,
+    BadForm,
+    BadName,
+    BadPath,
+    NoExtension,
+    BadExtension,
+    BadCapture,
+    BadSplit,
+    BadEmail,
+    BadMailer,
+    BadFill,
+    BadValidate,
+    NoCache,
+    FieldError,
+    BadField,
+    NoPermission,
+    BadDb,
+    NoData,
+    ExpiredSession,
+    NotAdmin,
+    BadRelation,
+    BadPassword,
+    BadTotp,
+    BadUsername,
+    NoQr,
 }
 
 impl fmt::Display for WebErrorKind {
@@ -386,9 +417,46 @@ impl fmt::Display for WebErrorKind {
         let s = match self {
             Self::Invalid => "invalid data",
             Self::NoSession => "could not get session token from cookie",
-            Self::Unauthenticated => "user not authenticated",
+            Self::Unauthenticated => "user is not authenticated",
+            Self::BadToken => "bad CSRF token",
+            Self::NoParam => "parameter does not exist",
+            Self::NoField => "form field does not exist",
+            Self::NoCookie => "cookie does not exist",
+            Self::NoAttribute => "attribute does not exist",
+            Self::BadDecode => "could not percent decode string",
+            Self::BadUri => "unrecognized uri",
+            Self::BadForm => "could not create form map",
+            Self::BadName => "file name has bad characters",
+            Self::BadPath => "file path is not valid",
+            Self::NoExtension => "file does not have extension",
+            Self::BadExtension => "file does not have a valid extension",
+            Self::BadCapture => "could not capture parameter",
+            Self::BadSplit => "could not split url",
+            Self::NoCache => "could not get cache entry",
+            Self::BadEmail => "could not send email",
+            Self::BadMailer => "could not create mailer",
+            Self::BadFill => "could not fill form",
+            Self::BadValidate => "could not validate form",
+            Self::FieldError => "form has field error(s)",
+            Self::BadField => "form has problem with field",
+            Self::NoPermission => "user does not have permission to access resource",
+            Self::BadDb => "could not connect to database",
+            Self::NoData => "could not find data in session",
+            Self::ExpiredSession => "session has expired",
+            Self::NotAdmin => "user is not an admin",
+            Self::NoQr => "could not get qr code",
+            Self::BadRelation => "could not check relation",
+            Self::BadPassword => "could not verify password",
+            Self::BadTotp => "could not verify totp",
+            Self::BadUsername => "problem with username",
         };
         write!(f, "{}", s)
+    }
+}
+
+impl WebErrorKind {
+    pub fn to_box(self) -> Box<WebError> {
+        Box::new(WebError::from(self))
     }
 }
 
@@ -400,10 +468,18 @@ impl Parameters {
         Self {0: HashMap::new()}
     }
     pub fn get(&self, key: &str) -> Result<&String> {
-        self.0.get(key).ok_or(invalid())
+        if let Some(s) = self.0.get(key) {
+            Ok(s)
+        } else {
+            Err(WebErrorKind::NoParam.to_box())
+        }
     }
     pub fn remove(&mut self, key: &str) -> Result<String> {
-        self.0.remove(key).ok_or(invalid())
+        if let Some(s) = self.0.remove(key) {
+            Ok(s)
+        } else {
+            Err(WebErrorKind::NoParam.to_box())
+        }
     }
     pub fn insert(&mut self, key: String, value: String) {
         self.0.insert(key, value);
@@ -517,10 +593,18 @@ pub struct FormMap {
 
 impl FormMap {
     pub fn get(&self, s: &str) -> Result<&String> {
-        self.map.get(s).ok_or(invalid())
+        if let Some(v) = self.map.get(s) {
+            Ok(v)
+        } else {
+            Err(WebErrorKind::NoField.to_box())
+        }
     }
     pub fn remove(&mut self, s: &str) -> Result<String> {
-        self.map.remove(s).ok_or(invalid())
+        if let Some(v) = self.map.remove(s) {
+            Ok(v)
+        } else {
+            Err(WebErrorKind::NoField.to_box())
+        }
     }
 }
 
@@ -531,10 +615,18 @@ pub struct Cookies {
 
 impl Cookies {
     pub fn get(&self, s: &str) -> Result<&String> {
-        self.cookies.get(s).ok_or(invalid())
+        if let Some(v) = self.cookies.get(s) {
+            Ok(v)
+        } else {
+            Err(WebErrorKind::NoCookie.to_box())
+        }
     }
     pub fn remove(&mut self, s: &str) -> Result<String> {
-        self.cookies.remove(s).ok_or(invalid())
+        if let Some(v) = self.cookies.remove(s) {
+            Ok(v)
+        } else {
+            Err(WebErrorKind::NoCookie.to_box())
+        }
     }
 }
 
@@ -587,8 +679,18 @@ pub fn percent_decode(s: &str) -> Result<String> {
     while let Some(c) = chars.next() {
         if c == '%' {
             let mut s = String::new();
-            s.push(chars.next().ok_or(invalid())?);
-            s.push(chars.next().ok_or(invalid())?);
+            let c = if let Some(c) = chars.next() {
+                c
+            } else {
+                return Err(WebErrorKind::BadDecode.to_box());
+            };
+            s.push(c);
+            let d = if let Some(d) = chars.next() {
+                d
+            } else {
+                return Err(WebErrorKind::BadDecode.to_box());
+            };
+            s.push(d);
             match s.as_str() {
                 "21" => t.push('!'), 
                 "22" => t.push('"'), 
@@ -622,7 +724,7 @@ pub fn percent_decode(s: &str) -> Result<String> {
                 "7C" => t.push('|'), 
                 "7D" => t.push('}'), 
                 "7E" => t.push('~'), 
-                _ => return Err(invalid()),
+                _ => return Err(WebErrorKind::BadDecode.to_box()),
             }
         } else if c == '+' {
             t.push(' ');
@@ -788,7 +890,7 @@ pub async fn route_request<B: BaseRequest + fmt::Debug + 'static, S: Service<B>>
                     LEFT_BRACE => {
                         params.insert(pattern[1..].to_string(), dir[1..].to_string());
                     }
-                    _ => return Err(invalid()),
+                    _ => return Err(WebErrorKind::BadUri.to_box()),
                 }
             }
             if b {
@@ -1049,7 +1151,7 @@ impl<D: DbPool> RawRequest<D> {
                 return Ok(FormMap {map})
             }
         }
-        Err(invalid())
+        Err(WebErrorKind::BadForm.to_box())
     }
     pub async fn new(request: HyperRequest, pool: D, std_rng: Rng) -> Result<Self> {
         let (parts, body) = request.0.into_parts();

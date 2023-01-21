@@ -1,7 +1,6 @@
 use super::records::{User, BaseRelation};
 use super::super::sessions::middleware::Sessions;
-use anansi::web::{Result, BaseRequest};
-use anansi::db::invalid;
+use anansi::web::{Result, BaseRequest, WebErrorKind};
 use totp_rs::{Algorithm, TOTP, Secret};
 
 #[async_trait::async_trait]
@@ -14,7 +13,7 @@ pub trait Auth: Sessions + BaseRequest {
             self.update_session().await?;
             Ok(())
         } else {
-            Err(anansi::db::invalid())
+            Err(WebErrorKind::NotAdmin.to_box())
         }
     }
     async fn auth(&mut self, user: &User) -> Result<()> {
@@ -25,7 +24,7 @@ pub trait Auth: Sessions + BaseRequest {
             self.update_session().await?;
             Ok(())
         } else {
-            Err(anansi::db::invalid())
+            Err(WebErrorKind::Unauthenticated.to_box())
         }
     }
     fn new_totp(&mut self, issuer: Option<String>) -> Result<String> {
@@ -44,7 +43,7 @@ pub trait Auth: Sessions + BaseRequest {
         )?;
         match totp.get_qr() {
             Ok(o) => Ok(o),
-            Err(_) => Err(invalid()),
+            Err(_) => Err(WebErrorKind::NoQr.to_box()),
         }
     }
     fn temp_totp(&self) -> Result<String> {

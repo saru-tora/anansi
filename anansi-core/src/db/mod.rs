@@ -5,9 +5,7 @@ pub mod sqlite;
 pub mod postgres;
 
 use std::str;
-use std::io::{self, Read, ErrorKind};
 use std::marker::PhantomData;
-use std::borrow::Cow;
 use std::future::Future;
 
 use sqlx::{Database, Type};
@@ -16,7 +14,7 @@ use async_trait::async_trait;
 
 use crate::server::Settings;
 use crate::records::{Record, DataType, BigInt, Objects, ToSql};
-use crate::web::{Result, BaseRequest};
+use crate::web::{Result, BaseRequest, WebErrorKind};
 
 #[cfg(feature = "sqlite")]
 #[macro_export]
@@ -92,106 +90,17 @@ pub trait DbType {
     fn db_type(ty: &str) -> String;
 }
 
-const NEWLINE: u8 = 10;
-const RETURN: u8 = 13;
-const DOUBLE_QUOTE: u8 = 34;
-const COMMA: u8 = 44;
-
-pub struct Buffer {
-    pos: usize,
-    buf: Vec<u8>,
-}
-
-impl Buffer {
-    pub fn new() -> Self {
-        Self {pos: 0, buf: vec![]}
-    }
-    pub fn to_s(self, l: usize) -> String {
-        String::from_utf8(self.buf[l..].to_vec()).unwrap()
-    }
-    pub fn from<R: Read>(reader: &mut R) -> Result<Self> {
-        let mut buf = vec![0; 1024];
-        let len = reader.read(&mut buf)?;
-        if len < buf.len() {
-            buf.truncate(buf.len()-len);
-            Ok(Self {pos: 0, buf})
-        } else {
-            Err(invalid())
-        }
-    }
-    pub fn split_comma(&mut self) -> Result<Vec<Cow<'_, str>>> {
-        let mut v = vec![];
-        if !self.buf.is_empty() {
-            let mut iter = self.buf.iter();
-            while let Some(b) = iter.next() {
-                self.pos += 1;
-                if *b == NEWLINE {
-                    break;
-                }
-            }
-            let mut m = self.pos;
-            loop {
-                if let Some(b) = iter.next() {
-                    if *b != DOUBLE_QUOTE {
-                        while let Some(c) = iter.next() {
-                            let c = *c;
-                            m += 1;
-                            if c == COMMA || c == RETURN {
-                                v.push(Cow::from(str::from_utf8(&self.buf[self.pos..m])?));
-                                if c == RETURN {
-                                    while let Some(d) = iter.next() {
-                                        let d = *d;
-                                        m += 1;
-                                        if d == NEWLINE {
-                                            break;
-                                        }
-                                    }
-                                }
-                                m += 1;
-                                self.pos = m;
-                                break;
-                            }
-                        }
-                    } else {
-                        let mut bv = vec![];
-                        while let Some(c) = iter.next() {
-                            let c = *c;
-                            if c == DOUBLE_QUOTE {
-                                if let Some(d) = iter.next() {
-                                    m += 1;
-                                    let d = *d;
-                                    if d != DOUBLE_QUOTE {
-                                        m += bv.len() + 1;
-                                        v.push(Cow::from(String::from_utf8(bv)?));
-                                        if d != COMMA {
-                                            while let Some(e) = iter.next() {
-                                                let e = *e;
-                                                m += 1;
-                                                if e == NEWLINE {
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        m += 1;
-                                        self.pos = m;
-                                        break;
-                                    }
-                                }
-                            }
-                            bv.push(c);
-                        }
-                    }
-                } else {
-                    break;
-                }
+#[macro_export]
+macro_rules! try_sql {
+    ($self:ident, $index:ident) => {
+        {
+            use sqlx::Row;
+            match $self.row.try_get($index) {
+                Ok(o) => Ok(o),
+                Err(e) => Err(Box::new(e))
             }
         }
-        Ok(v)
     }
-}
-
-pub fn invalid() -> Box<io::Error> {
-    Box::new(io::Error::from(ErrorKind::InvalidData))
 }
 
 pub fn percent_escape(s: &str) -> String {
@@ -611,7 +520,7 @@ impl<M: Record> DeleteWhose<M>  {
     }
     pub async fn execute<B: BaseRequest>(self, req: &B) -> Result<()> {
         if !req.raw().valid_token() {
-            return Err(invalid());
+            return Err(WebErrorKind::BadToken.to_box());
         }
         let val = B::SqlPool::to_stmt(self.stmt.val.push_val(Clause::Close));
        
@@ -739,7 +648,7 @@ impl<S: Record> Statement<S> {
 
         match pool.raw_fetch_one(&val).await {
             Ok(row) => Ok(row.try_count()?),
-            Err(_) => Err(invalid()),
+            Err(e) => Err(e),
         }
     }
     async fn get_count<B: BaseRequest>(self, req: &B) -> Result<i64> {
@@ -752,8 +661,8 @@ impl<S: Record> Statement<S> {
             Ok(row) => {
                 S::get(row)
             }
-            Err(_) => {
-                Err(invalid())
+            Err(e) => {
+                Err(e)
             }
         }
     }
@@ -878,7 +787,7 @@ impl<U: Record> Update<U> {
     }
     pub async fn update<B: BaseRequest>(self, req: &B) -> Result<()> {
         if !req.raw().valid_token() {
-            return Err(invalid());
+            return Err(WebErrorKind::BadToken.to_box());
         }
         self.raw_update(req.raw().pool()).await
     }
@@ -906,7 +815,7 @@ impl<I: Record> Insert<I> {
         if req.raw().valid_token() {
             self.raw_save(req.raw().pool()).await
         } else {
-            Err(invalid())
+            Err(WebErrorKind::BadToken.to_box())
         }
     }
     pub async fn raw_save<D: DbPool>(self, pool: &D) -> Result<()> {
@@ -916,8 +825,8 @@ impl<I: Record> Insert<I> {
             Ok(_) => {
                 Ok(())
             }
-            Err(_) => {
-                Err(invalid())
+            Err(e) => {
+                Err(e)
             }
         }
     }
@@ -925,7 +834,7 @@ impl<I: Record> Insert<I> {
 
 pub async fn delete_from<B: BaseRequest>(table: &str, table_id: &str, id: BigInt, req: &B) -> Result<()> {
     if !req.raw().valid_token() {
-        return Err(invalid());
+        return Err(WebErrorKind::BadToken.to_box());
     }
     let val = format!("DELETE FROM {} WHERE {} = {};\n", table, table_id, id);
    
@@ -950,8 +859,8 @@ impl<M: Record> Offset<M> {
             Ok(rows) => {
                 M::from(rows)
             }
-            Err(_) => {
-                Err(invalid())
+            Err(e) => {
+                Err(e)
             }
         }
     }
@@ -978,8 +887,8 @@ impl<M: Record> Limit<M> {
             Ok(rows) => {
                 M::from(rows)
             }
-            Err(_) => {
-                Err(invalid())
+            Err(e) => {
+                Err(e)
             }
         }
     }
@@ -1006,7 +915,7 @@ impl<M: Record> LimitCount<M> {
                 }
                 Ok(v)
             }
-            Err(_) => Err(invalid()),
+            Err(e) => Err(e),
         }
     }
 }

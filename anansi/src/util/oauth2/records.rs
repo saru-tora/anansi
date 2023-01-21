@@ -1,5 +1,4 @@
-use anansi::web::{Result, BaseRequest};
-use anansi::db::invalid;
+use anansi::web::{Result, BaseRequest, WebErrorKind};
 use anansi::records::{Text, Relate};
 use anansi::record;
 
@@ -79,7 +78,7 @@ impl Provider {
                 .request_async(async_http_client).await?;
             Ok(body)
         } else {
-            Err(invalid())
+            Err(WebErrorKind::BadToken.to_box())
         }
     }
 }
