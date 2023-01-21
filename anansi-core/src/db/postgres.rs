@@ -45,6 +45,7 @@ impl DbRow for PgDbRow {
         }
     }
     fn try_i32(&self, index: &str) -> Result<i32> {
+        let index: &str = &(index.to_lowercase());
         try_sql!(self, index)
     }
     fn try_i64(&self, index: &str) -> Result<i64> {

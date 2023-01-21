@@ -409,6 +409,7 @@ pub enum WebErrorKind {
     BadPassword,
     BadTotp,
     BadUsername,
+    BadDateTime,
     NoQr,
 }
 
@@ -449,6 +450,7 @@ impl fmt::Display for WebErrorKind {
             Self::BadPassword => "could not verify password",
             Self::BadTotp => "could not verify totp",
             Self::BadUsername => "problem with username",
+            Self::BadDateTime => "could not create datetime",
         };
         write!(f, "{}", s)
     }

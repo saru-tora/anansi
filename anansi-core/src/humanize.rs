@@ -53,9 +53,9 @@ pub fn decode(s: &str) -> Result<BigInt> {
 
 pub fn ago(dt: DateTime) -> String {
     let now = DateTime::now();
-    let year_diff = now.date.year() as i32 - dt.date.year() as i32;
-    let month_diff = now.date.month() as i32 - dt.date.month() as i32;
-    let day_diff = now.date.day() as i32 - dt.date.day() as i32;
+    let year_diff = now.year() as i32 - dt.year() as i32;
+    let month_diff = now.month() as i32 - dt.month() as i32;
+    let day_diff = now.day() as i32 - dt.day() as i32;
     if year_diff > 0 && month_diff >= 0 && day_diff >= 0 {
         plural(year_diff, "year")
     } else if month_diff > 1 && day_diff >= 0 {
@@ -63,8 +63,8 @@ pub fn ago(dt: DateTime) -> String {
     } else if day_diff > 0 {
         plural(day_diff, "day")
     } else {
-        let hour_diff = now.time.hour() as i32 - dt.time.hour() as i32;
-        let minute_diff = now.time.minute() as i32 - dt.time.minute() as i32;
+        let hour_diff = now.hour() as i32 - dt.hour() as i32;
+        let minute_diff = now.minute() as i32 - dt.minute() as i32;
         if hour_diff > 1 {
             plural(hour_diff, "hour")
         } else if hour_diff == 1 {

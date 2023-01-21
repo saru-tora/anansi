@@ -140,7 +140,7 @@ where <<M as RecordAdmin<R>>::AdminForm as HasRecord>::Item: FromParams, <M as R
             let mut q = M::search(&terms);
             for (key, _) in req.params().iter() {
                 if let Ok(f) = Filter::whose(filter::filter_name().eq(key as &str)).get(req).await {
-                    q = q.and(WhoseArg::from(Builder::new().push_val(Clause::Raw(format!("({})", f.raw_query)))));//str(&format!("({})", f.raw_query))));
+                    q = q.and(WhoseArg::from(Builder::new().push_val(Clause::Raw(format!("({})", f.raw_query)))));
                 }
             }
             Some(q.limit(25).query(req).await?)

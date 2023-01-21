@@ -10,7 +10,7 @@ pub mod web;
 pub mod db;
 pub mod records;
 pub mod humanize;
-mod datetime;
+pub mod datetime;
 pub mod router;
 pub mod forms;
 pub mod migrations;

@@ -3,7 +3,7 @@ use serde_json::map::Map;
 
 use anansi::server::Rng;
 use anansi::web::{Result, BaseRequest, Reverse, RawRequest, View, Response, TokenRef, WebErrorKind};
-use anansi::db::DbPool;//{invalid, DbPool};
+use anansi::db::DbPool;
 use anansi::records::{Record, VarChar, Text, DateTime, Relate, generate_id};
 use anansi::record;
 
@@ -24,14 +24,14 @@ pub struct SessionData {
 
 impl SessionData {
     pub fn get(&self, key: &str) -> Result<&Value> {
-        if let Some(v) = self.data_map.get(key) {//.ok_or(invalid())
+        if let Some(v) = self.data_map.get(key) {
             Ok(v)
         } else {
             Err(WebErrorKind::NoData.to_box())
         }
     }
     pub fn get_mut(&mut self, key: &str) -> Result<&mut Value> {
-        if let Some(v) = self.data_map.get_mut(key) {//.ok_or(invalid())
+        if let Some(v) = self.data_map.get_mut(key) {
             Ok(v)
         } else {
             Err(WebErrorKind::NoData.to_box())
@@ -45,30 +45,34 @@ impl SessionData {
     }
 }
 
-fn session_expires() -> DateTime {
-    DateTime::after(30*24*60*60)
+fn session_expires() -> Result<DateTime> {
+    if let Some(datetime) = DateTime::after(30*24*60*60) {
+        Ok(datetime)
+    } else {
+        Err(WebErrorKind::BadDateTime.to_box())
+    }
 }
 
 impl Session  {
-    pub fn test() -> Self {
-        Self {
+    pub fn test() -> Result<Self> {
+        Ok(Self {
             id: generate_id(),
             data: Text::from(format!("{{\"_user_id\": 0, \"{}\": \"{}\"}}", TokenRef::KEY, 0)),
             secret: VarChar::new(),
-            expires: session_expires(),
-        }
+            expires: session_expires()?,
+        })
     }
-    pub fn from_guest(rng: &Rng) -> Self {
-        Self {
+    pub fn from_guest(rng: &Rng) -> Result<Self> {
+        Ok(Self {
             id: generate_id(),
             data: Text::from(format!("{{\"_user_id\": 0, \"{}\": \"{}\"}}", TokenRef::KEY, rng.new_secret())),
             secret: rng.new_secret(),
-            expires: session_expires(),
-        }
+            expires: session_expires()?,
+        })
     }
     pub async fn refresh<B: BaseRequest>(mut self, req: &B) -> Result<Self> {
         self.secret = req.raw().rng().new_secret();
-        self.expires = session_expires();
+        self.expires = session_expires()?;
         self.update(req).await?;
         Ok(self)
     }
@@ -76,7 +80,7 @@ impl Session  {
         Ok(SessionData {data_map: serde_json::from_str(&self.data)?})
     }
     pub async fn gen<D: DbPool>(pool: &D, rng: &Rng) -> Result<Self> {
-        let session = Self::from_guest(rng);
+        let session = Self::from_guest(rng)?;
         session.raw_save(pool).await?;
         Ok(session)
     }

@@ -4,198 +4,111 @@ use std::result;
 use std::error::Error;
 
 use crate::web::Result;
-use crate::records::{DataType, RecordField, ToSql, RecordErrorKind};
+use crate::records::{DataType, RecordField, ToSql};
 use sqlx::{Decode, Database, database::HasValueRef};
 use serde::{Serialize, Deserialize};
+use chrono::{Datelike, Timelike};
+use chrono::naive::{NaiveDate, NaiveTime, NaiveDateTime};
 
 #[derive(PartialEq, PartialOrd, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Date {
-    year: u16,
-    month: u8,
-    day: u8,
+    date: NaiveDate,
 }
 
 impl Date {
-    pub fn year(&self) -> u16 {
-        self.year
+    pub fn year(&self) -> i32 {
+        self.date.year()
     }
-    pub fn month(&self) -> u8 {
-        self.month
+    pub fn month(&self) -> u32 {
+        self.date.month()
     }
-    pub fn day(&self) -> u8 {
-        self.day
+    pub fn day(&self) -> u32 {
+        self.date.day()
     }
     pub fn from(s: &str) -> Result<Self> {
-        let v: Vec<&str> = s.split('-').collect();
-        if v.len() != 3 {
-            Err(RecordErrorKind::BadDate.to_box())
-        } else {
-            let year: u16 = v[0].parse()?;
-            if year < 100 || year > 9999 {
-                return Err(RecordErrorKind::BadDate.to_box());
-            }
-            let month: u8 = v[1].parse()?;
-            if month > 12 {
-                return Err(RecordErrorKind::BadDate.to_box());
-            }
-            let day: u8 = v[2].parse()?;
-            let last = if month != 2 {
-                if month % 2 == 0 {
-                    31
-                } else {
-                    30
-                }
-            } else {
-                if year % 4 != 0 {
-                    28
-                } else if year % 100 != 0 {
-                    29
-                } else if year % 400 != 0 {
-                    28
-                } else {
-                    29
-                }
-            };
-            if day > last {
-                return Err(RecordErrorKind::BadDate.to_box());
-            }
-            Ok(Self {year, month, day})
+        match NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+            Ok(date) => Ok(Self {date}),
+            Err(e) => Err(Box::new(e)),
         }
-    }
-    fn day_of_week(&self) -> &str {
-        let mut day = self.day as usize;
-        let year = self.year as usize;
-        let months = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-        let week = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-        day += (year - 1971) * 365 + (year - 1969) / 4 + months[self.month as usize - 1];
-        if self.year % 4 == 0 && self.month > 2 {
-            day += 1;
-        }
-        week[day % 7]
     }
 }
 
 impl fmt::Display for Date {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:#04}-{:#02}-{:#02}", self.year, self.month, self.day)
+        write!(f, "{}", self.date)
     }
 }
 
 #[derive(PartialEq, PartialOrd, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Time {
-    hour: u8,
-    minute: u8,
-    second: u8,
+    time: NaiveTime
 }
 
 impl Time {
-    pub fn hour(&self) -> u8 {
-        self.hour
+    pub fn hour(&self) -> u32 {
+        self.time.hour()
     }
-    pub fn minute(&self) -> u8 {
-        self.minute
+    pub fn minute(&self) -> u32 {
+        self.time.minute()
     }
-    pub fn second(&self) -> u8 {
-        self.second
+    pub fn second(&self) -> u32 {
+        self.time.second()
     }
     pub fn from(s: &str) -> Result<Self> {
-        let v: Vec<&str> = s.split(':').collect();
-        if v.len() != 3 {
-            Err(RecordErrorKind::BadTime.to_box())
-        } else {
-            let hour: u8 = v[0].parse()?;
-            if hour > 23 {
-                return Err(RecordErrorKind::BadTime.to_box());
-            }
-            let minute: u8 = v[1].parse()?;
-            if minute > 59 {
-                return Err(RecordErrorKind::BadTime.to_box());
-            }
-            let second: u8 = v[2].parse()?;
-            if second > 59 {
-                return Err(RecordErrorKind::BadTime.to_box());
-            }
-            Ok(Self {hour, minute, second})
+        match NaiveTime::parse_from_str(s, "%H:%M:%S") {
+            Ok(time) => Ok(Self {time}),
+            Err(e) => Err(Box::new(e)),
         }
     }
 }
 
 impl fmt::Display for Time {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:#02}:{:#02}:{:#02}", self.hour, self.minute, self.second)
+        write!(f, "{}", self.time)
     }
 }
 
 #[derive(PartialEq, PartialOrd, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct DateTime {
-    pub date: Date,
-    pub time: Time,
+    datetime: NaiveDateTime,
 }
 
 impl DateTime {
     pub fn now() -> Self {
         let s = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        Self::from_secs(s)
+        Self::from_secs(s as i64).unwrap()
     }
-    pub fn after(secs: u64) -> Self {
-        let s = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + secs;
+    pub fn after(secs: i64) -> Option<Self> {
+        let s = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64 + secs;
         Self::from_secs(s)
     }
     pub fn to_gmt(&self) -> String {
-        let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-        format!("{}, {} {} {} {} GMT", self.date.day_of_week(), self.date.day, months[self.date.month as usize - 1], self.date.year, self.time)
+        self.datetime.format("%a, %C %b %Y %H:%M:%S GMT").to_string()
     }
-    fn from_secs(mut s: u64) -> Self {
-        let mut year = 0;
-        loop {
-            let days = if year % 4 != 0 {
-                365
-            } else if year % 100 != 0 {
-                366
-            } else if year % 400 != 0 {
-                365
-            } else {
-                366
-            };
-            if s < days * 86400 {
-                break;
-            }
-            year += 1;
-            s -= days * 86400;
-        }
-        let mut yday = s/86400;
-        s -= yday*86400;
-        yday += 1;
-        year += 1970;
-        let last = if year % 4 != 0 {
-            28
-        } else if year % 100 != 0 {
-            29
-        } else if year % 400 != 0 {
-            28
+    pub fn year(&self) -> i32 {
+        self.datetime.year()
+    }
+    pub fn month(&self) -> u32 {
+        self.datetime.month()
+    }
+    pub fn day(&self) -> u32 {
+        self.datetime.day()
+    }
+    pub fn hour(&self) -> u32 {
+        self.datetime.hour()
+    }
+    pub fn minute(&self) -> u32 {
+        self.datetime.minute()
+    }
+    pub fn second(&self) -> u32 {
+        self.datetime.second()
+    }
+    fn from_secs(s: i64) -> Option<Self> {
+        if let Some(datetime) = NaiveDateTime::from_timestamp_opt(s, 0) {
+            Some(Self {datetime})
         } else {
-            29
-        };
-        let days = [31, last, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-        let mut month = 1;
-        for day in &days {
-            if yday > *day {
-                month += 1;
-                yday -= day;
-            } else {
-                break;
-            }
-        
+            None
         }
-        if month == 13 {
-            month = 1;
-            year += 1;
-        }
-        let hour = s/3600;
-        s -= hour*3600;
-        let minute = s/60;
-        s -= minute*60;
-        Self {date: Date {year, month, day: yday as u8}, time: Time {hour: hour as u8, minute: minute as u8, second: s as u8}}
     }
     pub fn field() -> RecordField {
         RecordField::new("datetime".to_string())
@@ -206,26 +119,22 @@ impl DataType for DateTime {
     type T = String;
     
     fn from_val(s: String) -> Result<Self> {
-        let v: Vec<&str> = s.split(' ').collect();
-        if v.len() != 2 {
-            Err(RecordErrorKind::BadDateTime.to_box())
-        } else {
-            let date = Date::from(v[0])?;
-            let time = Time::from(v[1])?;
-            Ok(Self {date, time})
+        match NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S") {
+            Ok(datetime) => Ok(Self {datetime}),
+            Err(e) => Err(Box::new(e)),
         }
     }
 }
 
 impl ToSql for DateTime {
     fn to_sql(&self) -> String {
-        format!("'{} {}'", self.date, self.time)
+        format!("{}", self.datetime)
     }
 }
 
 impl fmt::Display for DateTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {}", self.date, self.time)
+        write!(f, "{}", self.datetime)
     }
 }
 
