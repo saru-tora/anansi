@@ -38,6 +38,7 @@ pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
     }
     let (pt, _pkty, pdt) = match pkd.ty.as_str() {
         "BigInt" => (quote! {anansi::records::BigInt}, quote! {i64}, quote! {anansi::records::Record}),
+        "Int" => (quote! {anansi::records::Int}, quote! {i32}, quote! {anansi::records::Record}),
         _ => unimplemented!(),
     };
     for (fname, fks) in &pkd.fkv {
@@ -270,7 +271,14 @@ fn builder(properties: bool, input: proc_macro::TokenStream) -> proc_macro::Toke
                     opt_ids.push(id.clone());
                 } else {
                     if id == "id" {
-                        id_field = quote! {id: anansi::records::generate_id(),};
+                        let ts = ty_quote.to_string();
+                        if ts.ends_with("BigInt") {
+                            id_field = quote! {id: anansi::records::generate_id(),};
+                        } else if ts.ends_with("Int") {
+                            id_field = quote! {id: anansi::records::random_int(),};
+                        } else {
+                            unimplemented!();
+                        }
                     } else {
                         let gen_ty = format_ident!("T{}", n.to_string());
                         let f = format_ident!("{}{}", name, quote!{#id}.to_string().replace("_", "").to_uppercase());
@@ -1019,6 +1027,20 @@ fn record_init(mname: &Ident, fname: &str, data: &Data, pkd: &mut PkData, member
                                         members.push(member);
                                         quote_spanned! {f.span() =>
                                             #name: <anansi::records::BigInt as anansi::records::DataType>::from_val(row.try_i64(#m2)?)?,
+                                        }
+                                    },
+                                    "Int" => {
+                                        let q = quote! {pub fn #name() -> anansi::db::Column<#mname, anansi::records::Int> {anansi::db::Column::new(#lowcolumn)}};
+                                        let q2 = quote! {pub fn #name(self) -> anansi::db::Column<F, anansi::records::Int> {anansi::db::Column::from(self.b.push_val(anansi::db::Clause::Column(#column)))}};
+                                        fv.push(q);
+                                        if is_pk {
+                                            let q3 = quote! {pub fn pk() -> anansi::db::Column<#mname, anansi::records::Int> {anansi::db::Column::new(#lowcolumn)}};
+                                            fv.push(q3);
+                                        }
+                                        fv2.push(q2);
+                                        members.push(member);
+                                        quote_spanned! {f.span() =>
+                                            #name: <anansi::records::Int as anansi::records::DataType>::from_val(row.try_i32(#m2)?)?,
                                         }
                                     },
                                     "ForeignKey" => {

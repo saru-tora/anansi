@@ -35,6 +35,9 @@ impl DbRow for SqliteDbRow {
     fn try_bool(&self, index: &str) -> Result<bool> {
         try_sql!(self, index)
     }
+    fn try_i32(&self, index: &str) -> Result<i32> {
+        try_sql!(self, index)
+    }
     fn try_i64(&self, index: &str) -> Result<i64> {
         try_sql!(self, index)
     }

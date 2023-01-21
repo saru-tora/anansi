@@ -226,6 +226,71 @@ pub fn generate_id() -> BigInt {
     BigInt::new(rng.gen_range(0..i64::MAX))
 }
 
+#[derive(Clone, PartialEq, Copy, Debug, Serialize, Deserialize)]
+pub struct Int {
+    n: i32,
+}
+
+impl Int {
+    pub fn new(n: i32) -> Self {
+        Self {n}
+    }
+    pub fn from(s: &str) -> result::Result<Self, ParseIntError> {
+        match s.parse() {
+            Ok(n) => Ok(Self {n}),
+            Err(e) => Err(e),
+        }
+    }
+    pub fn as_i32(&self) -> i32 {
+        self.n
+    }
+    pub fn into(self) -> i32 {
+        self.n
+    }
+    pub fn field() -> RecordField {
+        RecordField::new("int".to_string())
+    }
+}
+
+impl fmt::Display for Int {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.n)
+    }
+}
+
+impl DataType for Int {
+    type T = i32;
+
+    fn from_val(n: i32) -> Result<Self> {
+        Ok(Self {n})
+    }
+}
+
+impl ToSql for Int {
+    fn to_sql(&self) -> String {
+        format!("{}", self.n)
+    }
+}
+
+impl<'r, DB: Database> Decode<'r, DB> for Int
+where i32: Decode<'r, DB> {
+    fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<Int, Box<dyn Error + 'static + Send + Sync>> {
+        let value = <i32 as Decode<DB>>::decode(value)?;
+        Ok(Self::from_val(value).unwrap())
+    }
+}
+
+impl PartialEq<i32> for Int {
+    fn eq(&self, other: &i32) -> bool {
+        self.n == *other
+    }
+}
+
+pub fn random_int() -> Int {
+    let mut rng = rand::thread_rng();
+    Int::new(rng.gen_range(0..i32::MAX))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Text {
     s: String,
@@ -626,6 +691,7 @@ mod private {
     use super::*;
     use super::super::datetime::DateTime;
     pub trait Sealed {}
+    impl Sealed for Int {}
     impl Sealed for BigInt {}
     impl Sealed for Boolean {}
     impl Sealed for Text {}

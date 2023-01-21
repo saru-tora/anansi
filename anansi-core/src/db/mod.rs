@@ -13,7 +13,7 @@ use sqlx::{Database, Type};
 use async_trait::async_trait;
 
 use crate::server::Settings;
-use crate::records::{Record, DataType, BigInt, Objects, ToSql};
+use crate::records::{Record, DataType, Objects, ToSql};
 use crate::web::{Result, BaseRequest, WebErrorKind};
 
 #[cfg(feature = "sqlite")]
@@ -58,6 +58,7 @@ pub trait DbRow {
     type RawRow;
     fn new(row: Self::RawRow) -> Self;
     fn try_bool(&self, index: &str) -> Result<bool>;
+    fn try_i32(&self, index: &str) -> Result<i32>;
     fn try_i64(&self, index: &str) -> Result<i64>;
     fn try_count(&self) -> Result<i64>;
     fn try_option_string(&self, index: &str) -> Result<Option<String>>;
@@ -832,7 +833,7 @@ impl<I: Record> Insert<I> {
     }
 }
 
-pub async fn delete_from<B: BaseRequest>(table: &str, table_id: &str, id: BigInt, req: &B) -> Result<()> {
+pub async fn delete_from<B: BaseRequest, D: DataType + std::fmt::Display>(table: &str, table_id: &str, id: D, req: &B) -> Result<()> {
     if !req.raw().valid_token() {
         return Err(WebErrorKind::BadToken.to_box());
     }
