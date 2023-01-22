@@ -126,8 +126,13 @@ impl DbPool for PgDbPool {
         let user = database.get("user").expect("Could not get database user").as_str().expect("Could not convert database user to string");
         let password = database.get("password").expect("Could not get database password").as_str().expect("Could not convert database password to string");
         let address = database.get("address").expect("Could not get database host").as_str().expect("Could not convert database host to string");
+        let max_conn = if let Some(max) = database.get("max_conn") {
+            max.as_integer().expect("Could not convert maximum connections to integer") as u32
+        } else {
+            MAX_CONNECTIONS as u32
+        };
         let arg = format!("postgres://{user}:{password}@{address}/{name}");
-        match Self::connect(&arg).await {
+        match Self::connect(&arg, max_conn).await {
             Ok(p) => {
                 use sqlx::Row;
 
@@ -188,9 +193,9 @@ impl DbType for PgDbPool {
 }
 
 impl PgDbPool {
-    async fn connect(arg: &str) -> Result<sqlx::Pool<Postgres>> {
+    async fn connect(arg: &str, max_conn: u32) -> Result<sqlx::Pool<Postgres>> {
         let pg = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(MAX_CONNECTIONS as u32)
+            .max_connections(max_conn)
             .connect(arg).await;
         match pg {
             Ok(pg) => Ok(pg),
