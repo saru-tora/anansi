@@ -192,7 +192,7 @@ use super::super::records::{Topic, topic::date};
 
 #[viewer]
 impl<R: Request> TopicView<R> {
-    #[view(Group::is_visitor)]
+    #[view(Site::is_visitor)]
     pub async fn index(req: &mut R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
@@ -201,7 +201,7 @@ impl<R: Request> TopicView<R> {
 }
 ```
 
-`Group::is_visitor` will check if the visitor is a visitor, which is always true. Then, it will put `"Latest Topics"` into the `title` variable. The last 25 topics are put into the `topics` variable.
+`Site::is_visitor` will check if the visitor is a visitor, which is always true. Then, it will put `"Latest Topics"` into the `title` variable. The last 25 topics are put into the `topics` variable.
 
 To use these variables, edit `forum/topic/templates/index.rs.html`:
 
@@ -340,7 +340,7 @@ use mini_forum_comps::loader::{Loader, Data};
 
 #[viewer]
 impl<R: Request> TopicView<R> {
-    #[view(Group::is_visitor)]
+    #[view(Site::is_visitor)]
     pub async fn index(req: &mut R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
@@ -349,7 +349,7 @@ impl<R: Request> TopicView<R> {
         let show_url = "/topic";
         let load_url = url!(req, Self::load);
     }
-    #[check(Group::is_visitor)]
+    #[check(Site::is_visitor)]
     pub async fn load(req: &mut R) -> Result<Response> {
         let page: u32 = req.params().get("page")?.parse()?;
         if page > 3 {
@@ -558,7 +558,7 @@ use anansi::cache::prelude::*;
 
 #[viewer]
 impl<R: Request> TopicView<R> {
-    #[view(Group::is_visitor)]
+    #[view(Site::is_visitor)]
     pub async fn index(req: &mut R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = cache!(req, Some(30), "topic_index", {
@@ -673,7 +673,7 @@ use anansi::humanize::ago;
 #[viewer]
 impl<R: Request> TopicView<R> {
     // --snip--
-    #[view(Group::is_visitor)]
+    #[view(Site::is_visitor)]
     pub async fn show(req: &mut R) -> Result<Response> {
         let topic = get_or_404!(Topic, req);
         let title = &topic.title;
@@ -736,7 +736,7 @@ use anansi::util::auth::forms::UserLogin;
 #[viewer]
 impl<R: Request> TopicView<R> {
     // --snip--
-    #[view(Group::is_visitor)]
+    #[view(Site::is_visitor)]
     pub async fn login(req: &mut R) -> Result<Response> {
         let title = "Log in";
         let button = "Log in";
@@ -844,7 +844,7 @@ use crate::forum::forms::TopicForm;
 #[viewer]
 impl<R: Request> TopicView<R> {
     // --snip--
-    #[check(Group::is_auth)]
+    #[check(Site::is_auth)]
     pub async fn new(req: &mut R) -> Result<Response> {
         let title = "New Topic";
         let button = "Create";
@@ -856,7 +856,7 @@ impl<R: Request> TopicView<R> {
 }
 ```
 
-`Group::is_auth` will redirect the visitor if they aren't authenticated. This time, for `handle`, a closure is passed this time since redirection isn't async. For the template, in this simple case, you can just reuse `login.rs.html` by using the `check` and `extend` macros, though for an actual site, you'd probably write a custom one. You can also have a link to the page added in `index.rs.html` if the user is authenticated:
+`Site::is_auth` will redirect the visitor if they aren't authenticated. This time, for `handle`, a closure is passed this time since redirection isn't async. For the template, in this simple case, you can just reuse `login.rs.html` by using the `check` and `extend` macros, though for an actual site, you'd probably write a custom one. You can also have a link to the page added in `index.rs.html` if the user is authenticated:
 
 ```html
 @block content {
