@@ -528,8 +528,7 @@ impl Response {
     pub fn new(status: u16, contents: Vec<u8>) -> Self {
         let builder = RawHyperResponse::builder()
             .status(status)
-            .header("content-type", "text/html")
-            .header("charset", "UTF-8")
+            .header("content-type", "text/html; charset=utf-8")
             .header("Server", "webserver")
             .header("Content-length", contents.len().to_string())
             .body(Full::new(Bytes::from(contents))).unwrap();

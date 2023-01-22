@@ -338,7 +338,7 @@ pub fn clause_stmt<R: Record>(clauses: Vec<Clause<R>>) -> String {
             Clause::Desc => " DESC".to_string(),
             Clause::Case(v) => format!("CASE {}", clause_stmt(v)),
             Clause::When(s) => format!(" WHEN {s}"),
-            Clause::Then(s) => format!("THEN {s}"),
+            Clause::Then(s) => format!(" THEN {s}"),
             Clause::End => " END".to_string(),
             Clause::Set(s) => {
                 setn += 1;
@@ -779,6 +779,34 @@ impl<U: Record> Update<U> {
         let s = data.to_sql();
         self.val.push(Clause::Set(name.to_string()));
         let val = self.val.push_val(Clause::Eq(s));
+        Self {val}
+    }
+    pub fn bulk_set(&mut self, name: &str) {
+        self.val.push(Clause::Set(name.to_string()));
+        self.val.push(Clause::Eq("CASE".to_string()));
+    }
+    pub fn where_pk(mut self, s: String) -> Self {
+        self.val.push(anansi::db::Clause::Where(s));
+        self
+    }
+    pub fn when(&mut self, s: String) {
+        self.val.push(anansi::db::Clause::When(s));
+    }
+    pub fn eq(&mut self, s: String) {
+        self.val.push(anansi::db::Clause::Eq(s));
+    }
+    pub fn then(&mut self, s: String) {
+        self.val.push(anansi::db::Clause::Then(s));
+    }
+    pub fn end(&mut self) {
+        self.val.push(anansi::db::Clause::End);
+    }
+    pub fn is_in(self, v: &Vec<U>) -> Self {
+        let mut tv = vec![];
+        for t in v {
+            tv.push(t.pk().to_sql());
+        }
+        let val = self.val.push_val(Clause::In(tv));
         Self {val}
     }
     pub fn pk<D: DataType + std::fmt::Display>(mut self, name: &str, id: D) -> Self {
