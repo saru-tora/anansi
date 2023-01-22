@@ -68,7 +68,7 @@ routes! {
 #[viewer]
 impl<R: Request> TopicView<R> {
     // A view of the last 25 topics.
-    #[view(Group::is_visitor)]
+    #[view(Site::is_visitor)]
     pub async fn index(req: &mut R) -> Result<Response> {
         let title = "Latest Topics";
         let topics = Topic::order_by(date().desc())
