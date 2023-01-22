@@ -32,8 +32,9 @@ pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
     let mut sets = Vec::new();
     let mut saves = Vec::new();
     for member in &members {
+        let lowmem = member.to_lowercase();
         let m = format_ident!("{}", member);
-        sets.push(quote!{.set(#member, &self.#m)});
+        sets.push(quote!{.set(#lowmem, &self.#m)});
         saves.push(quote!{.value(&self.#m)});
     }
     let (pt, _pkty, pdt) = match pkd.ty.as_str() {
