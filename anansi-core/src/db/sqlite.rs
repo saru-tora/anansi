@@ -1,4 +1,4 @@
-use std::{str, thread, path::PathBuf};
+use std::{str, path::PathBuf};
 use std::future::Future;
 use tokio::process::Command;
 use toml::Value::Table;
@@ -7,7 +7,7 @@ use sqlx::{Type, Database};
 use sqlx::sqlite::Sqlite;
 
 use crate::try_sql;
-use crate::server::Settings;
+use crate::server::{Settings, MAX_CONNECTIONS};
 use crate::records::Record;
 use crate::web::{Result, BASE_DIR, WebErrorKind};
 use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt};
@@ -155,7 +155,7 @@ impl DbPool for SqliteDbPool {
     }
     async fn test() -> Result<Self> {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(thread::available_parallelism().unwrap().get() as u32)
+            .max_connections(MAX_CONNECTIONS as u32)
             .connect(":memory:").await?;
         sqlx::query(INIT_STR).execute(&pool).await?;
         let pool = Self {0: pool};
@@ -177,7 +177,7 @@ static INIT_STR: &str = "CREATE TABLE \"anansi_records\"(\n\t\"name\" text NOT N
 impl SqliteDbPool {
     async fn connect(dir: &str) -> Result<sqlx::Pool<Sqlite>> {
         sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(thread::available_parallelism().unwrap().get() as u32)
+            .max_connections(MAX_CONNECTIONS as u32)
             .connect(&dir).await.or(Err(WebErrorKind::BadDb.to_box()))
     }
 

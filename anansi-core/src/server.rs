@@ -42,6 +42,8 @@ use crate::web::{Result, route_path};
 #[cfg(not(feature = "minimal"))]
 use crate::router::get_capture;
 
+pub static MAX_CONNECTIONS: usize = 10_000_000;
+
 pub type Settings = Map<String, Value>;
 
 type Timer = Arc<Mutex<DateTime>>;
@@ -295,7 +297,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                 rng
             }
         };
-        let sem = Arc::new(Semaphore::new(10000000));
+        let sem = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let timer = Arc::new(Mutex::new(DateTime::now()));
         let t2 = Arc::clone(&timer);
         tokio::spawn(async move {

@@ -217,7 +217,7 @@ macro_rules! setup {
                         return Ok(form_map);
                     }
                 }
-                Err(err_box!(WebError::from(WebErrorKind::BadToken)))
+                anansi::err_box!(anansi::web::WebError::from(anansi::web::WebErrorKind::BadToken))
             }
         }
     }

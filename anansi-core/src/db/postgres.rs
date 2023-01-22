@@ -1,4 +1,4 @@
-use std::{str, thread};
+use std::str;
 use std::future::Future;
 use toml::Value::Table;
 use async_trait::async_trait;
@@ -7,7 +7,7 @@ use sqlx::types::chrono::NaiveDateTime;
 use sqlx::postgres::Postgres;
 
 use crate::try_sql;
-use crate::server::Settings;
+use crate::server::{Settings, MAX_CONNECTIONS};
 use crate::web::{Result, WebErrorKind};
 use crate::records::Record;
 use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt};
@@ -190,7 +190,7 @@ impl DbType for PgDbPool {
 impl PgDbPool {
     async fn connect(arg: &str) -> Result<sqlx::Pool<Postgres>> {
         let pg = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(thread::available_parallelism().unwrap().get() as u32)
+            .max_connections(MAX_CONNECTIONS as u32)
             .connect(arg).await;
         match pg {
             Ok(pg) => Ok(pg),
