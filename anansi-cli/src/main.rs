@@ -173,7 +173,7 @@ fn make_view(args: &Vec<String>) {
         fs::create_dir(&parsed).expect("Failed to create path");
         let upper = uppercase(arg);
         let arg_path = PathBuf::from(arg);
-        make_file(&arg_path, "views", ".rs", format!("use crate::prelude::*;\nuse super::super::records::{{{}}};\n\n#[base_view]\nfn base<R: Request>(_req: &mut R) -> Result<Response> {{}}\n\n#[viewer]\nimpl<R: Request> {0}View<R> {{\n    #[view(Group::is_visitor)]\n    pub async fn index(req: &mut R) -> Result<Response> {{\n        let title = \"Title\";\n    }}\n}}", upper));
+        make_file(&arg_path, "views", ".rs", format!("use crate::prelude::*;\nuse super::super::records::{{{}}};\n\n#[base_view]\nfn base<R: Request>(_req: &mut R) -> Result<Response> {{}}\n\n#[viewer]\nimpl<R: Request> {0}View<R> {{\n    #[view(Site::is_visitor)]\n    pub async fn index(req: &mut R) -> Result<Response> {{\n        let title = \"Title\";\n    }}\n}}", upper));
         make_file(&arg_path, "mod", ".rs", "pub mod views;".to_string());
         let mut t2 = temp.clone();
         let mut t3 = temp.clone();
