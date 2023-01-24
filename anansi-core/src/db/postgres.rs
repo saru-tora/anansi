@@ -2,15 +2,41 @@ use std::str;
 use std::future::Future;
 use toml::Value::Table;
 use async_trait::async_trait;
-use sqlx::{Type, Database};
+use sqlx::{Type, Database, Encode, query::Query, database::HasArguments};
 use sqlx::types::chrono::NaiveDateTime;
 use sqlx::postgres::Postgres;
 
 use crate::try_sql;
 use crate::server::{Settings, MAX_CONNECTIONS};
-use crate::web::{Result, WebErrorKind};
+use crate::web::{Result, WebErrorKind, BaseRequest};
 use crate::records::Record;
 use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt};
+
+pub struct PgQuery<'q, A> {
+    query: Query<'q, sqlx::Postgres, A>,
+}
+
+impl<'q> PgQuery<'q, <sqlx::Postgres as HasArguments<'q>>::Arguments> {
+    pub fn new(sql: &'q str) -> Self {
+        Self {query: sqlx::query(sql)}
+    }
+    pub fn bind<T>(self, value: T) -> Self
+    where T: 'q + Send + Encode<'q, sqlx::Postgres> + Type<sqlx::Postgres> {
+        Self {query: self.query.bind(value)}
+    }
+    pub async fn fetch_one<B: BaseRequest<SqlPool = PgDbPool>>(self, req: &B) -> Result<PgDbRow> {
+        Ok(PgDbRow {row: self.query.fetch_one(&req.raw().pool().0).await?})
+    }
+    pub async fn fetch_all<B: BaseRequest<SqlPool = PgDbPool>>(self, req: &B) -> Result<PgDbRowVec> {
+        Ok(PgDbRowVec {rows: self.query.fetch_all(&req.raw().pool().0).await?})
+    }
+    pub async fn execute<B: BaseRequest<SqlPool = PgDbPool>>(self, req: &B) -> Result<()> {
+        match self.query.execute(&req.raw().pool().0).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct PgDb;

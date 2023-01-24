@@ -244,7 +244,7 @@ macro_rules! setup {
         }
         impl anansi::web::BaseMiddleware for AppMiddleware {}
         anansi::request_derive!();
-        pub trait Request: anansi::web::BaseRequest + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetRecord {}
+        pub trait Request: anansi::web::BaseRequest<SqlPool = Pool> + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetRecord {}
         impl Request for HttpRequest {}
     }
 }

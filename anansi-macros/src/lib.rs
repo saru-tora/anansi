@@ -2002,13 +2002,11 @@ pub fn raw_bulk_update(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
     let field_names = &vars[3..];
     let mut fields = vec![];
     for field_name in field_names {
-        let id = quote! {"id".to_string()};
         let lowfield = quote! {#field_name}.to_string().to_lowercase();
         fields.push(quote! {
-            u.bulk_set(#lowfield);
+            u.bulk_set(#lowfield, #record_type::PK_NAME);
             for record in #records {
-                u.when(#id);
-                u.eq(record.pk().to_sql());
+                u.when(record.pk().to_sql());
                 u.then(record.#field_name.to_sql());
             }
             u.end();

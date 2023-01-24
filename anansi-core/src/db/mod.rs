@@ -781,9 +781,9 @@ impl<U: Record> Update<U> {
         let val = self.val.push_val(Clause::Eq(s));
         Self {val}
     }
-    pub fn bulk_set(&mut self, name: &str) {
+    pub fn bulk_set(&mut self, name: &str, pk_name: &str) {
         self.val.push(Clause::Set(name.to_string()));
-        self.val.push(Clause::Eq("CASE".to_string()));
+        self.val.push(Clause::Eq(format!("CASE {}", pk_name)));
     }
     pub fn where_pk(mut self, s: String) -> Self {
         self.val.push(anansi::db::Clause::Where(s));
