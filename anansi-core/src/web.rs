@@ -536,6 +536,9 @@ impl Response {
     }
     pub fn json<T: serde::ser::Serialize>(value: &T) -> Result<Self> {
         let contents = serde_json::to_vec(value)?;
+        Self::json_bytes(contents)
+    }
+    pub fn json_bytes(contents: Vec<u8>) -> Result<Self> {
         let builder = RawHyperResponse::builder()
             .header("content-type", "application/json; charset=UTF-8")
             .header("Server", "webserver")

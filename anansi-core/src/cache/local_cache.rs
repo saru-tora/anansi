@@ -78,6 +78,19 @@ impl Lru {
             return Err(WebErrorKind::NoCache.to_box());
         }
     }
+    async fn get_many(&mut self, key: Vec<String>) -> Result<Vec<Vec<u8>>> {
+        let mut v = vec![];
+        for k in key {
+            v.push(self.get(&k).await?)
+        }
+        Ok(v)
+    }
+    async fn set_many<'a>(&mut self, items: &'a[(String, Vec<u8>)]) -> Result<()> {
+        for (k, v) in items {
+            self.set(&k, &v).await?
+        }
+        Ok(())
+    }
     fn push_front(&mut self, index: usize) {
         if self.entries.len() == 1 {
             self.tail = index;
@@ -150,10 +163,16 @@ impl BaseCache for LocalCache {
     async fn set(&self, key: &str, value: &[u8]) -> Result<()> {
         self.0.write().await.set(key, value).await
     }
+    async fn set_many<'a>(&self, items: &'a[(String, Vec<u8>)]) -> Result<()> {
+        self.0.write().await.set_many(items).await
+    }
     async fn set_ex(&self, key: &str, value: &[u8], timeout: Option<usize>) -> Result<()> {
         self.0.write().await.set_ex(key, value, timeout).await
     }
     async fn get(&self, key: &str) -> Result<Vec<u8>> {
         self.0.write().await.get(key).await
+    }
+    async fn get_many(&self, key: Vec<String>) -> Result<Vec<Vec<u8>>> {
+        self.0.write().await.get_many(key).await
     }
 }

@@ -909,7 +909,7 @@ impl<M: Record> Limit<M> {
     pub async fn query<B: BaseRequest>(self, req: &B) -> Result<Objects<M>> {
         self.raw_query(req.raw().pool()).await
     }
-    async fn raw_query<D: DbPool>(self, pool: &D) -> Result<Objects<M>> {
+    pub async fn raw_query<D: DbPool>(self, pool: &D) -> Result<Objects<M>> {
         let val = D::to_stmt(self.val.push_val(Clause::Close));
 
         match pool.raw_fetch_all(&val).await {

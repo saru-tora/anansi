@@ -1,4 +1,4 @@
-use std::{fmt, env, str, path::PathBuf, marker::PhantomData};
+use std::{fmt, env, str, path::PathBuf};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -69,9 +69,9 @@ macro_rules! main {
 
             let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
             let site = Arc::new(Mutex::new(anansi::util::admin::site::BasicAdminSite::new()));
-            anansi::server::Server::new(APP_STATICS, APP_ADMINS, None)
-                .run(app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, cmd::admin, site)
-                .await;
+            if let Some(server) = anansi::server::Server::new(APP_STATICS, APP_ADMINS, None, app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, cmd::admin, site).await {
+                server.run().await
+            }
         }
 
         mod server_prelude {
@@ -97,66 +97,31 @@ macro_rules! main {
     }
 }
 
-#[cfg(feature = "minimal")]
-#[macro_export]
-macro_rules! main {
-    () => {
-        pub mod prelude {
-            pub use async_trait::async_trait;
-            pub use crate::project::Request;
-            pub use anansi::{form, import, viewer, base_view, view, redirect, transact, form_error};
-            pub use anansi::web::{Result, Response, BaseUser};
-            pub use anansi::forms::Form;
-            pub use anansi::cache::BaseCache;
-            pub use anansi::records::Record;
-            pub use anansi::site::Site;
-        }
-
-        #[tokio::main]
-        async fn main() {
-            use server_prelude::*;
-
-            let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
-            anansi::server::Server::new(APP_STATICS, None)
-                .run(app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations)
-                .await;
-        }
-
-        mod server_prelude {
-            pub use std::sync::{Arc, Mutex};
-            pub use crate::urls::app_url;
-            pub use crate::http_errors::views::ErrorView;
-            pub use crate::project::{app_services, HttpRequest};
-            pub use anansi::web::Response;
-        }
-
-        #[cfg(test)]
-        pub async fn test_server(sender: tokio::sync::oneshot::Sender<()>) {
-            use server_prelude::*;
-
-            let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
-            let site = Arc::new(Mutex::new(anansi::util::admin::site::BasicAdminSite::new()));
-            anansi::server::Server::new(APP_STATICS, Some(sender))
-                .run(app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, cmd::admin, site)
-                .await;
-        }
-    }
-}
-
 #[cfg(not(feature = "minimal"))]
-pub struct Server<B: BaseRequest + 'static, D: DbPool> {
-    statics: &'static [&'static [Static]],
-    admin_inits: AdminInits<B>,
-    d: PhantomData<D>,
-    sender: Option<tokio::sync::oneshot::Sender<()>>,
+pub struct Server<B: BaseRequest + 'static, C: BaseCache, D: DbPool, S: Service<B>> {
+    listener: TcpListener,
+    urls: Arc<HashMap<usize, Vec<String>>>,
+    pub pool: D,
+    pub cache: C,
+    std_rng: Rng,
+    router: Arc<Router<B, S>>,
+    sem: Arc<Semaphore>,
+    timer: Timer,
+    site: AdminRef<B>,
+    mailer: Option<Mailer>,
 }
 
 #[cfg(feature = "minimal")]
-pub struct Server<B: BaseRequest + 'static, D: DbPool> {
-    statics: &'static [&'static [Static]],
-    b: PhantomData<B>,
-    d: PhantomData<D>,
-    sender: Option<tokio::sync::oneshot::Sender<()>>,
+pub struct Server<B: BaseRequest + 'static, C: BaseCache, D: DbPool, S: Service<B>> {
+    listener: TcpListener,
+    urls: Arc<HashMap<usize, Vec<String>>>,
+    pub pool: D,
+    pub cache: C,
+    std_rng: Rng,
+    router: Arc<Router<B, S>>,
+    sem: Arc<Semaphore>,
+    timer: Timer,
+    mailer: Option<Mailer>,
 }
 
 async fn get_pool<D: DbPool>(not_test: bool, settings: &Settings, migrations: fn() -> Vec<AppMigration<D>>) -> D {
@@ -179,12 +144,11 @@ async fn get_pool<D: DbPool>(not_test: bool, settings: &Settings, migrations: fn
 pub type AdminInits<B> = &'static [fn(AdminRef<B>)];
 
 #[cfg(not(feature = "minimal"))]
-impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache + 'static, D: DbPool + 'static> Server<B, D> {
-    pub fn new(statics: &'static [&'static [Static]], admin_inits: AdminInits<B>, sender: Option<Sender<()>>) -> Self {
-        Self {statics, admin_inits, d: PhantomData, sender}
-    }
-    pub async fn run<S: Service<B> + 'static>(
-        &mut self,
+impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache + 'static, D: DbPool + 'static, S: Service<B> + 'static> Server<B, C, D, S> {
+    pub async fn new(
+        statics: &'static [&'static [Static]],
+        admin_inits: AdminInits<B>,
+        mut sender: Option<Sender<()>>,
         url_mapper: fn(&mut HashMap<usize, Vec<String>>),
         routes: &'static [Route<B>],
         handle_404: View<B>,
@@ -192,7 +156,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         services: fn(&Settings) -> std::pin::Pin<Box<dyn std::future::Future<Output = S> + Send + '_>>,
         migrations: fn() -> Vec<AppMigration<D>>,
         admin: fn(D) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>,
-        site: AdminRef<B>)
+        site: AdminRef<B>) -> Option<Self>
         where <<D as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow
     {
         env_logger::Builder::from_env(Env::default().default_filter_or("anansi_core")).init();
@@ -207,7 +171,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         let s_settings = fs::read_to_string(&base).await.expect(&format!("Could not find {}", base.to_str().unwrap()));
         let settings: Settings = toml::from_str(&s_settings).expect("Could not parse settings.toml");
 
-        let not_test = self.sender.is_none();
+        let not_test = sender.is_none();
         let pool = get_pool(not_test, &settings, migrations).await;
 
         if args.len() > 1 {
@@ -218,7 +182,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                     } else {
                         error!("expected app name");
                     }
-                    return;
+                    return None;
                 }
                 "sql-migrate" => {
                     if args.len() >= 3 {
@@ -226,15 +190,15 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                     } else{
                         error!("expected app name");
                     }
-                    return;
+                    return None;
                 }
                 "migrate" => {
                     migrate(migrations(), &pool).await;
-                    return;
+                    return None;
                 }
                 "admin" => {
                     admin(pool.clone()).await.expect("Could not create admin");
-                    return;
+                    return None;
                 }
                 _ => ip = Some(args[1].to_string()),
             }
@@ -253,13 +217,13 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         let mut url_map = HashMap::new();
         url_mapper(&mut url_map);
         let mut files = HashMap::new();
-        for stats in self.statics {
+        for stats in statics {
             for (name, file) in *stats {
                 files.insert(*name, *file);
             }
         }
         let mut rv = routes.to_vec();
-        for admin_init in self.admin_inits {
+        for admin_init in admin_inits {
             admin_init(site.clone());
         }
         for (name, view) in site.lock().unwrap().urls() {
@@ -309,22 +273,26 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         });
 
         println!("Server running at http://{addr}/\nPress Ctrl+C to stop");
-        if let Some(sender) = self.sender.take() {
+        if let Some(sender) = sender.take() {
             sender.send(()).unwrap();
         }
 
+        Some(Self {listener, urls, pool, cache, std_rng, router, sem, timer, site, mailer})
+    }
+
+    pub async fn run(self) {
         loop {
-            let (stream, _) = listener.accept().await.unwrap();
-            let urls = urls.clone();
-            let pool = pool.clone();
-            let cache = cache.clone();
-            let std_rng = std_rng.clone();
-            let router = router.clone();
-            let sem = Arc::clone(&sem);
-            let timer = Arc::clone(&timer);
+            let (stream, _) = self.listener.accept().await.unwrap();
+            let urls = self.urls.clone();
+            let pool = self.pool.clone();
+            let cache = self.cache.clone();
+            let std_rng = self.std_rng.clone();
+            let router = self.router.clone();
+            let sem = Arc::clone(&self.sem);
+            let timer = Arc::clone(&self.timer);
             let aq = sem.try_acquire();
-            let site = site.clone();
-            let mailer = mailer.clone();
+            let site = self.site.clone();
+            let mailer = self.mailer.clone();
             if aq.is_ok() {
                 tokio::spawn(async move {
                     let addr = stream.peer_addr().unwrap();
@@ -332,7 +300,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                         .serve_connection(stream, Svc { addr, urls, pool, cache, std_rng, router, timer, site, mailer })
                         .await
                     {
-                        error!("Failed to serve connection: {:?}", err);
+                        error!("Failed to serve connection: {}", err);
                     }
                 });
             } else {
@@ -343,18 +311,16 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
 }
 
 #[cfg(feature = "minimal")]
-impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache + 'static, D: DbPool + 'static> Server<B, D> {
-    pub fn new(statics: &'static [&'static [Static]], sender: Option<Sender<()>>) -> Self {
-        Self {statics, b: PhantomData, d: PhantomData, sender}
-    }
-    pub async fn run<S: Service<B> + 'static>(
-        &mut self,
+impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache + 'static, D: DbPool + 'static, S: Service<B> + 'static> Server<B, C, D, S> {
+    pub async fn new(
+        statics: &'static [&'static [Static]],
+        mut sender: Option<Sender<()>>,
         url_mapper: fn(&mut HashMap<usize, Vec<String>>),
         routes: &'static [Route<B>],
         handle_404: View<B>,
         internal_error: fn() -> Response,
         services: fn(&Settings) -> std::pin::Pin<Box<dyn std::future::Future<Output = S> + Send + '_>>,
-        migrations: fn() -> Vec<AppMigration<D>>)
+        migrations: fn() -> Vec<AppMigration<D>>) -> Option<Self>
         where <<D as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow
     {
         env_logger::Builder::from_env(Env::default().default_filter_or("anansi_core")).init();
@@ -369,7 +335,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         let s_settings = fs::read_to_string(&base).await.expect(&format!("Could not find {}", base.to_str().unwrap()));
         let settings: Settings = toml::from_str(&s_settings).expect("Could not parse settings.toml");
 
-        let not_test = self.sender.is_none();
+        let not_test = sender.is_none();
         let pool = get_pool(not_test, &settings, migrations).await;
 
         if args.len() > 1 {
@@ -380,7 +346,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                     } else {
                         error!("expected app name");
                     }
-                    return;
+                    return None;
                 }
                 "sql-migrate" => {
                     if args.len() >= 3 {
@@ -388,11 +354,11 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                     } else{
                         error!("expected app name");
                     }
-                    return;
+                    return None;
                 }
                 "migrate" => {
                     migrate(migrations(), &pool).await;
-                    return;
+                    return None;
                 }
                 _ => ip = Some(args[1].to_string()),
             }
@@ -411,7 +377,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         let mut url_map = HashMap::new();
         url_mapper(&mut url_map);
         let mut files = HashMap::new();
-        for stats in self.statics {
+        for stats in statics {
             for (name, file) in *stats {
                 files.insert(*name, *file);
             }
@@ -448,7 +414,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                 rng
             }
         };
-        let sem = Arc::new(Semaphore::new(10000000));
+        let sem = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let timer = Arc::new(Mutex::new(DateTime::now()));
         let t2 = Arc::clone(&timer);
         tokio::spawn(async move {
@@ -460,21 +426,24 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         });
 
         println!("Server running at http://{addr}/\nPress Ctrl+C to stop");
-        if let Some(sender) = self.sender.take() {
+        if let Some(sender) = sender.take() {
             sender.send(()).unwrap();
         }
+        Some(Self {listener, urls, pool, cache, std_rng, router, sem, timer, mailer})
+    }
 
+    pub async fn run(self) {
         loop {
-            let (stream, _) = listener.accept().await.unwrap();
-            let urls = urls.clone();
-            let pool = pool.clone();
-            let cache = cache.clone();
-            let std_rng = std_rng.clone();
-            let router = router.clone();
-            let sem = Arc::clone(&sem);
-            let timer = Arc::clone(&timer);
+            let (stream, _) = self.listener.accept().await.unwrap();
+            let urls = self.urls.clone();
+            let pool = self.pool.clone();
+            let cache = self.cache.clone();
+            let std_rng = self.std_rng.clone();
+            let router = self.router.clone();
+            let sem = Arc::clone(&self.sem);
+            let timer = Arc::clone(&self.timer);
             let aq = sem.try_acquire();
-            let mailer = mailer.clone();
+            let mailer = self.mailer.clone();
             if aq.is_ok() {
                 tokio::spawn(async move {
                     let addr = stream.peer_addr().unwrap();
@@ -482,7 +451,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                         .serve_connection(stream, Svc { addr, urls, pool, cache, std_rng, router, timer, mailer })
                         .await
                     {
-                        error!("Failed to serve connection: {:?}", err);
+                        error!("Failed to serve connection: {}", err);
                     }
                 });
             } else {
@@ -568,7 +537,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                     match router.serve_static(url.path()).await {
                         Ok(r) => r,
                         Err(e) => {
-                            error!("{:?}", e);
+                            error!("{}", e);
                             (router.internal_error)()
                         }
                     }
@@ -585,19 +554,19 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                                         if web_error.kind() == &WebErrorKind::Unauthenticated {
                                             Response::redirect(&router.login_url)
                                         } else {
-                                            error!("{:?}", web_error);
+                                            error!("{}", web_error);
                                             (router.internal_error)()
                                         }
                                     } else if let Some(_) = error.downcast_ref::<Http404>() {
                                         match (router.handle_404)(&mut req).await {
                                             Ok(r) => r,
                                             Err(e) => {
-                                                error!("{:?}", e);
+                                                error!("{}", e);
                                                 (router.internal_error)()
                                             }
                                         }
                                     } else {
-                                        error!("{:?}", error);
+                                        error!("{}", error);
                                         (router.internal_error)()
                                     }
                                 }
@@ -612,7 +581,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                                                 r
                                             }
                                             Err(e) => {
-                                                error!("{:?}", e);
+                                                error!("{}", e);
                                                 (router.internal_error)()
                                             }
                                         }
@@ -621,12 +590,12 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                                         Response::redirect(&router.login_url)
                                     }
                                     _ => {
-                                        error!("{:?}", web_error);
+                                        error!("{}", web_error);
                                         (router.internal_error)()
                                     }
                                 }
                             } else {
-                                error!("{:?}", error);
+                                error!("{}", error);
                                 (router.internal_error)()
                             }
                         }
@@ -689,7 +658,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                     match router.serve_static(url.path()).await {
                         Ok(r) => r,
                         Err(e) => {
-                            error!("{:?}", e);
+                            error!("{}", e);
                             (router.internal_error)()
                         }
                     }
@@ -706,19 +675,19 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                                         if web_error.kind() == &WebErrorKind::Unauthenticated {
                                             Response::redirect(&router.login_url)
                                         } else {
-                                            error!("{:?}", web_error);
+                                            error!("{}", web_error);
                                             (router.internal_error)()
                                         }
                                     } else if let Some(_) = error.downcast_ref::<Http404>() {
                                         match (router.handle_404)(&mut req).await {
                                             Ok(r) => r,
                                             Err(e) => {
-                                                error!("{:?}", e);
+                                                error!("{}", e);
                                                 (router.internal_error)()
                                             }
                                         }
                                     } else {
-                                        error!("{:?}", error);
+                                        error!("{}", error);
                                         (router.internal_error)()
                                     }
                                 }
@@ -733,7 +702,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                                                 r
                                             }
                                             Err(e) => {
-                                                error!("{:?}", e);
+                                                error!("{}", e);
                                                 (router.internal_error)()
                                             }
                                         }
@@ -742,12 +711,12 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                                         Response::redirect(&router.login_url)
                                     }
                                     _ => {
-                                        error!("{:?}", web_error.kind());
+                                        error!("{}", web_error.kind());
                                         (router.internal_error)()
                                     }
                                 }
                             } else {
-                                error!("{:?}", error);
+                                error!("{}", error);
                                 (router.internal_error)()
                             }
                         }

@@ -64,6 +64,8 @@ pub trait Cacheable {
 pub trait BaseCache: Clone + Send + Sync {
     async fn new(settings: &Settings) -> Result<Self> where Self: Sized;
     async fn set(&self, key: &str, value: &[u8]) -> Result<()>;
+    async fn set_many<'a>(&self, items: &'a[(String, Vec<u8>)]) -> Result<()>;
     async fn set_ex(&self, key: &str, value: &[u8], timeout: Option<usize>) -> Result<()>;
     async fn get(&self, key: &str) -> Result<Vec<u8>>;
+    async fn get_many(&self, keys: Vec<String>) -> Result<Vec<Vec<u8>>>;
 }

@@ -7,7 +7,7 @@ use sqlx::types::chrono::NaiveDateTime;
 use sqlx::postgres::Postgres;
 
 use crate::try_sql;
-use crate::server::{Settings, MAX_CONNECTIONS};
+use crate::server::Settings;
 use crate::web::{Result, WebErrorKind, BaseRequest};
 use crate::records::Record;
 use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt};
@@ -155,7 +155,7 @@ impl DbPool for PgDbPool {
         let max_conn = if let Some(max) = database.get("max_conn") {
             max.as_integer().expect("Could not convert maximum connections to integer") as u32
         } else {
-            MAX_CONNECTIONS as u32
+            100
         };
         let arg = format!("postgres://{user}:{password}@{address}/{name}");
         match Self::connect(&arg, max_conn).await {

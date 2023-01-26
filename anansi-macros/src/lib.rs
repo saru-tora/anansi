@@ -14,6 +14,60 @@ use quote::{quote, quote_spanned, format_ident};
 use syn::{Pat};
 use syn::FnArg::Typed;
 
+#[proc_macro]
+pub fn min_main(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as SchemaArgs);
+    let (server, init) = if input.vars.len() == 2 {
+        let n = &input.vars[0];
+        let b = &input.vars[1];
+        (quote! {#n}, quote! {#b})
+    } else {
+        (quote! {server}, quote! {})
+    };
+    let q = quote! {
+        pub mod prelude {
+            pub use async_trait::async_trait;
+            pub use crate::project::Request;
+            pub use anansi::{form, import, viewer, base_view, view, redirect, transact, form_error};
+            pub use anansi::web::{Result, Response, BaseUser};
+            pub use anansi::forms::Form;
+            pub use anansi::cache::BaseCache;
+            pub use anansi::records::Record;
+            pub use anansi::site::Site;
+        }
+
+        #[tokio::main]
+        async fn main() {
+            use server_prelude::*;
+
+            let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
+            if let Some(#server) = anansi::server::Server::new(APP_STATICS, None, app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations).await {
+                #init
+                #server.run().await
+            }
+        }
+
+        mod server_prelude {
+            pub use std::sync::{Arc, Mutex};
+            pub use crate::urls::app_url;
+            pub use crate::http_errors::views::ErrorView;
+            pub use crate::project::{app_services, HttpRequest};
+            pub use anansi::web::Response;
+        }
+
+        #[cfg(test)]
+        pub async fn test_server(sender: tokio::sync::oneshot::Sender<()>) {
+            use server_prelude::*;
+
+            let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
+            anansi::server::Server::new(APP_STATICS, APP_ADMINS, Some(sender))
+                .run(app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations)
+                .await;
+        }
+    };
+    q.into()
+}
+
 #[proc_macro_derive(Record, attributes(field))]
 pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

@@ -38,8 +38,14 @@ impl BaseCache for RedisCache {
     async fn set_ex(&self, key: &str, value: &[u8], timeout: Option<usize>) -> Result<()> {
         self.0.write().await.set_ex(key, value, timeout).await
     }
+    async fn set_many<'a>(&self, items: &'a[(String, Vec<u8>)]) -> Result<()> {
+        self.0.write().await.set_many(items).await
+    }
     async fn get(&self, key: &str) -> Result<Vec<u8>> {
         self.0.write().await.get(key).await
+    }
+    async fn get_many(&self, key: Vec<String>) -> Result<Vec<Vec<u8>>> {
+        self.0.write().await.get_many(key).await
     }
 }
 
@@ -61,6 +67,12 @@ impl RedisConnection {
             Err(e) => Err(Box::new(e)),
         }
     }
+    async fn set_many<'a>(&mut self, items: &'a[(String, Vec<u8>)]) -> Result<()> {
+        match self.con.mset_nx(&items).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
     async fn get(&mut self, key: &str) -> Result<Vec<u8>> {
         match self.con.get::<&str, Vec<u8>>(key).await {
             Ok(r) => {
@@ -72,6 +84,20 @@ impl RedisConnection {
             }
             Err(_) => {
                 Err(WebErrorKind::NoCache.to_box())
+            }
+        }
+    }
+    async fn get_many(&mut self, key: Vec<String>) -> Result<Vec<Vec<u8>>> {
+        match self.con.get::<Vec<String>, Vec<Vec<u8>>>(key).await {
+            Ok(r) => {
+                if !r.is_empty() {
+                  Ok(r)
+                } else {
+                    Err(WebErrorKind::NoCache.to_box())
+                }
+            }
+            Err(e) => {
+                Err(Box::new(e))
             }
         }
     }
