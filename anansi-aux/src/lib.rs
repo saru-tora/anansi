@@ -1,4 +1,6 @@
-use std::cell::RefCell;
+use std::any::Any;
+use std::rc::{Rc, Weak};
+use std::cell::{Ref, RefMut, RefCell};
 use std::collections::HashMap;
 use std::error::Error;
 
@@ -7,23 +9,22 @@ use wasm_bindgen::JsCast;
 use web_sys::{Element, Node, NodeList, Document, Text, Window};
 
 use serde_json::Value;
-use serde::{Serialize, Deserialize};
-use wasm_bindgen_futures::spawn_local;
-
-use async_channel::{unbounded, Sender, Receiver};
+use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
 pub use anansi_macros::*;
+
+extern crate self as anansi_aux;
 
 pub mod prelude {
     pub use serde_json::Value;
     pub use serde::{Serialize, Deserialize};
     pub use anansi_macros::{store, Properties, component, function_component};
-    pub use super::{attributes, element, Rsx, Sub, Proxy, Comp, Elem, Attribute, CbCmd, Resource};
+    pub use super::{attributes, element, Rsx, Sub, Proxy, Comp, Elem, Attribute, CbCmd, Resource, Rendered};
 }
 
 pub mod components;
 
-pub type Mounts = &'static [(&'static str, fn(Value, Value, Vec<Sub>, async_channel::Sender<CbCmd>, async_channel::Receiver<CbCmd>, async_channel::Sender<Cmd>, String), u8)];
+pub type Mounts = &'static [(&'static str, fn(String), fn())];
 
 thread_local! {
     pub static WINDOW: Window = web_sys::window().expect("should have a window");
@@ -34,12 +35,31 @@ thread_local! {
     pub static CALLBACKS: RefCell<HashMap<String, CallbackData>> = RefCell::new(HashMap::new());
     pub static RECALLS: RefCell<HashMap<String, RecallData>> = RefCell::new(HashMap::new());
     pub static APP_STATE: RefCell<Option<AppState>> = RefCell::new(None);
-    pub static CHANNEL: RefCell<(Sender<Cmd>, Option<Receiver<Cmd>>)> = {
-        let (tx, rx) = async_channel::unbounded(); 
-        RefCell::new((tx, Some(rx)))
-    };
-    pub static SENDERS: RefCell<HashMap<usize, Sender<CbCmd>>> = RefCell::new(HashMap::new());
+    pub static NODE_ID: RefCell<String> = RefCell::new(String::new());
+    pub static IDS: RefCell<Vec<usize>> = RefCell::new(vec![]);
     pub static RID: RefCell<usize> = RefCell::new(0);
+    pub static CONTEXTS: RefCell<HashMap<String, Ctx>> = RefCell::new(HashMap::new());
+    pub static REFS: RefCell<HashMap<usize, Vec<usize>>> = RefCell::new(HashMap::new());
+    pub static COMP_RSX: RefCell<HashMap<CompId, Option<Rsx>>> = RefCell::new(HashMap::new());
+    pub static VNODE_MAP: RefCell<HashMap<String, Node>> = RefCell::new(HashMap::new());
+}
+
+#[derive(PartialEq, Eq, Hash, Debug)]
+pub struct CompId {
+    node_id: String,
+    n: usize,
+}
+
+impl CompId {
+    pub fn new(node_id: String, n: usize) -> Self {
+        Self {node_id, n}
+    }
+    pub fn node_id(&self) -> &String {
+        &self.node_id
+    }
+    pub fn n(&self) -> usize {
+        self.n
+    }
 }
 
 #[macro_export]
@@ -95,6 +115,9 @@ pub enum CbCmd {
     Text(u8, Result<String, Box<dyn Error>>),
 }
 
+#[derive(Properties, Serialize, Deserialize)]
+pub struct EmptyProp;
+
 #[derive(Debug)]
 pub enum Resource<D> {
     Pending,
@@ -102,27 +125,86 @@ pub enum Resource<D> {
     Resolved(D),
 }
 
+pub struct Rendered(Vec<Rsx>);
+
+impl Rendered {
+    pub fn new(rsx: Vec<Rsx>) -> Self {
+        Self(rsx)
+    }
+    pub fn resume(_store: &mut AppState, _n: usize) -> Self {
+        Self(vec![])
+    }
+    pub fn rsx(&self) -> &Vec<Rsx> {
+        &self.0
+    }
+}
+
 pub enum Cmd {
     Update(Rsx, String),
     Set(HashMap<String, Ctx>),
 }
 
-pub struct Signal<T> {
-    _proxy: SignalProxy,
-    value: T,
+#[derive(Clone)]
+pub struct RefChild<T> {
+    parent: Weak<RefCell<Vec<RefChild<T>>>>,
+    t: T,
 }
 
-impl<'de, T: Serialize + Deserialize<'de>> Signal<T> {
-    pub fn new(t: T) -> Self {
-        Self {_proxy: SignalProxy::new(), value: t}
+impl<T> RefChild<T> {
+    pub fn parent(&self) -> &Weak<RefCell<Vec<RefChild<T>>>> {
+        &self.parent
     }
-    pub fn value(&mut self) -> &T {
-        self._proxy.set();
-        &self.value
+    pub fn value(&self) -> &T {
+        &self.t
     }
     pub fn value_mut(&mut self) -> &mut T {
-        self._proxy._invalid = true;
-        &mut self.value
+        &mut self.t
+    }
+}
+
+pub struct RefVec<T>(Rc<RefCell<Vec<RefChild<T>>>>);
+
+impl<T> RefVec<T> {
+    pub fn push(&self, t: T) {
+        let parent = Rc::downgrade(&self.0);
+        self.0.borrow_mut().push(RefChild {parent, t});
+    }
+    pub fn value(&self) -> Ref<'_, Vec<RefChild<T>>> {
+        self.0.borrow()
+    }
+    pub fn value_mut(&self) -> RefMut<'_, Vec<RefChild<T>>> {
+        self.0.borrow_mut()
+    }
+}
+
+pub struct Signal<T> {
+    _proxy: Rc<RefCell<SignalProxy>>,
+    value: Rc<RefCell<T>>,
+}
+
+impl<T: Serialize + DeserializeOwned> Signal<T> {
+    pub fn resume(store: &mut AppState, n: usize) -> Self {
+        if let Obj::Js(v) = &store.objs[n] {
+            let t: T = serde_json::from_value(v.clone()).unwrap();
+            let subs = store.subs.pop().expect("problem getting subs");
+            Self {_proxy: Rc::new(RefCell::new(SignalProxy::from(subs[0]))), value: Rc::new(RefCell::new(t))}
+        } else {
+            panic!("expected JavaScript value when resuming")
+        }
+    }
+    pub fn new(t: T) -> Self {
+        Self {_proxy: Rc::new(RefCell::new(SignalProxy::new())), value: Rc::new(RefCell::new(t))}
+    }
+    pub fn value(&mut self) -> Ref<'_, T> {
+        self._proxy.borrow_mut().set();
+        self.value.borrow()
+    }
+    pub fn value_mut(&mut self) -> RefMut<'_, T> {
+        self._proxy.borrow_mut()._invalid = true;
+        self.value.borrow_mut()
+    }
+    pub fn get_subs(&self) -> String {
+        self._proxy.borrow().get_subs()
     }
 }
 
@@ -138,6 +220,9 @@ pub struct SignalProxy {
 impl SignalProxy {
     pub fn new() -> Self {
         Self {_learning: false, _invalid: false, _node: 0, _dirty: -1, _sub: (0, 0)}
+    }
+    pub fn from(_sub: (u32, i64)) -> Self {
+        Self {_learning: false, _invalid: false, _node: 0, _dirty: -1, _sub}
     }
     pub fn set(&mut self) {
         if self._learning {
@@ -248,7 +333,7 @@ impl Elem {
                         let rs = r.to_string();
                         el.set_attribute("rid", &rs).unwrap();
                         RECALLS.with(|rc| {
-                            rc.borrow_mut().insert(rs, RecallData {sender: cb.sender.as_ref().unwrap().clone(), num: cb.num});
+                            rc.borrow_mut().insert(rs, RecallData {call: cb.call});
                         });
                         *r += 1;
                     });
@@ -340,8 +425,29 @@ pub enum Ctx {
 pub type Sub = (u32, i64);
 
 pub struct AppState {
-    objs: Vec<Value>,
+    objs: Vec<Obj>,
     subs: Vec<Vec<Sub>>,
+}
+
+impl AppState {
+    pub fn objs(&self) -> &Vec<Obj> {
+        &self.objs
+    }
+    pub fn objs_mut(&mut self) -> &mut Vec<Obj> {
+        &mut self.objs
+    }
+    pub fn subs(&self) -> &Vec<Vec<Sub>> {
+        &self.subs
+    }
+    pub fn subs_mut(&mut self) -> &mut Vec<Vec<Sub>> {
+        &mut self.subs
+    }
+}
+
+#[derive(Clone)]
+pub enum Obj {
+    Rs(Rc<RefCell<dyn Any>>),
+    Js(Value),
 }
 
 pub fn html_escape(s: &str) -> String {
@@ -364,14 +470,13 @@ pub fn html_escape(s: &str) -> String {
 }
 
 pub struct RecallData {
-    pub num: u8,
-    pub sender: Sender<CbCmd>,
+    pub call: fn(),
 }
 
 pub struct CallbackData {
-    pub new: fn(Value, Value, Vec<Sub>, Sender<CbCmd>, Receiver<CbCmd>, Sender<Cmd>, String),
-    pub num: u8,
-    pub sender: Option<Sender<CbCmd>>,
+    pub new: fn(String),
+    pub call: fn(),
+    pub is_mounted: bool,
 }
 
 #[macro_export]
@@ -392,7 +497,7 @@ fn add_sibling(node: &Node, new: &Node) {
     }
 }
 
-fn get_state(document: &Document, ctx_map: &mut HashMap<String, Ctx>) -> Option<AppState> {
+pub fn get_state(document: &Document, ctx_map: &mut HashMap<String, Ctx>) -> Option<AppState> {
     let script = document.query_selector_all("script[type='app/json']").unwrap().get(0).unwrap();
     let text = script.text_content().unwrap();
     let json: Value = serde_json::from_str(&text).unwrap();
@@ -407,7 +512,7 @@ fn get_state(document: &Document, ctx_map: &mut HashMap<String, Ctx>) -> Option<
     let object_array = values.get("objs").unwrap();
     let mut objs = vec![];
     for object in object_array.as_array().unwrap() {
-        objs.push(object.clone());
+        objs.push(Obj::Js(object.clone()));
     }
     let sub_array = values.get("subs").unwrap();
     let mut subs = vec![];
@@ -460,31 +565,25 @@ pub fn setup(callbacks: HashMap<String, CallbackData>) {
         let mut cb = c.borrow_mut();
         *cb = callbacks;
     });
-    let mut contexts = HashMap::new();
-    let mut vnode_map = HashMap::new();
-    
-    CHANNEL.with(|channel| {
-        let grx = channel.borrow_mut().1.take().unwrap();
-        spawn_local(async move {
-            while let Ok(cmd) = grx.recv().await {
-                match cmd {
-                    Cmd::Update(rsx, node_id) => {
-                        DOCUMENT.with(|document| {
-                            let nodes = document.body().unwrap().child_nodes();
-                            check_vnodes(&nodes, &mut vnode_map);
-                            let vn_index = match contexts.get(&node_id).unwrap() {
-                                Ctx::R(s) => s,
-                            };
-                            let mut node = vnode_map.get(vn_index).unwrap().clone().next_sibling().unwrap();
-                            update(&rsx, &mut node);
-                            close_vnode(&document, &node);
-                        });
-                    }
-                    Cmd::Set(ctx) => {
-                        contexts = ctx;
-                    }
-                }
-            }
+}
+
+pub fn rerender(rsx: Rsx) {
+    CONTEXTS.with(|contexts| {
+        let contexts = contexts.borrow();
+        VNODE_MAP.with(|vnode_map| {
+            let mut vnode_map = vnode_map.borrow_mut();
+            NODE_ID.with(|node_id| {
+                DOCUMENT.with(|document| {
+                    let nodes = document.body().unwrap().child_nodes();
+                    check_vnodes(&nodes, &mut vnode_map);
+                    let vn_index = match contexts.get(&*node_id.borrow()).unwrap() {
+                        Ctx::R(s) => s,
+                    };
+                    let mut node = vnode_map.get(vn_index).unwrap().clone().next_sibling().unwrap();
+                    update(&rsx, &mut node);
+                    close_vnode(&document, &node);
+                });
+            });
         });
     });
 }
@@ -495,9 +594,9 @@ pub fn recall(rid: &str) -> bool {
     RECALLS.with(|r| {
         let recalls = r.borrow();
         if let Some(rc) = recalls.get(rid) {
-            let sender = rc.sender.clone();
-            let n = rc.num;
-            spawn_local(async move {sender.send(CbCmd::Callback(n)).await.unwrap()});
+            let r = rc.call;
+            drop(recalls);
+            (r)();
             b = true;
         }
     });
@@ -514,48 +613,36 @@ pub fn call(callback: &str, node_id: &str) -> Result<(), JsValue> {
     CALLBACKS.with(|c| {
         let mut callbacks = c.borrow_mut();
         if let Some(cb) = callbacks.get_mut(name) {
-            CHANNEL.with(|channel| {
-                let gtx = channel.borrow().0.clone();
-                APP_STATE.with(|a| {
-                    let mut app_state = a.borrow_mut();
-                    let store = if let Some(state) = app_state.as_ref() {
-                        state
-                    } else {
-                        let mut contexts = HashMap::new();
-                        DOCUMENT.with(|document| {
-                            *app_state = get_state(&document, &mut contexts);
-                        });
-                        let gtx = gtx.clone();
-                        spawn_local(async move {gtx.send(Cmd::Set(contexts)).await.unwrap()});
-                        app_state.as_mut().unwrap()
-                    };
-
-                    let n = arr[0];
-                    SENDERS.with(|s| {
-                        let mut senders = s.borrow_mut();
-                        let sender = senders.entry(n).or_insert_with(|| {
-                            let v1 = store.objs[n].clone();
-                            let v2 = store.objs[n+1].clone();
-                            let subs = store.subs[0].clone();
-                            let (sender, receiver) = unbounded();
-                            {
-                                let sender = sender.clone();
-                                (cb.new)(v1, v2, subs, sender, receiver, gtx, node_id.to_string());
-                            }
-                            sender
-                        });
-                        let sender = sender.clone();
-                        
-                        let n = cb.num;
-                        cb.sender = Some(sender.clone());
-                        spawn_local(async move {sender.send(CbCmd::Callback(n)).await.unwrap()});
-                    });
-                });
+            NODE_ID.with(|n| *n.borrow_mut() = node_id.to_string());
+            IDS.with(|id| {
+                *id.borrow_mut() = arr;
             });
+            if !cb.is_mounted {
+                (cb.new)(node_id.to_string());
+                cb.is_mounted = true;
+            }
+            (cb.call)();
         }
     });
 
     Ok(())
+}
+
+pub fn lexical_scope() -> Vec<Rc<RefCell<dyn Any>>> {
+    let mut v = vec![];
+    APP_STATE.with(|app| {
+        let app = app.borrow();
+        IDS.with(|ids| {
+            for id in ids.borrow().iter() {
+                if let Obj::Rs(var) = &app.as_ref().expect("could not get app state").objs[*id] {
+                    v.push(var.clone());
+                } else {
+                    panic!("expected Rust type to be restored");
+                }
+            }
+        })
+    });
+    v
 }
 
 fn update(rsx: &Rsx, node: &mut Node) {

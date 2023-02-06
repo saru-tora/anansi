@@ -9,17 +9,17 @@ use proc_macro2::TokenStream;
 use toml::Value;
 use toml::map::Map;
 
-use syn::Block;
 use syn::Expr::*;
-use syn::Stmt::{Semi, Item, Local};
 use std::collections::{HashSet, HashMap};
 
 use crate::{VERSION, cargo, make_file, append, get_src};
 
 pub fn get_expr(chars: &mut Chars) -> String {
+    custom_get_expr(chars, 0, 0)
+}
+
+pub fn custom_get_expr(chars: &mut Chars, mut paren: u32, mut bracket: u32) -> String {
     let mut s = String::new();
-    let mut paren = 0;
-    let mut bracket = 0;
     while let Some(c) = chars.next() {
         match c {
             ';' => if bracket == 0 && paren == 0 {
@@ -68,6 +68,29 @@ pub fn check_components(path: PathBuf, changed: &mut bool) {
     };
 }
 
+#[derive(Clone)]
+struct Local(Vec<(String, (TokenStream, usize))>);
+
+impl Local {
+    fn new() -> Self {
+        Self {0: vec![]}
+    }
+    fn insert(&mut self, name: String, ty: TokenStream) {
+        self.0.push((name, (ty, self.0.len())));
+    }
+    fn get(&self, name: &str) -> Option<&(TokenStream, usize)> {
+        for (k, v) in &self.0 {
+            if k == name {
+                return Some(v);
+            }
+        }
+        None
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
     let mut chars = split.chars();
     let component = format_ident!("{}", collect(&mut chars, ')').trim());
@@ -95,7 +118,7 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
         (props, quote! {#properties})
     } else {
         let props = format_ident!("_props");
-        (props, quote! {()})
+        (props, quote! {anansi_aux::EmptyProp})
     };
     collect(&mut chars, '{');
     let mut n: u8 = 1;
@@ -112,34 +135,32 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
         }
     }
     let mut bchars = body.chars();
-    let mut comp = None;
     let mut rsx = quote!{};
-    let mut render_args = quote!{};
-    let mut render_call_args = quote!{};
-    let mut comp_rsx = vec![];
-    let mut restart_comp_rsx = vec![];
     let mut html = quote!{};
-    let mut cbv = vec![];
     let mut start = vec![];
     let mut callbacks = vec![];
-    let mut cbn: u8 = 1;
     let mut init = vec![];
     let mut restart_init = vec![];
-    let mut resources = vec![];
-    let mut resource_args = vec![];
-    let mut resource_refs = vec![];
     let mut resource_calls = vec![];
     let mut res_fn = vec![];
     let mut resource_map = HashMap::new();
+    let mut resource_types = HashMap::new();
     let mut selectors = HashSet::new();
     let mut style = String::new();
     let mut comp_rsx_ids = vec![];
-    let mut restart_comp_rsx_ids;
+    let mut restart_comp_rsx_ids = vec![];
+    let mut local = Local::new();
+    if props != "_props" {
+        local.insert(props.to_string(), properties.clone());
+    }
 
     let cs = quote! {#component}.to_string();
     let lower_comp = format_ident!("{}", cs.to_lowercase());
     let comp_mount = format_ident!("{}_mount", lower_comp);
     let comp_render = format_ident!("{}_render", lower_comp);
+    let comp_set_render = format_ident!("{}_set_render", lower_comp);
+    let mut comp_refs = HashMap::new();
+    let mut svars = vec![];
 
     loop {
         let token = collect_nws(&mut bchars);
@@ -150,14 +171,15 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
             collect(&mut bchars, '\n');
             continue;
         }
-        match token.trim() {
+        let trimmed = token.trim();
+        match trimmed {
             "let" => {
                 let var = collect(&mut bchars, '=');
                 let expr = get_expr(&mut bchars);
                 if expr.contains("Self") {
-                    let (_, var) = var.split_once("mut").unwrap();
-                    let var = format_ident!("{}", var.trim());
-                    comp = Some(var.clone());
+                    let vs = var.trim().to_string();
+                    local.insert(vs.clone(), component.clone());
+                    let var = format_ident!("{}", vs);
                     let e: syn::Expr = syn::parse_str(&expr).unwrap();
                     init.push(quote!{let mut #var = #e;});
                     restart_init.push(quote!{let mut #var = #e;});
@@ -170,19 +192,41 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
                         Macro(expr_macro) => {
                             let id = expr_macro.mac.path.segments.last().unwrap().ident.to_string();
                             match id.as_str() {
+                                "signal" => {
+                                    let tokens = &expr_macro.mac.tokens;
+                                    let s = quote! {#tokens}.to_string();
+                                    let (ty, name) = s.split_once(',').expect("expected comma");
+                                    let ty: syn::Path = syn::parse_str(ty).expect("problem parsing type");
+                                    local.insert(name.trim().to_string(), quote!{#ty});
+                                    quote!{Signal::new(#name)}
+                                }
                                 "callback" => {
                                     let tokens = &expr_macro.mac.tokens;
-                                    let block: syn::Block = syn::parse_str(&quote! {{#tokens}}.to_string()).unwrap();
-                                    let t = add_proxy.proxy(&block);
+                                    let mut args: ResourceArgs = syn::parse2(tokens.clone()).unwrap();
 
                                     let name = format_ident!("{}_{}", component.to_string().to_lowercase(), var);
                                     let ns = name.to_string();
-                                    start.push(quote! {(#ns, #comp_mount, #cbn)});
-                                    cbn += 1;
+                                    start.push(quote! {(#ns, #comp_mount, #name)});
+
+                                    let block = args.exprs.pop().expect("expected block");
+                                    let mut scope_vars = vec![];
+                                    for var in &args.exprs {
+                                        let vs = quote! {#var}.to_string();
+                                        let (ty, n) = local.get(&vs).expect("unexpected variable");
+                                        scope_vars.push(quote! {
+                                            let mut #var = _scope[#n].borrow_mut();
+                                            let #var = #var.downcast_mut::<#ty>().expect("problem restoring variable");
+                                        });
+                                    }
+                                    let block = add_proxy.check_expr(&block, &mut members);
+
+                                    local.insert(ns, quote!{()});
 
                                     let q = quote! {
-                                        fn #name(#comp: &mut #component, #props: &#properties, _sender: &async_channel::Sender<CbCmd>) {
-                                            #(#t)*
+                                        fn #name() {
+                                            let _scope = anansi_aux::lexical_scope();
+                                            #(#scope_vars)*
+                                            #block
                                         }
                                     };
                                     callbacks.push(q);
@@ -190,53 +234,79 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
                                 }
                                 "resource" => {
                                     let tokens = &expr_macro.mac.tokens;
-                                    let args: ResourceArgs = syn::parse2(tokens.clone()).unwrap();
+                                    let mut args: ResourceArgs = syn::parse2(tokens.clone()).unwrap();
                                     let (_, vars) = var.split_once("(").unwrap();
                                     let (first, rest) = vars.split_once(',').unwrap();
 
-                                    let res = format_ident!("{}", first.trim());
-                                    let res_match = format_ident!("{}_match", res);
+                                    let res_match = format_ident!("{}_match", first.trim());
                                     let (name, _) = rest.split_once(')').unwrap();
+                                    let simple_name = name.trim().to_string();
                                     let name = format_ident!("{}_{}", component.to_string().to_lowercase(), name.trim());
 
-                                    cbv.push((cbn, name.clone(), res.clone(), res_match));
                                     let ns = name.to_string();
-                                    start.push(quote! {(#ns, #comp_mount, #cbn)});
-                                    cbn += 1;
+                                    start.push(quote! {(#ns, #comp_mount, #name)});
 
                                     let ty = &args.ty;
-                                    let (arg, block) = (args.cb.inputs.first().clone(), args.cb.body.clone());
-                                    if arg.is_some() {
-                                        panic!("Unexpected argument");
+                                    let block = args.exprs.pop().expect("expected block");
+                                    let mut scope_vars = vec![];
+                                    let mut n = 0_usize;
+                                    let mut ref_nums = vec![];
+                                    for var in &args.exprs {
+                                        let vs = quote! {#var}.to_string();
+                                        let (ty, rn) = local.get(&vs).expect("unexpected variable");
+                                        scope_vars.push(quote! {
+                                            let mut #var = _scope[#n].borrow_mut();
+                                            let #var = #var.downcast_mut::<#ty>().expect("problem restoring variable");
+                                        });
+                                        ref_nums.push(*rn);
+                                        n += 1;
                                     }
+                                    resource_types.insert(first.to_string(), quote! {#ty});
+                                    comp_refs.insert(simple_name, ref_nums);
                                     let block = add_proxy.check_expr(&block, &mut members);
 
-                                    resource_map.insert(first.trim().to_string(), (cbn, ty.clone()));
+                                    resource_map.insert(first.trim().to_string(), ty.clone());
+
+                                    let res_num = local.len();
+                                    local.insert(first.to_string(), quote! {Rendered});
 
                                     callbacks.push(quote! {
-                                        fn #name(#comp: &mut #component, #props: &#properties, _sender: &async_channel::Sender<CbCmd>) {
-                                            #comp._proxy._invalid = true;
+                                        fn #name() {
                                             let req = {
+                                                let _scope = anansi_aux::lexical_scope();
+                                                #(#scope_vars)*
                                                 #block
                                             };
-                                            let _sender = _sender.clone();
+                                            anansi_aux::APP_STATE.with(|state| {
+                                                let state = state.borrow();
+                                                let state = state.as_ref().expect("problem borrowing state");
+                                                #res_match(state, Resource::Pending, #res_num);
+                                            });
+                                            #comp_set_render();
                                             wasm_bindgen_futures::spawn_local(async move {
                                                 let text = req.send().await;
-                                                let r = match text {
+                                                let text = match text {
                                                     Ok(r) => r.text().await.or_else(|e| Err(Box::new(e) as Box<dyn std::error::Error>)),
                                                     Err(e) => Err(Box::new(e) as Box<dyn std::error::Error>),
                                                 };
-                                                _sender.send(CbCmd::Text(#cbn, r)).await.unwrap();
+                                                anansi_aux::APP_STATE.with(|state| {
+                                                    let mut state = state.borrow_mut();
+                                                    let state = state.as_mut().expect("problem borrowing state");
+                                                    let _resource = match text {
+                                                        Ok(t) => {
+                                                            match serde_json::from_str::<#ty>(&t) {
+                                                                Ok(r) => Resource::Resolved(r),
+                                                                Err(e) => Resource::Rejected(Box::new(e) as Box<dyn std::error::Error>),
+                                                            }
+                                                        }
+                                                        Err(e) => Resource::Rejected(e),
+                                                    };
+                                                    #res_match(state, _resource, #res_num);
+                                                });
+                                                #comp_set_render();
                                             });
                                         }
                                     });
-                                    cbn += 1;
-
-                                    resources.push(quote! {
-                                        let mut #res = vec![];
-                                    });
-                                    resource_args.push(quote! {#res: &mut Vec<Rsx>,});
-                                    resource_refs.push(quote! {&mut #res,});
                                     continue;
                                 }
                                 _ => quote! {#expr_macro}
@@ -278,82 +348,85 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
                 }
                 continue;
             }
-            "rsx!" => {
-                let s = get_expr(&mut bchars);
-                let (_, s) = s.split_once('{').unwrap();
-                let (s, _) = s.rsplit_once('}').unwrap();
-
-                let lower = component.to_string().to_lowercase();
-                let mut c_parser = CompParser {in_resource: false, lower_comp: lower.clone(), comp: comp.clone(), component: component.clone(), in_block: false, in_element: false, resource_map: resource_map.clone(), resource_calls: vec![], res_fn: vec![], selectors: selectors.clone(), comp_rsx_ids: vec![], restart_comp_rsx_ids: vec![]};
-                let c_parsed = c_parser.parse_rsx(&s);
-                for rsx in &c_parser.comp_rsx_ids {
-                    comp_rsx.push(quote! {let mut #rsx: Option<Rsx> = None;});
-                }
-                for rsx in &c_parser.restart_comp_rsx_ids {
-                    restart_comp_rsx.push(quote! {let mut #rsx: Option<Rsx> = None;});
-                }
-                comp_rsx_ids = c_parser.comp_rsx_ids;
-                restart_comp_rsx_ids = c_parser.restart_comp_rsx_ids;
-                resource_calls.append(&mut c_parser.resource_calls);
-                res_fn.append(&mut c_parser.res_fn);
-                let parsed: syn::Expr = syn::parse_str(&c_parsed).unwrap();
-                let mut add_proxy = AddProxy::new();
-                let mut members = vec![];
-                rsx = add_proxy.check_expr(&parsed, &mut members);
-                add_proxy.vars.insert(props.clone());
-                let has_props = add_proxy.vars.get(&props).is_some();
-                let c_arg = if let Some(c) = &comp {
-                    quote! {#c: &mut #component,}
-                } else {
-                    quote! {}
-                };
-                render_args = if has_props {
-                    quote! {
-                        (#c_arg #props: &#properties, #(#resource_args)* #(#restart_comp_rsx_ids: &mut Option<Rsx>,)*)
-                    }
-                } else {
-                    quote! {
-                        (#c_arg #(,#comp_rsx_ids: &Option<Rsx>)*)
-                    }
-                };
-                let c_a = if let Some(c) = &comp {
-                    quote! {&mut #c,}
-                } else {
-                    quote! {}
-                };
-                render_call_args = if has_props {
-                    quote! {
-                        (#c_a &#props, #(#resource_refs)* #(&mut #restart_comp_rsx_ids,)*)
-                    }
-                } else {
-                    quote! {
-                        (#c_a #(, &#comp_rsx_ids)*)
-                    }
-                };
-                let mut parser = Parser::comp(lower.to_string(), selectors.clone());
-                let h = parser.to_html(&s);
-                html = syn::parse_str(&h).unwrap();
-            }
+            
             ";" => {}
             "}" => {}
-            _ => panic!("unexpected token for component {}", token.trim()),
+            _ => {
+                if trimmed.starts_with("rsx!") {
+                    let s = if trimmed.starts_with("rsx!(") {
+                        let (_, c) = trimmed.split_once('(').expect("expected parenthesis");
+                        let mut c = c.to_string();
+                        c.push_str(&collect(&mut bchars, '{'));
+                        svars = c.split(',').map(|sv| format!("{}", sv.trim())).collect();
+                        svars.pop();
+
+                        custom_get_expr(&mut bchars, 1, 1)
+                    } else {
+                        let t = get_expr(&mut bchars);
+                        let (_, t) = t.split_once('{').unwrap();
+                        t.to_string()
+                    };
+                    let (s, _) = s.rsplit_once('}').unwrap();
+
+                    let lower = component.to_string().to_lowercase();
+                    let mut c_parser = CompParser {refs: comp_refs.clone(), in_resource: false, lower_comp: lower.clone(), in_block: false, in_element: false, res_types: resource_types.clone(), resource_calls: vec![], res_fn: vec![], selectors: selectors.clone(), comp_rsx_ids: vec![], restart_comp_rsx_ids: vec![], local: local.clone()};
+                    let c_parsed = c_parser.parse_rsx(&s);
+                    comp_rsx_ids = c_parser.comp_rsx_ids;
+                    restart_comp_rsx_ids = c_parser.restart_comp_rsx_ids;
+                    resource_calls.append(&mut c_parser.resource_calls);
+                    res_fn.append(&mut c_parser.res_fn);
+                    let parsed: syn::Expr = syn::parse_str(&c_parsed).unwrap();
+                    let mut add_proxy = AddProxy::new();
+                    let mut members = vec![];
+                    rsx = add_proxy.check_expr(&parsed, &mut members);
+                    add_proxy.vars.insert(props.clone());
+                    let mut parser = Parser::comp(comp_refs.clone(), lower.to_string(), selectors.clone());
+                    let h = parser.to_html(&s);
+                    html = syn::parse_str(&h).unwrap();
+                } else {
+                    panic!("unexpected token for component {}", token.trim());
+                }
+            }
         }
     }
-    let qr = quote! {
-        fn #comp_render #render_args -> Rsx {
-            #rsx
+    let mut lex_n = 0_usize;
+    let mut lexical_scope = vec![];
+    let mut set_render_idx = vec![];
+    for name in svars {
+        let (ty, n) = local.get(&name).expect("problem getting type for rendering function");
+        let ident = format_ident!("{}", name);
+        lexical_scope.push(quote! {
+            let mut #ident = _scope[#lex_n].borrow_mut();
+            let #ident = #ident.downcast_mut::<#ty>().expect("problem restoring variable");
+        });
+        set_render_idx.push(n);
+        lex_n += 1;
+    }
+    
+    let set_ids = if set_render_idx.is_empty() {
+        quote! {}
+    } else {
+        quote! {
+            fn #comp_set_render() {
+                anansi_aux::IDS.with(|ids| {
+                    let mut v = vec![];
+                    #(v.push(#set_render_idx);)*
+                    *ids.borrow_mut() = v;
+                });
+                let _rsx = #comp_render();
+                anansi_aux::rerender(_rsx);
+            }
         }
     };
 
-    let mut cb_full = vec![];
-    for (cbn, name, res, res_match) in cbv{
-        cb_full.push(quote! {
-            #cbn => {
-                #name(&mut #comp, &#props, &_sender);
-                #res = #res_match(&mut #comp, Resource::Pending #(, &mut #comp_rsx_ids)*);
-            }
-        });
-    }
+    let qr = quote! {
+        fn #comp_render() -> Rsx {
+            let _scope = anansi_aux::lexical_scope();
+            #(#lexical_scope)*
+            #rsx
+        }
+        #set_ids
+    };
 
     let use_styles = if style.is_empty() {
         quote! {}
@@ -371,76 +444,112 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
             anansi_aux::load_style(#load_path);
         }
     };
-    let comp_new = if let Some(c) = &comp {
+    
+    let mut pause = vec![];
+    for (name, (ty, _)) in &local.0 {
+        let name = format_ident!("{}", name);
+        let ts = ty.to_string();
+        if ts == "Rendered" {
+            pause.push(quote! {
+                _p.push_obj("{}".to_string());
+            });
+            continue;
+        }
+        if ts != properties.to_string() {
+            pause.push(quote! {
+                _p.push_subs(#name.get_subs());
+                _p.push_obj(serde_json::to_string(&#name.into_inner()).unwrap());
+            });
+        } else {
+            pause.push(quote! {
+                _p.push_obj(serde_json::to_string(&#name).unwrap());
+            });
+        }
+    }
+    let mut set_scope = vec![];
+
+    let mut ln = 0_usize;
+    for (_, (ty, _)) in local.0 {
+        let ts = ty.to_string();
+        if ts == "anansi_aux::EmptyProp" {
+            continue;
+        }
+        set_scope.push(quote!{
+            {
+                let rs = anansi_aux::Obj::Rs(std::rc::Rc::new(std::cell::RefCell::new(<#ty>::resume(store, #ln))));
+                store.objs_mut()[#ln] = rs;
+            }
+        });
+        ln += 1;
+    }
+
+    let mut comp_rsx_init = quote!{};
+    if !comp_rsx_ids.is_empty() {
+        let mut cri = vec![];
+        let mut cnum = 0_usize;
+        for _ in comp_rsx_ids {
+            cri.push(quote!{comp_rsx.insert(anansi_aux::CompId::new(node_id.to_string(), #cnum), None);});
+            cnum += 1;
+        }
+        for _ in restart_comp_rsx_ids {
+            cri.push(quote!{comp_rsx.insert(anansi_aux::CompId::new(node_id.to_string(), #cnum), None);});
+            cnum += 1;
+        }
+        comp_rsx_init = quote! {
+            anansi_aux::COMP_RSX.with(|comp_rsx| {
+                let mut comp_rsx = comp_rsx.borrow_mut();
+                anansi_aux::NODE_ID.with(|node_id| {
+                    let node_id = node_id.borrow();
+                    #(#cri)*
+                });
+            });
+        };
+    }
+    let c_init = if set_scope.is_empty() {
+        quote! {}
+    } else {
         quote! {
-            let mut #c = #component::new(_state_val, _subs);
+            anansi_aux::APP_STATE.with(|a| {
+                let mut app_state = a.borrow_mut();
+                let store = if let Some(state) = app_state.as_mut() {
+                    state
+                } else {
+                    let mut contexts = std::collections::HashMap::new();
+                    anansi_aux::DOCUMENT.with(|document| {
+                        *app_state = anansi_aux::get_state(&document, &mut contexts);
+                    });
+                    anansi_aux::CONTEXTS.with(|c| *c.borrow_mut() = contexts);
+                    app_state.as_mut().unwrap()
+                };
+
+                #(#set_scope)*
+            });
+        }
+    };
+    let restart_prop = if props != "_props" {
+        quote! {
+            anansi_aux::APP_STATE.with(|app_state| {
+                let mut app_state = app_state.borrow_mut();
+                let app_state = app_state.as_mut().expect("problem getting app state");
+                if let anansi_aux::Obj::Rs(p) = &mut app_state.objs_mut()[0] {
+                    let mut p = p.borrow_mut();
+                    *p.downcast_mut::<#properties>().expect("problem restoring prop") = #props;
+                } else {
+                    panic!("expected Rust type");
+                }
+            });
         }
     } else {
         quote! {}
     };
-
-    let (pause, start_proxy, stop_proxy, proxy_set, proxy_check) = if let Some(c) = &comp {
-        (
-            quote! {
-                _p.push_subs(#c._proxy.get_subs());
-                _p.push_obj(serde_json::to_string(&#c.into_inner()).unwrap());
-                _p.push_obj(serde_json::to_string(&#props).unwrap());
-            },
-            quote! {
-                let _subs = #comp._proxy.start_proxy();
-            },
-            quote! {
-                #comp._proxy.stop_proxy(_subs);
-            },
-            quote! {
-                #comp._proxy._invalid = true;
-            },
-            quote! {
-                if #comp._proxy._invalid
-            }
-        )
-    } else {
-        (
-            quote! {},
-            quote! {},
-            quote! {},
-            quote! {},
-            quote! {}
-        )
-    };
     let q = quote! {
-        pub fn #comp_mount(_state_val: Value, props_val: Value, _subs: Vec<Sub>, _sender: async_channel::Sender<CbCmd>, _receiver: async_channel::Receiver<CbCmd>, _gtx: async_channel::Sender<anansi_aux::Cmd>, _node_id: String) {
-            wasm_bindgen_futures::spawn_local(async move {
-                let #props: #properties = serde_json::from_value(props_val).unwrap();
-                #comp_new
-                #(#resources)*
-                #use_styles
-                #(#comp_rsx)*
-                #(#restart_comp_rsx)*
-                while let Ok(cmd) = _receiver.recv().await {
-                    #start_proxy
-                    match cmd {
-                        CbCmd::Callback(_n) => match _n  {
-                            0 => {}
-                            #(#cb_full)*
-                            _ => unimplemented!(),
-                        },
-                        CbCmd::Text(_n, _text) => {
-                            #proxy_set
-                            match _n {
-                                #(#resource_calls)*
-                                _ => unimplemented!()
-                            }
-                        },
-                    }
-                    #proxy_check {
-                        let _rsx = #comp_render #render_call_args;
-                        _gtx.send(anansi_aux::Cmd::Update(_rsx, _node_id.clone())).await.unwrap();
-                    }
-                    #stop_proxy
-                }
-            });
+        pub fn #comp_mount(_node_id: String) {
+            #comp_rsx_init
+            #c_init
+            
+            #use_styles
         }
+        
         #(#callbacks)*
         #(#res_fn)*
         
@@ -452,18 +561,17 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
             fn init(#props: #properties, _p: &mut anansi_aux::components::Pauser) -> String {
                 #(#init)*
                 #html
-                #pause
+                #(#pause)*
                 _c
             }
         }
         impl #component {
-            pub const CB: &'static [(&'static str, fn(Value, Value, Vec<Sub>, async_channel::Sender<CbCmd>, async_channel::Receiver<CbCmd>, async_channel::Sender<anansi_aux::Cmd>, String), u8)] = &[#(#start),*];
+            pub const CB: &'static [(&'static str, fn(String), fn())] = &[#(#start),*];
             pub fn restart(#props: #properties) -> Rsx {
-                #(#restart_init)*
-                #(#resources)*
+                #restart_prop
+                
                 #use_styles
-                #(#restart_comp_rsx)*
-                #comp_render #render_call_args
+                #comp_render()
             }
         }
     };
@@ -486,41 +594,6 @@ impl AddProxy {
     }
     fn check_expr(&mut self, expr: &syn::Expr, _members: &mut Vec<Ident>) -> TokenStream {
         quote! {#expr}
-    }
-    fn proxy(&mut self, b: &Block) -> Vec<TokenStream> {
-        let mut qv = vec![];
-        for stmt in &b.stmts {
-            match stmt {
-                Local(local) => {
-                    let (_, expr) = local.init.as_ref().unwrap();
-                    let mut members = vec![];
-                    let t = self.check_expr(&*expr, &mut members);
-                    let pat = &local.pat;
-                    qv.push(quote! {let #pat = #t;});
-                }
-                Item(item) => {
-                    qv.push(quote!{#item})
-                }
-                syn::Stmt::Expr(expr) => {
-                    match &expr {
-                        Macro(expr_macro) => if expr_macro.mac.path.segments.last().unwrap().ident == "rsx" {
-                            let _s = expr_macro.mac.tokens.to_string();
-                        }
-                        _ => {
-                            let mut members = vec![];
-                            let t = self.check_expr(&expr, &mut members);
-                            qv.push(quote!{#t});
-                        }
-                    }
-                }
-                Semi(expr, _) => {
-                    let mut members = vec![];
-                    let t = self.check_expr(&expr, &mut members);
-                    qv.push(quote!{#t;});
-                }
-            }
-        }
-        qv
     }
 }
 
@@ -567,17 +640,17 @@ fn component_rsx(name: &str) -> String {
 }
 
 struct CompParser {
+    refs: HashMap<String, Vec<usize>>,
     in_block: bool,
     in_resource: bool,
     in_element: bool,
     lower_comp: String,
-    comp: Option<Ident>,
-    component: TokenStream,
     comp_rsx_ids: Vec<Ident>,
     restart_comp_rsx_ids: Vec<Ident>,
-    resource_map: HashMap<String, (u8, syn::Path)>,
+    local: Local,
     resource_calls: Vec<TokenStream>,
     res_fn: Vec<TokenStream>,
+    res_types: HashMap<String, TokenStream>,
     selectors: HashSet<String>,
 }
 
@@ -607,7 +680,15 @@ impl CompParser {
                         let (first, second) = at.split_once('(').unwrap();
                         if first == "onclick" {
                             let (second, _) = second.rsplit_once(')').unwrap();
-                            s = format!("(\"on:click\".to_string(), \"{}_{}[0]\".to_string())", self.lower_comp, second);
+                            s = format!("(\"on:click\".to_string(), \"{}_{}[", self.lower_comp, second);
+                            let refs = self.refs.get(second).expect("could not get callback");
+                            for n in refs {
+                                s.push_str(&format!("{} ", n));
+                            }
+                            if !refs.is_empty() {
+                                s.pop();
+                            }
+                            s.push_str("]\".to_string())");
                         }
                         return s;
                     }
@@ -682,19 +763,31 @@ impl CompParser {
                 inner.push_str(&collect(chars, '>'));
                 inner.pop();
                 let comp_rsx = component_rsx(&inner);
+                let comp_rsx = format_ident!("{}", comp_rsx);
+                let comp_num = self.comp_rsx_ids.len();
+                let inner = format_ident!("{}", inner.trim());
                 if self.in_resource {
-                    self.comp_rsx_ids.push(format_ident!("{}", comp_rsx));
+                    self.comp_rsx_ids.push(comp_rsx.clone());
                 } else {
-                    self.restart_comp_rsx_ids.push(format_ident!("{}", comp_rsx));
+                    self.restart_comp_rsx_ids.push(comp_rsx.clone());
                 }
-                let rs = format!("if let Some(c) = &{} {{
-                    match c {{Rsx::Component(comp) => _children.append(&mut comp.children.clone()), _ => unimplemented!()}};
-                }} else {{
-                    let _r = {}::restart(());
-                    match _r {{Rsx::Component(ref comp) => _children.append(&mut comp.children.clone()), _ => unimplemented!()}};
-                    *{0} = Some(_r);
-                }}", comp_rsx, inner);
-                view.push_str(&rs);
+                let rs = quote! {
+                    anansi_aux::NODE_ID.with(|nid| {
+                        let node_id = nid.borrow().clone();
+                        anansi_aux::COMP_RSX.with(|c| {
+                            let mut _comp_rsx = c.borrow_mut();
+                            let #comp_rsx = _comp_rsx.get_mut(&anansi_aux::CompId::new(node_id, #comp_num)).expect("problem getting component RSX");
+                            if let Some(c) = #comp_rsx {
+                                match c {Rsx::Component(comp) => _children.append(&mut comp.children.clone()), _ => unimplemented!()};
+                            } else {
+                                let _r = #inner::restart(anansi_aux::EmptyProp {});
+                                match _r {Rsx::Component(ref comp) => _children.append(&mut comp.children.clone()), _ => unimplemented!()};
+                                *#comp_rsx = Some(_r);
+                            }
+                        });
+                    });
+                };
+                view.push_str(&rs.to_string());
                 return;
             } else {
                 view.push('<');
@@ -801,8 +894,34 @@ impl CompParser {
                 return;
             }
             "resource" => {
-                let name = collect_nws(chars);
-                let name_ident = format_ident!("{}", name);
+                let mut name = collect_nws(chars);
+                let mut args = vec![];
+                if name.ends_with(',') {
+                    name.pop();
+                    loop {
+                        let mut var = collect_nws(chars);
+                        let mut b = true;
+                        if var.ends_with(',') {
+                            b = false;
+                            var.pop();
+                        }
+                        let var_ident = format_ident!("{}", var);
+                        let (vty, n) = self.local.get(&var).expect("problem getting variable type");
+                        args.push(quote! {
+                            let #var_ident = if let anansi_aux::Obj::Rs(_r) = &_state.objs()[#n] {
+                                _r.clone()
+                            } else {
+                                panic!("expected Rust type");
+                            };
+
+                            let mut #var_ident = #var_ident.borrow_mut();
+                            let #var_ident = #var_ident.downcast_mut::<#vty>().expect("problem restoring variable");
+                        });
+                        if b {
+                            break;
+                        }
+                    }
+                }
                 let name_match = format_ident!("{}_match", name);
                 let mut block = String::from("match _res ");
                 let e = get_expr(chars);
@@ -812,34 +931,23 @@ impl CompParser {
                 let processed = self.process(&block);
                 self.in_resource = false;
                 let processed: syn::Expr = syn::parse_str(&processed).unwrap();
-                let (cbn, ty) = self.resource_map.get(&name).unwrap();
-                let comp = self.comp.as_ref().unwrap();
-                let component = &self.component;
-                let comp_rsx_ids = &self.comp_rsx_ids;
+                let ty = self.res_types.get(&name).expect("problem getting Resource type");
 
                 let name_fn = quote! {
-                    fn #name_match(#comp: &mut #component, _res: Resource<#ty> #(, #comp_rsx_ids: &mut Option<Rsx>)*) -> Vec<Rsx> {
-                        #processed
+                    fn #name_match(_state: &anansi_aux::AppState, _res: Resource<#ty>, n: usize) {
+                        #(#args)*
+                        if let anansi_aux::Obj::Rs(_r) = _state.objs()[n].clone() {
+                            let mut _r = _r.borrow_mut();
+                            let mut _r = _r.downcast_mut::<Rendered>().expect("expected Rendered");
+                            *_r = Rendered::new(#processed);
+                        } else {
+                            panic!("expected Rust type");
+                        }
                     }
                 };
                 self.res_fn.push(name_fn);
 
-                self.resource_calls.push(quote! {
-                    #cbn => {
-                        let _res = match _text {
-                            Ok(t) => {
-                                match serde_json::from_str::<#ty>(&t) {
-                                    Ok(r) => Resource::Resolved(r),
-                                    Err(e) => Resource::Rejected(Box::new(e) as Box<dyn std::error::Error>),
-                                }
-                            }
-                            Err(e) => Resource::Rejected(e),
-                        };
-                        #name_ident = #name_match(&mut #comp, _res #(, &mut #comp_rsx_ids)*);
-                    }
-                });
-                
-                let v = format!("if !{}.is_empty() {{_children.append(&mut {0}.clone());}}", name);
+                let v = format!("if !{}.rsx().is_empty() {{_children.append(&mut {0}.rsx().clone());}}", name);
                 view.push_str(&v);
                 return;
             }
@@ -936,15 +1044,17 @@ fn html_attrs(s: &mut String, chars: &mut Chars) -> (Vec<String>, Vec<String>) {
 
 struct ResourceArgs {
     ty: syn::Path,
-    cb: syn::ExprClosure,
+    exprs: Vec<syn::Expr>,
 }
 
 impl Parse for ResourceArgs {
     fn parse(input: ParseStream) -> Result<Self> {
         let ty = input.parse().expect("expected path");
-        let _c: syn::token::Comma = input.parse().unwrap();
-        let cb = input.parse().expect("expected closure");
-        Ok(Self { ty, cb })
+        let mut exprs = vec![];
+        while let Ok(_c) = input.parse::<syn::token::Comma>() {
+            exprs.push(input.parse().expect("expected expression"));
+        }
+        Ok(Self { ty, exprs })
     }
 }
 
@@ -983,7 +1093,6 @@ pub fn init_components(args: &Vec<String>) {
 serde = {{ version = \"1.0\", features = [\"derive\"] }}
 serde_json = \"1.0\"
 wasm-bindgen-futures = \"0.4\"
-async-channel = \"1.7.1\"
 anansi-aux = \"{}\"
 
 [features]

@@ -494,6 +494,7 @@ fn cargo(args: &Vec<String>) {
 }
 
 struct Parser {
+    refs: HashMap<String, Vec<usize>>,
     lower_comp: String,
     blocks: Vec<String>,
     selectors: HashSet<String>,
@@ -501,10 +502,10 @@ struct Parser {
 
 impl Parser {
     fn new() -> Self {
-        Self {lower_comp: String::new(), blocks: vec![], selectors: HashSet::new()}
+        Self {refs: HashMap::new(), lower_comp: String::new(), blocks: vec![], selectors: HashSet::new()}
     }
-    fn comp(lower_comp: String, selectors: HashSet<String>) -> Self {
-        Self {lower_comp, blocks: vec![], selectors}
+    fn comp(refs: HashMap<String, Vec<usize>>, lower_comp: String, selectors: HashSet<String>) -> Self {
+        Self {refs, lower_comp, blocks: vec![], selectors}
     }
     fn to_html(&mut self, content: &str) -> String {
         let mut view = String::from("let mut _c = String::new();");
@@ -935,7 +936,17 @@ impl Parser {
             }
             "onclick" => {
                 let (callback, _) = collect_name(chars);
-                view.push_str(&format!("_c.push_str(&format!(\"on:click=\\\"{}_{}[0]\\\" a:id=\\\"{{}}\\\"\", _p.add()));_c.push_str(\"", self.lower_comp, callback));
+                view.push_str(&format!("_c.push_str(&format!(\"on:click=\\\"{}_{}[", self.lower_comp, callback));
+                let mut rn = String::new();
+                let refs = self.refs.get(&callback).expect("could not get callback");
+                for n in refs {
+                    rn.push_str(&format!("{} ", n));
+                }
+                if !rn.is_empty() {
+                    rn.pop();
+                    view.push_str(&rn);
+                }
+                view.push_str("]\\\" a:id=\\\"{}\\\"\", _p.add()));_c.push_str(\"");
                 return;
             }
             "cache" => {

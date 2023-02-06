@@ -1,6 +1,6 @@
 [package]
 name = "anansi-core"
-version = "0.12.1"
+version = "0.13.0"
 edition = "2021"
 authors = ["sarutora"]
 license = "MIT"
@@ -17,7 +17,7 @@ postgres = ["sqlx/postgres"]
 redis = ["dep:redis"]
 
 [dependencies]
-anansi-macros = { path = "../anansi-macros" , version = "0.12.1" }
+anansi-macros = { path = "../anansi-macros" , version = "0.13" }
 syn = { version = "1.0", features = [ "full", "fold" ]}
 quote = "1.0"
 sqlx = { version = "0.5", features = [ "runtime-tokio-native-tls", "chrono" ] }

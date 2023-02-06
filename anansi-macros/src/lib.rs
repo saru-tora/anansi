@@ -438,6 +438,16 @@ fn builder(properties: bool, input: proc_macro::TokenStream) -> proc_macro::Toke
                     }
                 }
             }
+            impl #name {
+                pub fn resume(store: &mut anansi_aux::AppState, n: usize) -> Self {
+                    if let anansi_aux::Obj::Js(v) = &store.objs()[n] {
+                        let value: Self = serde_json::from_value(v.clone()).unwrap();
+                        value
+                    } else {
+                        panic!("expected Rust type");
+                    }
+                }
+            }
         }
     } else {
         let q = quote! {
@@ -1248,8 +1258,8 @@ pub fn start(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         pub fn start() {
             let mut callbacks = std::collections::HashMap::new();
             for comp in #comps::COMPONENTS {
-                for (name, cb, n) in *comp {
-                    callbacks.insert(name.to_string(), anansi_aux::CallbackData {new: *cb, num: *n, sender: None});
+                for (name, new, call) in *comp {
+                    callbacks.insert(name.to_string(), anansi_aux::CallbackData {new: *new, call: *call, is_mounted: false});
                 }
             }
             anansi_aux::setup(callbacks);
@@ -1637,12 +1647,20 @@ pub fn store(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream)
         impl #state {
             #(#nfields)*
             #(#methods)*
-            #vis fn new(v: Value, subs: Vec<Sub>) -> Self {
-                let state: #_state = serde_json::from_value(v).unwrap();
-                Self {_proxy: Proxy::new(subs), _state: state}
+            #vis fn resume(store: &mut anansi_aux::AppState, n: usize) -> Self {
+                if let anansi_aux::Obj::Js(v) = store.objs()[n].clone() {
+                    let state: #_state = serde_json::from_value(v).unwrap();
+                    let subs = store.subs_mut().pop().expect("problem getting subs");
+                    Self {_proxy: Proxy::new(subs), _state: state}
+                } else {
+                    panic!("expected JavaScript value")
+                }
             }
             #vis fn store(#fields) -> Self {
                 Self {_proxy: Proxy::new(vec![]), _state: #_state {#(#names),*}}
+            }
+            #vis fn get_subs(&self) -> Vec<String> {
+                self._proxy.get_subs()
             }
             #vis fn into_inner(self) -> #_state {
                 self._state

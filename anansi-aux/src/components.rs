@@ -33,7 +33,8 @@ impl Pauser {
         self.subs.push(v);
     }
     pub fn to_string(&self) -> String {
-		let mut s = String::from("<script type=\"module\" src=\"/static/main.js\"></script><script type=\"app/json\">{\"ctx\":{");
+		let mut s = String::from("<script type=\"module\" src=\"/static/main.js\"></script><script type=\"app/json\">");
+        s.push_str("{\"ctx\":{");
         for c in &self.ctx {
             s.push_str(&format!("{}", c));
         }
