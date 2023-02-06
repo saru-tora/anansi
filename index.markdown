@@ -133,19 +133,19 @@ pub struct Loader {
 
 #[component(Loader)]
 fn init(props: LoaderProps) -> Rsx {
-    let mut state = Self::store(true, 1, vec![]);
+    let state = Self::store(true, 1, vec![]);
 
-    let (data_resource, handle_click) = resource!(Vec<Data>, || {
+    let (data_resource, handle_click) = resource!(Vec<Data>, state, props, {
         *state.visible_mut() = false;
         Request::get(&props.load_url)
             .query([("page", state.page().to_string())])
     });
 
-    rsx! {
+    rsx!(state, props, data_resource, {
         @for data in state.fetched() {
             <li>@href props.show_url, data.id {@data.title}</li>
         }
-        @resource data_resource {
+        @resource data_resource, state {
             Resource::Pending => {
                 <Spinner />
             }
