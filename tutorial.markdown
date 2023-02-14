@@ -4,7 +4,7 @@ title: Tutorial
 permalink: /tutorial/
 ---
 
-If you don't already have Anansi installed, check out [this page](/install).
+If you don't already have Anansi installed, check out [this page](/anansi/install).
 
 To see which version of Anansi you have, run the following command:
 ```shell
