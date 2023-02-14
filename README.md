@@ -10,4 +10,4 @@ For more information, check out its [website](https://saru-tora.github.io/anansi
 Contributing
 ------------
 
-Bug reports and feature requests are welcome.
+Bug reports and feature requests are welcome. Please open an issue before submitting any pull requests.

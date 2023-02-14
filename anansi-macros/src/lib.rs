@@ -15,6 +15,16 @@ use syn::{Pat};
 use syn::FnArg::Typed;
 
 #[proc_macro]
+pub fn release(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as Ident);
+    let raw_input = format_ident!("_{}", input);
+    quote !{
+        drop(#input);
+        drop(#raw_input);
+    }.into()
+}
+
+#[proc_macro]
 pub fn min_main(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as SchemaArgs);
     let (server, init) = if input.vars.len() == 2 {
@@ -1594,6 +1604,73 @@ pub fn viewer(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream
         #imp
     };
     q.into()
+}
+
+#[proc_macro_attribute]
+pub fn refchild(_metadata: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let s = parse_macro_input!(input as syn::ItemStruct);
+ 
+    let fields = match &s.fields {
+        syn::Fields::Named(fields_named) => {
+            &fields_named.named
+        }
+        _ => unimplemented!(),
+    };
+    let state = &s.ident;
+    let _state = format_ident!("_{}", s.ident);
+    let vis = &s.vis;
+    let mut tfields = vec![];
+    let mut names = vec![];
+    let mut methods = vec![];
+    let attrs = &s.attrs;
+    for field in fields {
+        let name = field.ident.as_ref().unwrap();
+        let ty = &field.ty;
+        let name_mut = format_ident!("{}_mut", name);
+        methods.push(quote! {
+            pub fn #name(&self) -> &#ty {
+                &self._item.#name
+            }
+            pub fn #name_mut(&mut self) -> &mut #ty {
+                &mut self._item.#name
+            }
+        });
+        tfields.push(quote! {#name: #ty,});
+        names.push(name);
+    }
+    let c = quote! {
+        #(#attrs)*
+        #vis struct #state {
+            _pos: usize,
+            _item: #_state,
+        }
+
+        #(#attrs)*
+        #vis struct #_state {
+            #fields
+        }
+
+        impl #state {
+            #(#methods)*
+            fn child(#(#tfields)*) -> #_state {
+                #_state {#(#names),*}
+            }
+        }
+
+        impl anansi_aux::RefChild for #state {
+            type Item = #_state;
+            fn new(pos: usize, item: Self::Item) -> Self {
+                Self {_pos: pos, _item: item}
+            }
+            fn pos(&self) -> usize {
+                self._pos
+            }
+            fn pos_mut(&mut self) -> &mut usize {
+                &mut self._pos
+            }
+        }
+    };
+    c.into()
 }
 
 #[proc_macro_attribute]

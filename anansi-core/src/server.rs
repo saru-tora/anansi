@@ -1,5 +1,5 @@
 use std::{fmt, env, str, path::PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -46,7 +46,7 @@ pub static MAX_CONNECTIONS: usize = 10_000_000;
 
 pub type Settings = Map<String, Value>;
 
-type Timer = Arc<Mutex<DateTime>>;
+type Timer = Arc<RwLock<String>>;
 
 #[cfg(not(feature = "minimal"))]
 #[macro_export]
@@ -256,19 +256,19 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                   .open(&base)
                   .await
                   .expect(&format!("error with {}", base.to_str().unwrap()));
-               file.write_all(&s.into_bytes()).await.unwrap();
+                file.write_all(&s.into_bytes()).await.unwrap();
                 println!("Created new secret");
                 rng
             }
         };
         let sem = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-        let timer = Arc::new(Mutex::new(DateTime::now()));
+        let timer = Arc::new(RwLock::new(DateTime::now().to_gmt()));
         let t2 = Arc::clone(&timer);
         tokio::spawn(async move {
             loop {
                 time::sleep(time::Duration::from_secs(1)).await;
-                let mut t2 = t2.lock().unwrap();
-                *t2 = DateTime::now();
+                let mut t2 = t2.write().unwrap();
+                *t2 = DateTime::now().to_gmt();
             }
         });
 
@@ -282,7 +282,6 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
 
     pub async fn run(self) {
         loop {
-            let (stream, _) = self.listener.accept().await.unwrap();
             let urls = self.urls.clone();
             let pool = self.pool.clone();
             let cache = self.cache.clone();
@@ -293,6 +292,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
             let aq = sem.try_acquire();
             let site = self.site.clone();
             let mailer = self.mailer.clone();
+            let (stream, _) = self.listener.accept().await.unwrap();
             if aq.is_ok() {
                 tokio::spawn(async move {
                     let addr = stream.peer_addr().unwrap();
@@ -409,19 +409,19 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                   .open(&base)
                   .await
                   .expect(&format!("error with {}", base.to_str().unwrap()));
-               file.write_all(&s.into_bytes()).await.unwrap();
+                file.write_all(&s.into_bytes()).await.unwrap();
                 println!("Created new secret");
                 rng
             }
         };
         let sem = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-        let timer = Arc::new(Mutex::new(DateTime::now()));
+        let timer = Arc::new(RwLock::new(DateTime::now().to_gmt()));
         let t2 = Arc::clone(&timer);
         tokio::spawn(async move {
             loop {
                 time::sleep(time::Duration::from_secs(1)).await;
-                let mut t2 = t2.lock().unwrap();
-                *t2 = DateTime::now();
+                let mut t2 = t2.write().unwrap();
+                *t2 = DateTime::now().to_gmt();
             }
         });
 
@@ -434,7 +434,6 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
 
     pub async fn run(self) {
         loop {
-            let (stream, _) = self.listener.accept().await.unwrap();
             let urls = self.urls.clone();
             let pool = self.pool.clone();
             let cache = self.cache.clone();
@@ -444,6 +443,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
             let timer = Arc::clone(&self.timer);
             let aq = sem.try_acquire();
             let mailer = self.mailer.clone();
+            let (stream, _) = self.listener.accept().await.unwrap();
             if aq.is_ok() {
                 tokio::spawn(async move {
                     let addr = stream.peer_addr().unwrap();
@@ -602,10 +602,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                     }
                 }
             };
-            {
-                let timer = timer.lock().unwrap();
-                response.headers_mut().insert("Date", HeaderValue::from_str(&format!("{}", timer.to_gmt())).unwrap());
-            }
+            response.headers_mut().insert("Date", HeaderValue::from_str(&timer.read().unwrap()).unwrap());
             info!("{} {}", req_info, response.status().as_u16());
             Ok(response.into_inner())
         };
@@ -723,10 +720,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                     }
                 }
             };
-            {
-                let timer = timer.lock().unwrap();
-                response.headers_mut().insert("Date", HeaderValue::from_str(&format!("{}", timer.to_gmt())).unwrap());
-            }
+            response.headers_mut().insert("Date", HeaderValue::from_str(&timer.read().unwrap()).unwrap());
             info!("{} {}", req_info, response.status().as_u16());
             Ok(response.into_inner())
         };

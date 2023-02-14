@@ -128,7 +128,7 @@ impl DataType for DateTime {
 
 impl ToSql for DateTime {
     fn to_sql(&self) -> String {
-        format!("{}", self.datetime)
+        format!("'{}'", self.datetime)
     }
 }
 

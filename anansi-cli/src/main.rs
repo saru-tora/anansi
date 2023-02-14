@@ -6,12 +6,13 @@ use std::str::Chars;
 use std::env;
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
+use proc_macro2::TokenStream;
 
 use which::which;
 
 mod components;
 
-use components::{get_expr, check_components, init_components};
+use components::{collect_nws, collect_tag, custom_get_expr, get_expr, check_components, init_components, Local, CallbackArgs};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -498,14 +499,17 @@ struct Parser {
     lower_comp: String,
     blocks: Vec<String>,
     selectors: HashSet<String>,
+    ncallbacks: usize,
+    local: Local,
+    rchildren: HashMap<String, (TokenStream, usize)>,
 }
 
 impl Parser {
     fn new() -> Self {
-        Self {refs: HashMap::new(), lower_comp: String::new(), blocks: vec![], selectors: HashSet::new()}
+        Self {ncallbacks: 0, local: Local::new(), rchildren: HashMap::new(), refs: HashMap::new(), lower_comp: String::new(), blocks: vec![], selectors: HashSet::new()}
     }
-    fn comp(refs: HashMap<String, Vec<usize>>, lower_comp: String, selectors: HashSet<String>) -> Self {
-        Self {refs, lower_comp, blocks: vec![], selectors}
+    fn comp(refs: HashMap<String, Vec<usize>>, lower_comp: String, selectors: HashSet<String>, local: Local) -> Self {
+        Self {refs, lower_comp, blocks: vec![], selectors, ncallbacks: 0, local, rchildren: HashMap::new()}
     }
     fn to_html(&mut self, content: &str) -> String {
         let mut view = String::from("let mut _c = String::new();");
@@ -608,6 +612,89 @@ impl Parser {
             if self.selectors.contains(&name) {
                 view.push_str(&format!(" class=\\\"anansi-{}\\\"", self.lower_comp.trim()));
             }
+            view.push(extra);
+            if extra == '>' {
+                return;
+            }
+            let rest = collect_tag(chars);
+            let mut rchars = rest.chars();
+            while let Some(c) = rchars.next() {
+                if c == '"' {
+                    view.push_str("\\\"");
+                } else if c != '@' {
+                    view.push(c);
+                } else {
+                    let mut u = String::new();
+                    let (nws, extra) = collect_name(&mut rchars);
+                    if nws.starts_with("if") {
+                        u.push_str(&format!("{}{}", nws, extra));
+                        loop {
+                            let expr = get_expr(&mut rchars);
+                            let mut echars = expr.chars();
+                            while let Some(c) = echars.next() {
+                                if c == '@' {
+                                    let d = echars.next().expect("problem parsing attribute");
+                                    if d == ':' {
+                                        let t = collect(&mut echars, '\n');
+                                        u.push_str(&t);
+                                    } else {
+                                        unimplemented!();
+                                    }
+                                } else {
+                                    u.push(c)
+                                }
+                            }
+                            if expr.trim().starts_with("else") {
+                                break;
+                            }
+                        }
+                        view.push_str(&format!("\");_c.push_str(&{u}.to_string());_c.push_str(\""));
+                    } else if nws.starts_with("onclick") {
+                        let (callback, _) = collect_name(&mut rchars);
+                        let mut rn = String::new();
+                        let mut rchildren = vec![];
+                        if callback != "callback!" {
+                            view.push_str(&format!("\");_c.push_str(&format!(\"on:click=\\\"{}_{}[", self.lower_comp, callback));
+                            let refs = self.refs.get(&callback).expect("could not get callback");
+                            for n in refs {
+                                rn.push_str(&format!("{} ", n));
+                            }
+                            if !rn.is_empty() {
+                                rn.pop();
+                                view.push_str(&rn);
+                            }
+                        } else {
+                            let expr = custom_get_expr(&mut rchars, 0, 0);
+                            let name = format!("{}_on_click_{}", self.lower_comp, self.ncallbacks);
+                            view.push_str(&format!("\");_c.push_str(&format!(\"on:click=\\\"{}[", name));
+                            let callback: CallbackArgs = syn::parse_str(&expr).unwrap();
+                            let mut n = 0;
+                            for var in &callback.args {
+                                if let Some(_) = self.local.get(&var.to_string()) {
+                                    view.push_str(&format!("{} ", n));
+                                } else {
+                                    let (_, n) = self.rchildren.get(&var.to_string()).expect("problem getting variable data");
+                                    view.push_str(&format!("{}-{{}} ", n));
+                                    rchildren.push(var.clone());
+                                }
+                                n += 1;
+                            }
+                            if !callback.args.is_empty() {
+                                view.pop();
+                            }
+                            self.ncallbacks += 1;
+                        }
+                        view.push_str("]\\\" a:id=\\\"{}\\\"\"");
+                        for child in rchildren {
+                            view.push_str(&format!(", {}.pos()", child));
+                        }
+                        view.push_str(", _p.add()));_c.push_str(\"");
+                    } else {
+                        unimplemented!();
+                    }
+                }
+            }
+            view.push('>');
         } else {
             let args = collect(chars, '>');
             let (args, _) = args.rsplit_once('/').unwrap();
@@ -635,14 +722,9 @@ impl Parser {
             let prop = if !list.is_empty() {
                 format!("<{} as anansi_aux::components::Component>::Properties::new(){}.build(), &mut _p", name, list)
             } else {
-                "(), _p".to_string()
+                "anansi_aux::EmptyProp, &mut _p".to_string()
             };
             view.push_str(&format!("\");_c.push_str(&format!(\"<!--av a:id={{}}-->\", _p.id()));_c.push_str(&<{} as anansi_aux::components::Component>::init({}));_c.push_str(\"<!--/av-->", name, prop));
-        }
-        if extra == '@' {
-            self.at(view, chars);
-        } else {
-            view.push(extra);
         }
     }
     fn extend(&mut self, chars: &mut Chars) -> String {
@@ -934,21 +1016,6 @@ impl Parser {
                 view.push_str("_c.push_str(\"");
                 return;
             }
-            "onclick" => {
-                let (callback, _) = collect_name(chars);
-                view.push_str(&format!("_c.push_str(&format!(\"on:click=\\\"{}_{}[", self.lower_comp, callback));
-                let mut rn = String::new();
-                let refs = self.refs.get(&callback).expect("could not get callback");
-                for n in refs {
-                    rn.push_str(&format!("{} ", n));
-                }
-                if !rn.is_empty() {
-                    rn.pop();
-                    view.push_str(&rn);
-                }
-                view.push_str("]\\\" a:id=\\\"{}\\\"\", _p.add()));_c.push_str(\"");
-                return;
-            }
             "cache" => {
                 s.clear();
                 let line = collect(chars, '{');
@@ -995,6 +1062,22 @@ impl Parser {
             while let Some(c) = chars.next() {
                 s.push(c);
                 if c == '{' {
+                    if let Some((_, rest)) = s.split_once("for") {
+                        let (name, rest) = rest.split_once("in").expect("problem parsing for loop");
+                        let container = if let Some((container, _)) = rest.split_once('.') {
+                            container.trim().to_string()
+                        } else {
+                            rest.trim().to_string()
+                        };
+                        if let Some((ty, n)) = self.local.get(&container) {
+                            let nm = if let Some((_, nm)) = name.split_once("mut") {
+                                nm
+                            } else {
+                                &name
+                            };
+                            self.rchildren.insert(nm.trim().to_string(), (ty.clone(), *n));
+                        }
+                    }
                     break;
                 }
             }
@@ -1015,8 +1098,19 @@ impl Parser {
                     match keyword.as_str() {
                         "build" => view.push_str("</form>\");}_c.push_str(\""),
                         "load" => view.push_str("\");_c.push_str(&_p.to_string());}_c.push_str(\""),
+                        "if" => {
+                            let mut preview = chars.clone();
+                            let t = collect_nws(&mut preview);
+                            if t == "else" {
+                                let e = collect(chars, '{');
+                                view.push_str(&format!("\");}}{}{{_c.push_str(\"", e));
+                                continue;
+                            }
+                            view.push_str("\");}_c.push_str(\"");
+                        }
                         _ => view.push_str("\");}_c.push_str(\""),
                     }
+                    self.rchildren.clear();
                     return;
                 }
                 '@' => {
