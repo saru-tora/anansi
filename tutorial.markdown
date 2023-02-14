@@ -278,7 +278,7 @@ pub struct Loader {
 
 #[component(Loader)]
 fn init(props: LoaderProps) -> Rsx {
-    let state = Self::store(true, 1, vec![]);
+    let mut state = Self::store(true, 1, vec![]);
 
     let (data_resource, handle_click) = resource!(Vec<Data>, state, props, {
         *state.visible_mut() = false;
