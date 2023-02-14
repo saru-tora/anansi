@@ -16,7 +16,7 @@ In addition to being written in Rust, Anansi provides defenses for common web se
 ⚙️  Performant
 -------------
 
-Anansi also allows web applications to run asynchronously with Rust's speed.
+Anansi also allows web applications to run asynchronously with Rust's speed (WIP).
 
 ✨ Easy to get started
 ----------------------
