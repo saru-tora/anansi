@@ -1,45 +1,32 @@
 use std::{str, path::PathBuf};
-use std::future::Future;
 use tokio::process::Command;
 use toml::Value::Table;
 use async_trait::async_trait;
-use sqlx::{Type, Database};
 use sqlx::sqlite::Sqlite;
 
-use crate::try_sql;
+use crate::try_sqlx;
 use crate::server::{Settings, MAX_CONNECTIONS};
 use crate::records::Record;
 use crate::web::{Result, BASE_DIR, WebErrorKind};
-use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt};
-
-#[derive(Clone)]
-pub struct SqliteDb;
-
-impl Db for SqliteDb {
-    type SqlDb = sqlx::Sqlite;
-    fn db_type_info<T: Type<Sqlite>>() -> <<Self as Db>::SqlDb as Database>::TypeInfo {
-        <T as Type<Sqlite>>::type_info()
-    }
-}
+use crate::db::{DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt};
 
 pub struct SqliteDbRow {
     row: sqlx::sqlite::SqliteRow,
 }
 
 impl DbRow for SqliteDbRow {
-    type SqlDb = Sqlite;
     type RawRow = sqlx::sqlite::SqliteRow;
     fn new(row: Self::RawRow) -> Self {
         Self {row}
     }
     fn try_bool(&self, index: &str) -> Result<bool> {
-        try_sql!(self, index)
+        try_sqlx!(self, index)
     }
     fn try_i32(&self, index: &str) -> Result<i32> {
-        try_sql!(self, index)
+        try_sqlx!(self, index)
     }
     fn try_i64(&self, index: &str) -> Result<i64> {
-        try_sql!(self, index)
+        try_sqlx!(self, index)
     }
     fn try_count(&self) -> Result<i64> {
         use sqlx::Row;
@@ -49,13 +36,13 @@ impl DbRow for SqliteDbRow {
         }
     }
     fn try_option_string(&self, index: &str) -> Result<Option<String>> {
-        try_sql!(self, index)
+        try_sqlx!(self, index)
     }
     fn try_string(&self, index: &str) -> Result<String> {
-        try_sql!(self, index)
+        try_sqlx!(self, index)
     }
     fn try_date_time(&self, index: &str) -> Result<String> {
-        try_sql!(self, index)
+        try_sqlx!(self, index)
     }
 }
 
@@ -126,14 +113,6 @@ impl DbPool for SqliteDbPool {
                 Err(e)
             }
         }
-    }
-    async fn transact<F: Future<Output = Result<O>> + Send, O: Send>(&self, future: F) -> F::Output {
-        let tran = self.0.begin().await?;
-        let res = future.await;
-        if res.is_ok() {
-            tran.commit().await?;
-        }
-        res
     }
     async fn query(&self, val: &str) -> Result<SqliteDbRowVec> {
         Ok(SqliteDbRowVec {rows: sqlx::query(val).fetch_all(&self.0).await?})

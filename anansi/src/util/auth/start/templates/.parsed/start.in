@@ -9,4 +9,4 @@
 		<p>The installation was successful.</p>
 		<p><small>Anansi ");_c.push_str(&anansi::web::html_escape(&format!("{}", VERSION)));_c.push_str(" (Debug)</small></p>
 	</body>
-</html>");Ok(anansi::web::Response::new(200, _c.into_bytes()))}
+</html>");_c.into_bytes()}

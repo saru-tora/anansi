@@ -2,7 +2,7 @@ use std::{fmt, env, str, path::PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use tokio::net::TcpListener;
+use tokio::net::{TcpSocket, TcpListener};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Semaphore, oneshot::Sender};
 use tokio::{fs, time};
@@ -24,7 +24,7 @@ use hyper::body::Bytes;
 use hyper::{Request, body::Incoming as IncomingBody, Response as HyperResponse, header::HeaderValue};
 use hyper::service::Service as HyperService;
 
-use log::{error, info};
+use log::{error, info, warn};
 use env_logger::Env;
 
 use crate::db::{DbPool, DbRow};
@@ -129,14 +129,14 @@ async fn get_pool<D: DbPool>(not_test: bool, settings: &Settings, migrations: fn
         match D::new(&settings).await {
             Ok(p) => p,
             Err(_) => {
-                let p = D::new(&settings).await.expect("Database connection reattempt failed");
-                migrate(migrations(), &p).await;
+                let mut p = D::new(&settings).await.expect("Database connection reattempt failed");
+                migrate(migrations(), &mut p).await;
                 p
             }
         }
     } else {
-        let p = D::test().await.expect("Database connection attempt failed");
-        migrate(migrations(), &p).await;
+        let mut p = D::test().await.expect("Database connection attempt failed");
+        migrate(migrations(), &mut p).await;
         p
     }
 }
@@ -172,7 +172,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         let settings: Settings = toml::from_str(&s_settings).expect("Could not parse settings.toml");
 
         let not_test = sender.is_none();
-        let pool = get_pool(not_test, &settings, migrations).await;
+        let mut pool = get_pool(not_test, &settings, migrations).await;
 
         if args.len() > 1 {
             match args[1].as_str() {
@@ -193,7 +193,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                     return None;
                 }
                 "migrate" => {
-                    migrate(migrations(), &pool).await;
+                    migrate(migrations(), &mut pool).await;
                     return None;
                 }
                 "admin" => {
@@ -212,7 +212,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         } else {
             "127.0.0.1:9090".to_string()
         };
-        let listener = TcpListener::bind(&addr).await.unwrap();
+        let listener = reuse_listener(&addr);
 
         let mut url_map = HashMap::new();
         url_mapper(&mut url_map);
@@ -267,8 +267,8 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         tokio::spawn(async move {
             loop {
                 time::sleep(time::Duration::from_secs(1)).await;
-                let mut t2 = t2.write().unwrap();
-                *t2 = DateTime::now().to_gmt();
+                let now = DateTime::now().to_gmt();
+                *t2.write().unwrap() = now;
             }
         });
 
@@ -293,6 +293,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
             let site = self.site.clone();
             let mailer = self.mailer.clone();
             let (stream, _) = self.listener.accept().await.unwrap();
+            stream.set_nodelay(true).unwrap();
             if aq.is_ok() {
                 tokio::spawn(async move {
                     let addr = stream.peer_addr().unwrap();
@@ -336,7 +337,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         let settings: Settings = toml::from_str(&s_settings).expect("Could not parse settings.toml");
 
         let not_test = sender.is_none();
-        let pool = get_pool(not_test, &settings, migrations).await;
+        let mut pool = get_pool(not_test, &settings, migrations).await;
 
         if args.len() > 1 {
             match args[1].as_str() {
@@ -357,7 +358,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                     return None;
                 }
                 "migrate" => {
-                    migrate(migrations(), &pool).await;
+                    migrate(migrations(), &mut pool).await;
                     return None;
                 }
                 _ => ip = Some(args[1].to_string()),
@@ -372,7 +373,8 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         } else {
             "127.0.0.1:9090".to_string()
         };
-        let listener = TcpListener::bind(&addr).await.unwrap();
+
+        let listener = reuse_listener(&addr);
 
         let mut url_map = HashMap::new();
         url_mapper(&mut url_map);
@@ -420,8 +422,8 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         tokio::spawn(async move {
             loop {
                 time::sleep(time::Duration::from_secs(1)).await;
-                let mut t2 = t2.write().unwrap();
-                *t2 = DateTime::now().to_gmt();
+                let now = DateTime::now().to_gmt();
+                *t2.write().unwrap() = now;
             }
         });
 
@@ -444,6 +446,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
             let aq = sem.try_acquire();
             let mailer = self.mailer.clone();
             let (stream, _) = self.listener.accept().await.unwrap();
+            stream.set_nodelay(true).unwrap();
             if aq.is_ok() {
                 tokio::spawn(async move {
                     let addr = stream.peer_addr().unwrap();
@@ -459,6 +462,22 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
             }
         }
     }
+}
+
+fn reuse_listener(addr: &String) -> TcpListener {
+    let socket = TcpSocket::new_v4().unwrap();
+
+    #[cfg(unix)]
+    {
+        if let Err(e) = socket.set_reuseport(true) {
+            eprintln!("error setting SO_REUSEPORT: {}", e);
+        }
+    }
+
+    socket.set_reuseaddr(true).unwrap();
+    socket.bind(addr.parse().unwrap()).unwrap();
+
+    socket.listen(1024).unwrap()
 }
 
 #[derive(Clone, Debug)]
@@ -603,7 +622,14 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                 }
             };
             response.headers_mut().insert("Date", HeaderValue::from_str(&timer.read().unwrap()).unwrap());
-            info!("{} {}", req_info, response.status().as_u16());
+            let status = response.status().as_u16();
+            if status < 400 {
+                info!("{} {}", req_info, status);
+            } else if status < 500 {
+                warn!("{} {}", req_info, status);
+            } else {
+                error!("{} {}", req_info, status);
+            }
             Ok(response.into_inner())
         };
 
@@ -721,7 +747,14 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                 }
             };
             response.headers_mut().insert("Date", HeaderValue::from_str(&timer.read().unwrap()).unwrap());
-            info!("{} {}", req_info, response.status().as_u16());
+            let status = response.status().as_u16();
+            if status < 400 {
+                info!("{} {}", req_info, status);
+            } else if status < 500 {
+                warn!("{} {}", req_info, status);
+            } else {
+                error!("{} {}", req_info, status);
+            }
             Ok(response.into_inner())
         };
 

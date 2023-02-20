@@ -252,21 +252,51 @@ macro_rules! setup {
 #[macro_export]
 macro_rules! transact {
     ($req:ident, $b:expr) => {
-        $req.raw().transact(async {$b}).await
+        {
+            use anansi::db::DbPool;
+            match $req.raw().pool().raw_execute("BEGIN;").await {
+                Ok(r) => match async {$b}.await {
+                    Ok(_) => match $req.raw().pool().raw_execute("COMMIT;").await {
+                        Ok(_) => Ok(r),
+                        Err(e) => Err(e),
+                    }
+                    Err(e) => Err(e),
+                }
+                Err(e) => Err(e),
+            }
+        }
     }
 }
 
 #[macro_export]
 macro_rules! raw_transact {
     ($pool:ident, $b:expr) => {
-        $pool.transact(async {$b}).await
+        {
+            match $pool.raw_execute("BEGIN;").await {
+                Ok(r) => match async {$b}.await {
+                    Ok(_) => match $pool.raw_execute("COMMIT;").await {
+                        Ok(_) => Ok(r),
+                        Err(e) => Err(e),
+                    }
+                    Err(e) => Err(e),
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! raw_render {
+    ($name:literal) => {
+        include!(concat!("templates", anansi::main_separator!(), ".parsed", anansi::main_separator!(), $name, ".in"))
     }
 }
 
 #[macro_export]
 macro_rules! render {
     ($name:literal) => {
-        include!(concat!("templates", anansi::main_separator!(), ".parsed", anansi::main_separator!(), $name, ".in"))
+        Ok(anansi::web::Response::new(200, anansi::raw_render!($name)))
     }
 }
 
@@ -540,7 +570,7 @@ impl Response {
     }
     pub fn json_bytes(contents: Vec<u8>) -> Result<Self> {
         let builder = RawHyperResponse::builder()
-            .header("content-type", "application/json; charset=UTF-8")
+            .header("content-type", "application/json")
             .header("Server", "webserver")
             .header("Content-length", contents.len().to_string())
             .body(Full::new(Bytes::from(contents))).unwrap();
@@ -549,7 +579,7 @@ impl Response {
     pub fn text(contents: String) -> Self {
         let contents = contents.into_bytes();
         let builder = RawHyperResponse::builder()
-            .header("content-type", "text/plain; charset=UTF-8")
+            .header("content-type", "text/plain")
             .header("Server", "webserver")
             .header("Content-length", contents.len().to_string())
             .body(Full::new(Bytes::from(contents))).unwrap();
@@ -803,6 +833,7 @@ pub trait BaseRequest: Send + Sync {
     fn params(&self) -> &Parameters;
     fn params_mut(&mut self) -> &mut Parameters;
     fn raw(&self) -> &RawRequest<Self::SqlPool>;
+    fn raw_mut(&mut self) -> &mut RawRequest<Self::SqlPool>;
     fn mid(&self) -> &Self::Mid;
     fn to_form_map(&self) -> Result<FormMap>;
     fn from(raw: RawRequest<Self::SqlPool>, mid: Self::Mid, cache: Self::Cache, urls: Arc<HashMap<usize, Vec<String>>>, admin: AdminRef<Self>, mailer: Option<Mailer>) -> Self where Self: Sized;
@@ -833,6 +864,7 @@ pub trait BaseRequest: Send + Sync {
     fn params(&self) -> &Parameters;
     fn params_mut(&mut self) -> &mut Parameters;
     fn raw(&self) -> &RawRequest<Self::SqlPool>;
+    fn raw_mut(&mut self) -> &mut RawRequest<Self::SqlPool>;
     fn mid(&self) -> &Self::Mid;
     fn to_form_map(&self) -> Result<FormMap>;
     fn from(raw: RawRequest<Self::SqlPool>, mid: Self::Mid, cache: Self::Cache, urls: Arc<HashMap<usize, Vec<String>>>, mailer: Option<Mailer>) -> Self where Self: Sized;
@@ -987,6 +1019,9 @@ macro_rules! request_derive {
             fn raw(&self) -> &anansi::web::RawRequest<Pool> {
                 &self.raw
             }
+            fn raw_mut(&mut self) -> &mut anansi::web::RawRequest<Pool> {
+                &mut self.raw
+            }
             fn to_form_map(&self) -> anansi::web::Result<anansi::web::FormMap> {
                 self.raw().to_form_map()
             }
@@ -1086,6 +1121,9 @@ macro_rules! request_derive {
             }
             fn raw(&self) -> &anansi::web::RawRequest<Pool> {
                 &self.raw
+            }
+            fn raw_mut(&mut self) -> &mut anansi::web::RawRequest<Pool> {
+                &mut self.raw
             }
             fn to_form_map(&self) -> anansi::web::Result<anansi::web::FormMap> {
                 self.raw().to_form_map()
@@ -1188,6 +1226,9 @@ impl<D: DbPool> RawRequest<D> {
     pub fn pool(&self) -> &D {
         &self.pool
     }
+    pub fn pool_mut(&mut self) -> &mut D {
+        &mut self.pool
+    }
     pub fn rng(&self) -> &Rng {
         &self.std_rng
     }
@@ -1202,9 +1243,6 @@ impl<D: DbPool> RawRequest<D> {
     }
     pub fn query(&self) -> Option<&str> {
         self.url.query()
-    }
-    pub async fn transact<F: Future<Output = Result<O>> + Send, O: Send>(&self, future: F) -> F::Output {
-        self.pool().transact(future).await
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "anansi-core"
-version = "0.13.1"
+version = "0.13.2"
 edition = "2021"
 authors = ["sarutora"]
 license = "MIT"
@@ -12,15 +12,16 @@ categories = ["web-programming", "asynchronous"]
 [features]
 default = []
 minimal = []
-sqlite = ["sqlx/sqlite"]
-postgres = ["sqlx/postgres"]
+sqlite = ["dep:sqlx"]
+postgres = ["dep:tokio-postgres"]
 redis = ["dep:redis"]
 
 [dependencies]
 anansi-macros = { path = "../anansi-macros" , version = "0.13" }
 syn = { version = "1.0", features = [ "full", "fold" ]}
 quote = "1.0"
-sqlx = { version = "0.5", features = [ "runtime-tokio-native-tls", "chrono" ] }
+sqlx = { version = "0.5", features = [ "runtime-tokio-native-tls", "chrono", "sqlite" ], optional = true }
+tokio-postgres = { version = "0.7.7", optional = true}
 tokio = { version = "1", features = ["full"] }
 rand = "0.8.4"
 sha2 = "0.10.2"

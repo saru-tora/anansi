@@ -1,60 +1,47 @@
 use std::str;
-use std::future::Future;
+use std::sync::Arc;
 use toml::Value::Table;
 use async_trait::async_trait;
-use sqlx::{Type, Database, Encode, query::Query, database::HasArguments};
-use sqlx::types::chrono::NaiveDateTime;
-use sqlx::postgres::Postgres;
+use tokio_postgres::types::ToSql;
 
 use crate::try_sql;
 use crate::server::Settings;
 use crate::web::{Result, WebErrorKind, BaseRequest};
 use crate::records::Record;
-use crate::db::{Db, DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt};
+use crate::db::{DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt};
 
-pub struct PgQuery<'q, A> {
-    query: Query<'q, sqlx::Postgres, A>,
+pub struct PgQuery<'q> {
+    query: &'q str,
+    params: &'q[&'q(dyn ToSql + Sync)],
 }
 
-impl<'q> PgQuery<'q, <sqlx::Postgres as HasArguments<'q>>::Arguments> {
-    pub fn new(sql: &'q str) -> Self {
-        Self {query: sqlx::query(sql)}
-    }
-    pub fn bind<T>(self, value: T) -> Self
-    where T: 'q + Send + Encode<'q, sqlx::Postgres> + Type<sqlx::Postgres> {
-        Self {query: self.query.bind(value)}
+impl<'q> PgQuery<'q> {
+    pub fn new(query: &'q str, params: &'q[&'q(dyn ToSql + Sync)]) -> Self {
+        Self {query, params}
     }
     pub async fn fetch_one<B: BaseRequest<SqlPool = PgDbPool>>(self, req: &B) -> Result<PgDbRow> {
-        Ok(PgDbRow {row: self.query.fetch_one(&req.raw().pool().0).await?})
+        let statement = req.raw().pool().0.prepare(self.query).await?;
+        Ok(PgDbRow {row: req.raw().pool().0.query_one(&statement, self.params).await?})
     }
     pub async fn fetch_all<B: BaseRequest<SqlPool = PgDbPool>>(self, req: &B) -> Result<PgDbRowVec> {
-        Ok(PgDbRowVec {rows: self.query.fetch_all(&req.raw().pool().0).await?})
+        let statement = req.raw().pool().0.prepare(self.query).await?;
+        Ok(PgDbRowVec {rows: req.raw().pool().0.query(&statement, self.params).await?})
     }
     pub async fn execute<B: BaseRequest<SqlPool = PgDbPool>>(self, req: &B) -> Result<()> {
-        match self.query.execute(&req.raw().pool().0).await {
+        let statement = req.raw().pool().0.prepare(self.query).await?;
+        match req.raw().pool().0.execute(&statement, self.params).await {
             Ok(_) => Ok(()),
             Err(e) => Err(Box::new(e)),
         }
     }
 }
 
-#[derive(Clone)]
-pub struct PgDb;
-
-impl Db for PgDb {
-    type SqlDb = sqlx::Postgres;
-    fn db_type_info<T: Type<Postgres>>() -> <<Self as Db>::SqlDb as Database>::TypeInfo {
-        <T as Type<Postgres>>::type_info()
-    }
-}
-
 pub struct PgDbRow {
-    row: sqlx::postgres::PgRow,
+    row: tokio_postgres::row::Row,
 }
 
 impl DbRow for PgDbRow {
-    type SqlDb = Postgres;
-    type RawRow = sqlx::postgres::PgRow;
+    type RawRow = tokio_postgres::row::Row;
     fn new(row: Self::RawRow) -> Self {
         Self {row}
     }
@@ -62,7 +49,6 @@ impl DbRow for PgDbRow {
         try_sql!(self, index)
     }
     fn try_count(&self) -> Result<i64> {
-        use sqlx::Row;
         match self.row.try_get(0) {
             Ok(c) => Ok(c),
             Err(e) => {
@@ -84,24 +70,17 @@ impl DbRow for PgDbRow {
         try_sql!(self, index)
     }
     fn try_date_time(&self, index: &str) -> Result<String> {
-        use sqlx::Row;
-        let dt: NaiveDateTime = match self.row.try_get(index) {
-            Ok(s) => s,
-            Err(e) => {
-                return Err(Box::new(e));
-            }
-        };
-        Ok(dt.to_string())
+        try_sql!(self, index)
     }
 }
 
 pub struct PgDbRowVec {
-    rows: Vec<sqlx::postgres::PgRow>,
+    rows: Vec<tokio_postgres::Row>,
 }
 
 impl DbRowVec for PgDbRowVec {
     type Row = PgDbRow;
-    type Rows = Vec<sqlx::postgres::PgRow>;
+    type Rows = Vec<tokio_postgres::Row>;
     fn from(rows: Self::Rows) -> Self {
         Self {rows}
     }
@@ -119,7 +98,7 @@ impl IntoIterator for PgDbRowVec {
 }
 
 pub struct PgDbRowIntoIter {
-    row_into_iter: std::vec::IntoIter<sqlx::postgres::PgRow>,
+    row_into_iter: std::vec::IntoIter<tokio_postgres::Row>,
 }
 
 impl<'a> Iterator for PgDbRowIntoIter {
@@ -133,7 +112,7 @@ impl<'a> Iterator for PgDbRowIntoIter {
 }
 
 #[derive(Clone, Debug)]
-pub struct PgDbPool(pub(in crate) sqlx::Pool<Postgres>);
+pub struct PgDbPool(pub(in crate) Arc<tokio_postgres::Client>);
 
 #[async_trait]
 impl DbPool for PgDbPool {
@@ -152,47 +131,32 @@ impl DbPool for PgDbPool {
         let user = database.get("user").expect("Could not get database user").as_str().expect("Could not convert database user to string");
         let password = database.get("password").expect("Could not get database password").as_str().expect("Could not convert database password to string");
         let address = database.get("address").expect("Could not get database host").as_str().expect("Could not convert database host to string");
-        let max_conn = if let Some(max) = database.get("max_conn") {
-            max.as_integer().expect("Could not convert maximum connections to integer") as u32
-        } else {
-            100
-        };
         let arg = format!("postgres://{user}:{password}@{address}/{name}");
-        match Self::connect(&arg, max_conn).await {
+        match Self::connect(&arg).await {
             Ok(p) => {
-                use sqlx::Row;
-
-                let row = sqlx::query("SELECT EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'anansi_records');").fetch_one(&p).await?;
+                let row = p.query_one("SELECT EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'anansi_records');", &[]).await?;
                 if !row.try_get(0)? {
-                    sqlx::query("CREATE TABLE \"anansi_records\"(\n\t\"name\" text NOT NULL,\n\t\"schema\" text NOT NULL\n);").execute(&p).await?;
-                    sqlx::query("CREATE TABLE \"anansi_migrations\"(\n\t\"id\" SERIAL PRIMARY KEY,\n\t\"app\" TEXT NOT NULL,\n\t\"name\" TEXT NOT NULL,\n\t\"applied\" TIMESTAMP NOT NULL\n);\n").execute(&p).await?;
+                    p.execute("CREATE TABLE \"anansi_records\"(\n\t\"name\" text NOT NULL,\n\t\"schema\" text NOT NULL\n);", &[]).await?;
+                    p.execute("CREATE TABLE \"anansi_migrations\"(\n\t\"id\" SERIAL PRIMARY KEY,\n\t\"app\" TEXT NOT NULL,\n\t\"name\" TEXT NOT NULL,\n\t\"applied\" TIMESTAMP NOT NULL\n);\n", &[]).await?;
                 }
-                Ok(Self {0: p})
+                Ok(Self(Arc::new(p)))
             }
             Err(e) => {
                 Err(e)
             }
         }
     }
-    async fn transact<F: Future<Output = Result<O>> + Send, O: Send>(&self, future: F) -> F::Output {
-        let tran = self.0.begin().await?;
-        let res = future.await;
-        if res.is_ok() {
-            tran.commit().await?;
-        }
-        res
-    }
     async fn query(&self, val: &str) -> Result<PgDbRowVec> {
-        Ok(PgDbRowVec {rows: sqlx::query(val).fetch_all(&self.0).await?})
+        Ok(PgDbRowVec {rows: self.0.query(val, &[]).await?})
     }
     async fn raw_fetch_one(&self, val: &str) -> Result<Self::SqlRow> {
-        Ok(Self::SqlRow {row: sqlx::query(val).fetch_one(&self.0).await?})
+        Ok(PgDbRow {row: self.0.query_one(val, &[]).await?})
     }
     async fn raw_fetch_all(&self, val: &str) -> Result<Self::SqlRowVec> {
-        Ok(Self::SqlRowVec {rows: sqlx::query(val).fetch_all(&self.0).await?})
+        Ok(PgDbRowVec {rows: self.0.query(val, &[]).await?})
     }
     async fn raw_execute(&self, val: &str) -> Result<()> {
-        match sqlx::query(val).execute(&self.0).await {
+        match self.0.execute(val, &[]).await {
             Ok(_) => Ok(()),
             Err(e) => Err(Box::new(e)),
         }
@@ -219,15 +183,14 @@ impl DbType for PgDbPool {
 }
 
 impl PgDbPool {
-    async fn connect(arg: &str, max_conn: u32) -> Result<sqlx::Pool<Postgres>> {
-        let pg = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(max_conn)
-            .connect(arg).await;
-        match pg {
-            Ok(pg) => Ok(pg),
-            Err(e) => {
-                Err(Box::new(e))
+    async fn connect(arg: &str) -> Result<tokio_postgres::Client> {
+        let (client, connection) = tokio_postgres::connect(arg, tokio_postgres::NoTls).await?;
+
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("connection error: {}", e);
             }
-        }
+        });
+        Ok(client)
     }
 }

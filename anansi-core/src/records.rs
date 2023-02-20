@@ -11,7 +11,6 @@ use serde::{Serialize, Deserialize};
 use serde::ser::{Serializer, SerializeSeq};
 use serde::de::{Deserializer, Visitor, SeqAccess};
 
-use sqlx::{Decode, Database, database::HasValueRef};
 use rand::Rng;
 
 use crate::web::{BaseRequest, Parameters, Result};
@@ -203,13 +202,52 @@ impl ToSql for BigInt {
     }
 }
 
-impl<'r, DB: Database> Decode<'r, DB> for BigInt
-where i64: Decode<'r, DB> {
-    fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<BigInt, Box<dyn Error + 'static + Send + Sync>> {
-        let value = <i64 as Decode<DB>>::decode(value)?;
-        Ok(Self::from_val(value).unwrap())
+#[cfg(feature = "sqlite")]
+mod decode {
+    use super::*;
+    use sqlx::{Decode, Database, database::HasValueRef};
+
+    impl<'r, DB: Database> Decode<'r, DB> for BigInt
+    where i64: Decode<'r, DB> {
+        fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<BigInt, Box<dyn Error + 'static + Send + Sync>> {
+            let value = <i64 as Decode<DB>>::decode(value)?;
+            Ok(Self::from_val(value).unwrap())
+        }
+    }
+
+    impl<'r, DB: Database> Decode<'r, DB> for Int
+    where i32: Decode<'r, DB> {
+        fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<Int, Box<dyn Error + 'static + Send + Sync>> {
+            let value = <i32 as Decode<DB>>::decode(value)?;
+            Ok(Self::from_val(value).unwrap())
+        }
+    }
+
+    impl<'r, DB: Database> Decode<'r, DB> for Text
+    where String: Decode<'r, DB> {
+        fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<Text, Box<dyn Error + 'static + Send + Sync>> {
+            let value = <String as Decode<DB>>::decode(value)?;
+            Ok(Self::from_val(value).unwrap())
+        }
+    }
+
+    impl<'r, DB: Database, const N: u16> Decode<'r, DB> for VarChar<N>
+    where String: Decode<'r, DB> {
+        fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<VarChar<N>, Box<dyn Error + 'static + Send + Sync>> {
+            let value = <String as Decode<DB>>::decode(value)?;
+            Ok(Self::from_val(value).unwrap())
+        }
+    }
+
+    impl<'r, M: Record, O: OnDelete, DB: Database> Decode<'r, DB> for ForeignKey<M, O>
+    where <<M as Record>::Pk as DataType>::T: Decode<'r, DB>, <M as Record>::Pk: std::fmt::Display {
+        fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<ForeignKey<M, O>, Box<dyn Error + 'static + Send + Sync>> {
+            let value = <<<M as Record>::Pk as DataType>::T as Decode<DB>>::decode(value)?;
+            Ok(Self::from_val(value).unwrap())
+        }
     }
 }
+
 
 impl PartialEq<i64> for BigInt {
     fn eq(&self, other: &i64) -> bool {
@@ -263,14 +301,6 @@ impl DataType for Int {
 impl ToSql for Int {
     fn to_sql(&self) -> String {
         format!("{}", self.0)
-    }
-}
-
-impl<'r, DB: Database> Decode<'r, DB> for Int
-where i32: Decode<'r, DB> {
-    fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<Int, Box<dyn Error + 'static + Send + Sync>> {
-        let value = <i32 as Decode<DB>>::decode(value)?;
-        Ok(Self::from_val(value).unwrap())
     }
 }
 
@@ -341,14 +371,6 @@ impl Deref for Text {
     #[inline]
     fn deref(&self) -> &str {
         &self.0
-    }
-}
-
-impl<'r, DB: Database> Decode<'r, DB> for Text
-where String: Decode<'r, DB> {
-    fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<Text, Box<dyn Error + 'static + Send + Sync>> {
-        let value = <String as Decode<DB>>::decode(value)?;
-        Ok(Self::from_val(value).unwrap())
     }
 }
 
@@ -437,14 +459,6 @@ impl<const N: u16> Deref for VarChar<N> {
     }
 }
 
-impl<'r, DB: Database, const N: u16> Decode<'r, DB> for VarChar<N>
-where String: Decode<'r, DB> {
-    fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<VarChar<N>, Box<dyn Error + 'static + Send + Sync>> {
-        let value = <String as Decode<DB>>::decode(value)?;
-        Ok(Self::from_val(value).unwrap())
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ForeignKey<M: Record, O: OnDelete = Cascade> {
     pk: M::Pk,
@@ -520,14 +534,6 @@ impl<M: Record, O: OnDelete> ToSql for Option<ForeignKey<M, O>> where M::Pk: std
 impl<M: Record, O: OnDelete> fmt::Display for ForeignKey<M, O> where M::Pk: std::fmt::Display {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.pk)
-    }
-}
-
-impl<'r, M: Record, O: OnDelete, DB: Database> Decode<'r, DB> for ForeignKey<M, O>
-where <<M as Record>::Pk as DataType>::T: Decode<'r, DB>, <M as Record>::Pk: std::fmt::Display {
-    fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<ForeignKey<M, O>, Box<dyn Error + 'static + Send + Sync>> {
-        let value = <<<M as Record>::Pk as DataType>::T as Decode<DB>>::decode(value)?;
-        Ok(Self::from_val(value).unwrap())
     }
 }
 
@@ -878,7 +884,7 @@ pub trait RecordTuple<B: BaseRequest> {
 
 #[async_trait]
 pub trait Relate<B: BaseRequest> {
-    async fn on_save(&self, _req: &B) -> Result<()> where Self: Sized {
+    async fn on_save(&self, _req: &mut B) -> Result<()> where Self: Sized {
         Ok(())
     }
     async fn on_delete(&self, _req: &B) -> Result<()> where Self: Sized {
@@ -911,6 +917,6 @@ pub trait Record: Sized {
     async fn update<B: BaseRequest>(&mut self, req: &B) -> Result<()> where Self: Sized;
     async fn raw_update<D: DbPool>(&mut self, pool: &D) -> Result<()> where Self: Sized;
     async fn delete<B: BaseRequest>(&self, req: &B) -> Result<()> where Self: Sized;
-    async fn save<B: BaseRequest>(&self, req: &B) -> Result<()> where Self: Sized;
+    async fn save<B: BaseRequest>(&self, req: &mut B) -> Result<()> where Self: Sized;
     async fn raw_save<D: DbPool>(&self, pool: &D) -> Result<()> where Self: Sized;
 }

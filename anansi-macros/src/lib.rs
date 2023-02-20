@@ -11,7 +11,7 @@ use syn::punctuated::Punctuated;
 use syn::parse::{Parse, Parser, ParseStream, Result};
 use quote::{quote, quote_spanned, format_ident};
 
-use syn::{Pat};
+use syn::Pat;
 use syn::FnArg::Typed;
 
 #[proc_macro]
@@ -215,17 +215,27 @@ pub fn record_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
             }
             async fn delete<B: anansi::web::BaseRequest>(&self, req: &B) -> anansi::web::Result<()> {
                 use anansi::records::Relate;
-                anansi::transact!(req, {
-                    self.on_delete(req).await?;
-                    anansi::db::delete_from(#table, Self::PK_NAME, #primary, req).await
-                })
+                use anansi::db::DbPool;
+                req.raw().pool().raw_execute("BEGIN;").await?;
+                match self.on_delete(req).await {
+                    Ok(_) => match anansi::db::delete_from(#table, Self::PK_NAME, #primary, req).await {
+                        Ok(_) => req.raw().pool().raw_execute("COMMIT;").await,
+                        Err(_) => req.raw().pool().raw_execute("ROLLBACK;").await,
+                    }
+                    Err(_) => req.raw().pool().raw_execute("ROLLBACK;").await,
+                }
             }
-            async fn save<R: anansi::web::BaseRequest>(&self, req: &R) -> anansi::web::Result<()> {
+            async fn save<R: anansi::web::BaseRequest>(&self, req: &mut R) -> anansi::web::Result<()> {
                 use anansi::records::Relate;
-                anansi::transact!(req, {
-                    self.on_save(req).await?;
-                    self.raw_save(req.raw().pool()).await
-                })
+                use anansi::db::DbPool;
+                req.raw().pool().raw_execute("BEGIN;").await?;
+                match self.on_save(req).await {
+                    Ok(_) => match self.raw_save(req.raw().pool()).await {
+                        Ok(_) => req.raw().pool().raw_execute("COMMIT;").await,
+                        Err(_) => req.raw().pool().raw_execute("ROLLBACK;").await,
+                    }
+                    Err(_) => req.raw().pool().raw_execute("ROLLBACK;").await,
+                }
             }
             async fn raw_save<D: anansi::db::DbPool>(&self, pool: &D) -> anansi::web::Result<()> {
                 let i: anansi::db::Insert<Self> = anansi::db::Insert::new(#table, &[#(#members),*])
@@ -463,7 +473,7 @@ fn builder(properties: bool, input: proc_macro::TokenStream) -> proc_macro::Toke
         let q = quote! {
             #(#opts)*
             impl #builder<#(#field_structs),*> {
-                pub async fn saved<B: anansi::web::BaseRequest>(self, req: &B) -> anansi::web::Result<#name> {
+                pub async fn saved<B: anansi::web::BaseRequest>(self, req: &mut B) -> anansi::web::Result<#name> {
                     use anansi::records::Record;
                     let Self {#(#ids),*, #(#opt_ids),*} = self;
                     let model = #name {
@@ -576,7 +586,7 @@ pub fn relate_macro_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
 
         #[async_trait::async_trait]
         impl<R: anansi::web::BaseRequest> anansi::records::Relate<R> for #name {
-            async fn on_save(&self, req: &R) -> anansi::web::Result<()> {
+            async fn on_save(&self, req: &mut R) -> anansi::web::Result<()> {
                 use anansi::records::Record;
                 #record_tuple::_new(anansi::records::Text::from("auth_user".to_string()), req.user().pk(), None, self.pk(), anansi::records::Text::from("owner".to_string())).save(req).await?;
                 Ok(())
@@ -1269,7 +1279,7 @@ pub fn start(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             let mut callbacks = std::collections::HashMap::new();
             for comp in #comps::COMPONENTS {
                 for (name, new, call) in *comp {
-                    callbacks.insert(name.to_string(), anansi_aux::CallbackData {new: *new, call: *call, is_mounted: false});
+                    callbacks.insert(name.to_string(), anansi_aux::CallbackData {new: *new, call: *call});
                 }
             }
             anansi_aux::setup(callbacks);
@@ -1371,7 +1381,7 @@ pub fn base_view(_args: proc_macro::TokenStream, input: proc_macro::TokenStream)
             include!(concat!("templates", #args_name));
             pub fn base #generics (#fnargs, _base_args: Args) -> #rty {
                 #(#stmts)*
-                include!(concat!("templates", #name))
+                Ok(Response::new(200, include!(concat!("templates", #name))))
             }
         }
     };

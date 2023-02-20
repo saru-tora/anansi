@@ -108,7 +108,7 @@ fn to_migration<D: DbPool>(v: &Vec<Box<dyn ToQuery<D>>>) -> String {
     s
 }
 
-pub async fn migrate<D: DbPool>(app_migrations: Vec<AppMigration<D>>, pool: &D) where <D::SqlRowVec as IntoIterator>::Item: DbRow {
+pub async fn migrate<D: DbPool>(app_migrations: Vec<AppMigration<D>>, pool: &mut D) where <D::SqlRowVec as IntoIterator>::Item: DbRow {
     for app_migration in app_migrations {
         let mut migrations = vec![];
         let am = app_migration;
@@ -130,7 +130,7 @@ pub async fn migrate<D: DbPool>(app_migrations: Vec<AppMigration<D>>, pool: &D) 
                 let qs: Vec<&str> = q.split(';').collect();
                 raw_transact! (pool, {
                     for s in qs {
-                        pool.raw_execute(&format!("{};", s)).await?
+                        pool.raw_execute(&format!("{};", s)).await.unwrap();
                     }
                     Ok(())
                 }).unwrap();

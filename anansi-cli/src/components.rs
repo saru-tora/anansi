@@ -270,7 +270,7 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
                                         let vs = quote! {#var}.to_string();
                                         let (ty, rn) = local.get(&vs).expect("unexpected variable");
                                         scope_vars.push(quote! {
-                                            let mut #var = _scope[#n].borrow_mut();
+                                            let mut #var = _scope[#n].rf.borrow_mut();
                                             let #var = #var.downcast_mut::<#ty>().expect("problem restoring variable");
                                         });
                                         ref_nums.push(*rn);
@@ -414,16 +414,14 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
         let (ty, n) = local.get(&name).expect("problem getting type for rendering function");
         let ident = format_ident!("{}", name);
         lexical_scope.push(quote! {
-            let mut #ident = _scope[#lex_n].borrow_mut();
+            let mut #ident = _scope[#lex_n].rf.borrow_mut();
             let #ident = #ident.downcast_mut::<#ty>().expect("problem restoring variable");
         });
         set_render_idx.push(quote! {#n.to_string()});
         lex_n += 1;
     }
     
-    let set_ids = if resource_map.is_empty() {
-        quote! {}
-    } else {
+    let set_ids = if !set_render_idx.is_empty() {
         quote! {
             fn #comp_set_render() {
                 anansi_aux::IDS.with(|ids| {
@@ -435,6 +433,8 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
                 anansi_aux::rerender(_rsx);
             }
         }
+    } else {
+        quote! {}
     };
 
     let qr = quote! {
@@ -480,6 +480,7 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
             });
         } else {
             pause.push(quote! {
+                _p.push_subs(vec![]);
                 _p.push_obj(serde_json::to_string(&#name).unwrap());
             });
         }
@@ -728,7 +729,7 @@ impl CompParser {
                                 let mut rchildren = vec![];
                                 if !expr.starts_with("callback!") {
                                     expr.pop();
-                                    s = format!("(\"on:click\".to_string(), format!(\"{}_{}[", self.lower_comp, expr);
+                                    s.push_str(&format!("(\"on:click\".to_string(), format!(\"{}_{}[", self.lower_comp, expr));
                                     let refs = self.refs.get(&expr).expect("could not get callback");
                                     for n in refs {
                                         s.push_str(&format!("{} ", n));
@@ -739,39 +740,51 @@ impl CompParser {
                                 } else {
                                     let (_, rest) = expr.split_once("callback!(").expect("problem parsing callback");
                                     let name = format_ident!("{}_on_click_{}", self.lower_comp, self.callbacks.len());
-                                    s = format!("(\"on:click\".to_string(), format!(\"{}[", name.to_string());
+                                    s.push_str(&format!("(\"on:click\".to_string(), format!(\"{}[", name.to_string()));
                                     let mut processed = rest.to_string();
                                     processed.pop();
                                     processed.pop();
                                     let callback: CallbackArgs = syn::parse_str(&processed).unwrap();
                                     let mut args = vec![];
+                                    let mut rargs = vec![];
                                     let mut n = 0usize;
                                     for var in &callback.args {
-                                        let vty = if let Some((vty, _)) = self.local.get(&var.to_string()) {
-                                            s.push_str(&format!("{} ", n));
-                                            vty
+                                        if let Some((vty, m)) = self.local.get(&var.to_string()) {
+                                            s.push_str(&format!("{} ", m));
+                                            args.push(quote! {
+                                                let mut #var = _scope[#n].rf.borrow_mut();
+                                                let #var = #var.downcast_mut::<#vty>().expect("problem restoring variable");
+                                            });
                                         } else {
-                                            let (vty, n) = self.rchildren.get(&var.to_string()).expect("problem getting variable data");
-                                            s.push_str(&format!("{}-{{}} ", n));
+                                            let (vty, m) = self.rchildren.get(&var.to_string()).expect("problem getting variable data");
+                                            s.push_str(&format!("{}-{{}} ", m));
                                             rchildren.push(var.clone());
-                                            vty
-                                        };
-                                        args.push(quote! {
-                                            let mut #var = _scope[#n].borrow_mut();
-                                            let #var = #var.downcast_mut::<#vty>().expect("problem restoring variable");
-                                        });
+                                            let raw_var = format_ident!("_{}", var);
+                                            rargs.push(quote! {
+                                                let #raw_var = {
+                                                    let mut var = _scope[#n].rf.borrow_mut();
+                                                    let v = var.downcast_mut::<#vty>().expect("problem restoring refvec");
+                                                    v.value().inner()[_scope[#n].index.expect("problem getting reference index")].clone()
+                                                };
+                                                let #var = #raw_var.borrow_mut();
+                                            });
+                                        }
                                         n += 1;
-
                                     };
                                     if !callback.args.is_empty() {
                                         s.pop();
                                     }
                                     let block = callback.block;
+                                    let comp_set_render = format_ident!("{}_set_render", self.lower_comp);
                                     let q = quote! {
                                         fn #name() {
-                                            let mut _scope = anansi_aux::lexical_scope();
-                                            #(#args)*
-                                            #block
+                                            {
+                                                let mut _scope = anansi_aux::lexical_scope();
+                                                #(#rargs)*
+                                                #(#args)*
+                                                #block
+                                            }
+                                            #comp_set_render();
                                         }
                                     };
                                     let ns = name.to_string();
@@ -783,7 +796,7 @@ impl CompParser {
                                 for child in rchildren {
                                     s.push_str(&format!(", {}.pos()", child));
                                 }
-                                s.push_str("))");
+                                s.push_str(")),");
                             } else {
                                 unimplemented!();
                             }
@@ -1211,7 +1224,7 @@ impl CompParser {
                             } else {
                                 &name
                             };
-                            self.rchildren.insert(nm.trim().to_string(), (quote! {<<#ty as anansi_aux::Parent>::Item as anansi_aux::Parent>::Item}, *n));
+                            self.rchildren.insert(nm.trim().to_string(), (ty.clone(), *n));
                         }
                     }
                     break;

@@ -1,11 +1,9 @@
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::result;
-use std::error::Error;
 
 use crate::web::Result;
 use crate::records::{DataType, RecordField, ToSql};
-use sqlx::{Decode, Database, database::HasValueRef};
+
 use serde::{Serialize, Deserialize};
 use chrono::{Datelike, Timelike};
 use chrono::naive::{NaiveDate, NaiveTime, NaiveDateTime};
@@ -138,10 +136,17 @@ impl fmt::Display for DateTime {
     }
 }
 
-impl<'r, DB: Database> Decode<'r, DB> for DateTime
-where String: Decode<'r, DB> {
-    fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<DateTime, Box<dyn Error + 'static + Send + Sync>> {
-        let value = <String as Decode<DB>>::decode(value)?;
-        Ok(Self::from_val(value).unwrap())
+#[cfg(feature = "sqlite")]
+mod decode {
+    use super::*;
+    use sqlx::{Decode, Database, database::HasValueRef};
+    use std::result;
+    use std::error::Error;
+    impl<'r, DB: Database> Decode<'r, DB> for DateTime
+    where String: Decode<'r, DB> {
+        fn decode(value: <DB as HasValueRef<'r>>::ValueRef) -> result::Result<DateTime, Box<dyn Error + 'static + Send + Sync>> {
+            let value = <String as Decode<DB>>::decode(value)?;
+            Ok(Self::from_val(value).unwrap())
+        }
     }
 }

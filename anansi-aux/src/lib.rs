@@ -3,7 +3,7 @@ use std::any::Any;
 use std::rc::Rc;
 use std::slice::{Iter, IterMut};
 use std::cell::{RefCell, Ref, RefMut};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::marker::PhantomData;
 
@@ -46,6 +46,7 @@ thread_local! {
     pub static REFS: RefCell<HashMap<usize, Vec<usize>>> = RefCell::new(HashMap::new());
     pub static COMP_RSX: RefCell<HashMap<CompId, Option<Rsx>>> = RefCell::new(HashMap::new());
     pub static VNODE_MAP: RefCell<HashMap<String, Node>> = RefCell::new(HashMap::new());
+    pub static MOUNTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 #[derive(PartialEq, Eq, Hash, Debug)]
@@ -459,19 +460,19 @@ impl Elem {
     fn to_node(&self, document: &Document) -> Node {
         let el = document.create_element(self.name).unwrap();
         for attr in &self.attrs {
-            if !attr.key.starts_with("on:") {
-                el.set_attribute(&attr.key, &attr.value).unwrap();
-            } else {
+            el.set_attribute(&attr.key, &attr.value).unwrap();
+            if attr.key.starts_with("on:") {
                 CALLBACKS.with(|c| {
                     let c = c.borrow();
-                    let (v, _) = attr.value.split_once('[').unwrap();
+                    let (v, ids) = attr.value.split_once('[').unwrap();
+                    let (ids, _) = ids.rsplit_once(']').unwrap();
                     let cb = c.get(v).unwrap();
                     RID.with(|r| {
                         let mut r = r.borrow_mut();
                         let rs = r.to_string();
                         el.set_attribute("rid", &rs).unwrap();
                         RECALLS.with(|rc| {
-                            rc.borrow_mut().insert(rs, RecallData {call: cb.call});
+                            rc.borrow_mut().insert(rs, RecallData {call: cb.call, ids: ids.to_string()});
                         });
                         *r += 1;
                     });
@@ -484,31 +485,58 @@ impl Elem {
         el.dyn_into::<Node>().unwrap()
     }
     fn diff(&self, node: &mut Node) {
-        if self.name == node.node_name() {
+        let mut name = node.node_name();
+        if name == "#text" && node.node_value().unwrap() == "" {
+            *node = node.next_sibling().unwrap();
+            name = node.node_name();
+        }
+        if self.name == name {
             let el = node.dyn_ref::<Element>().unwrap();
             let attributes = el.attributes();
-            if self.attrs.len() as u32 == attributes.length() {
-                let mut same = true;
+            let l = self.attrs.len() as u32;
+            let mut same = true;
+            if l == attributes.length() {
                 for attr in &self.attrs {
                     if let Some(attribute) = attributes.get_named_item(&attr.key) {
                         if attribute.value() != attr.value {
                             same = false;
                             break;
                         }
+                    } else {
+                        same = false;
+                        break;
                     }
                 }
-                if same {
-                    return;
+            } else if l + 1 == attributes.length() {
+                if attributes.get_named_item("rid").is_some() {
+                    for attr in &self.attrs {
+                        if let Some(attribute) = attributes.get_named_item(&attr.key) {
+                            if attribute.value() != attr.value {
+                                same = false;
+                                break;
+                            }
+                        } else {
+                            same = false;
+                            break;
+                        }
+                    }
+                } else {
+                    same = false;
                 }
+            } else {
+                same = false;
             }
-        } else {
-            let parent = node.parent_node().unwrap();
-            DOCUMENT.with(|document| {
-                let new = self.to_node(&document);
-                parent.insert_before(&new, Some(&node)).unwrap();
-                *node = new;
-            });
+            if same {
+                return;
+            }
         }
+        let parent = node.parent_node().unwrap();
+        DOCUMENT.with(|document| {
+            let new = self.to_node(&document);
+
+            parent.insert_before(&new, Some(&node)).unwrap();
+            *node = new;
+        });
     }
 }
 
@@ -609,12 +637,12 @@ pub fn html_escape(s: &str) -> String {
 
 pub struct RecallData {
     pub call: fn(),
+    pub ids: String,
 }
 
 pub struct CallbackData {
     pub new: fn(String),
     pub call: fn(),
-    pub is_mounted: bool,
 }
 
 #[macro_export]
@@ -733,10 +761,33 @@ pub fn recall(rid: &str) -> bool {
         let recalls = r.borrow();
         if let Some(rc) = recalls.get(rid) {
             let r = rc.call;
+            IDS.with(|id| {
+                let arr: Vec<String> = rc.ids.split(' ').map(|s| s.to_string()).collect();
+                *id.borrow_mut() = arr;
+            });
             drop(recalls);
             (r)();
             b = true;
         }
+    });
+    b
+}
+
+fn check_mount(node_id: &str) -> bool {
+    let mut b = true;
+    CONTEXTS.with(|contexts| {
+        let contexts = contexts.borrow();
+        MOUNTED.with(|m| {
+            let mounted = m.borrow();
+            if let Some(vn_index) = contexts.get(node_id) {
+                let index = match vn_index {
+                    Ctx::R(s) => s,
+                };
+                if mounted.contains(index) {
+                    b = false;
+                }
+            }
+        });
     });
     b
 }
@@ -748,24 +799,53 @@ pub fn call(callback: &str, node_id: &str) -> Result<(), JsValue> {
     let arr: Vec<String> = arr.split(' ').map(|s| s.to_string()).collect();
 
     CALLBACKS.with(|c| {
-        let mut callbacks = c.borrow_mut();
-        if let Some(cb) = callbacks.get_mut(name) {
-            NODE_ID.with(|n| *n.borrow_mut() = node_id.to_string());
-            IDS.with(|id| {
-                *id.borrow_mut() = arr;
-            });
-            if !cb.is_mounted {
-                (cb.new)(node_id.to_string());
-                cb.is_mounted = true;
+        let cbc = {
+            let mut callbacks = c.borrow_mut();
+            if let Some(cb) = callbacks.get_mut(name) {
+                NODE_ID.with(|n| *n.borrow_mut() = node_id.to_string());
+                IDS.with(|id| {
+                    *id.borrow_mut() = arr;
+                });
+
+                if check_mount(node_id) {
+                    (cb.new)(node_id.to_string());
+                    CONTEXTS.with(|contexts| {
+                        let contexts = contexts.borrow();
+                        MOUNTED.with(|m| {
+                            let mut mounted = m.borrow_mut();
+                            if let Some(vn_index) = contexts.get(node_id) {
+                                let index = match vn_index {
+                                    Ctx::R(s) => s,
+                                };
+                                mounted.insert(index.to_string());
+                            }
+                        });
+                    });
+                }
+                cb.call
+            } else {
+                panic!("expected callback");
             }
-            (cb.call)();
-        }
+        };
+        cbc();
     });
 
     Ok(())
 }
 
-pub fn lexical_scope() -> Vec<Rc<RefCell<dyn Any>>> {
+#[derive(Debug)]
+pub struct ScopeVar {
+    pub rf: Rc<RefCell<dyn Any>>,
+    pub index: Option<usize>,
+}
+
+impl ScopeVar {
+    fn new(rf: Rc<RefCell<dyn Any>>, index: Option<usize>) -> Self {
+        Self {rf, index}
+    }
+}
+
+pub fn lexical_scope() -> Vec<ScopeVar> {
     let mut v = vec![];
     APP_STATE.with(|app| {
         let app = app.borrow();
@@ -775,17 +855,14 @@ pub fn lexical_scope() -> Vec<Rc<RefCell<dyn Any>>> {
                     let f: usize = f.parse().expect("problem parsing id for lexical scope");
                     let s: usize = s.parse().expect("problem parsing index for lexical scope");
                     if let Obj::Rs(var) = &app.as_ref().expect("could not get app state").objs[f] {
-                        let mut var = var.borrow_mut();
-                        let var = var.downcast_mut::<Signal<RefVec<dyn Any>>>().expect("problem getting reference for lexical scope");
-                        let var = var.value().inner()[s].clone();
-                        v.push(var);
+                        v.push(ScopeVar::new(var.clone(), Some(s)));
                     } else {
                         panic!("expected Rust type to be restored");
                     }
                 } else {
                     let id: usize = id.parse().expect("problem parsing id for lexical scope");
                     if let Obj::Rs(var) = &app.as_ref().expect("could not get app state").objs[id] {
-                        v.push(var.clone());
+                        v.push(ScopeVar::new(var.clone(), None));
                     } else {
                         panic!("expected Rust type to be restored");
                     }

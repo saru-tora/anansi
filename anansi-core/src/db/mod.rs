@@ -6,9 +6,6 @@ pub mod postgres;
 
 use std::str;
 use std::marker::PhantomData;
-use std::future::Future;
-
-use sqlx::{Database, Type};
 
 use async_trait::async_trait;
 
@@ -48,13 +45,7 @@ macro_rules! database {
     };
 }
 
-pub trait Db {
-    type SqlDb: sqlx::Database;
-    fn db_type_info<T: Type<Self::SqlDb>>() -> <<Self as Db>::SqlDb as Database>::TypeInfo;
-}
-
 pub trait DbRow {
-    type SqlDb: sqlx::Database;
     type RawRow;
     fn new(row: Self::RawRow) -> Self;
     fn try_bool(&self, index: &str) -> Result<bool>;
@@ -77,7 +68,6 @@ pub trait DbPool: Clone + Send + Sync + DbType {
     type SqlRow: DbRow;
     type SqlRowVec: DbRowVec;
     async fn new(settings: &Settings) -> Result<Self> where Self: Sized;
-    async fn transact<F: Future<Output = Result<O>> + Send, O: Send>(&self, future: F) -> F::Output;
     async fn query(&self, val: &str) -> Result<Self::SqlRowVec>;
     async fn raw_fetch_one(&self, val: &str) -> Result<Self::SqlRow>;
     async fn raw_fetch_all(&self, val: &str) -> Result<Self::SqlRowVec>;
@@ -92,10 +82,22 @@ pub trait DbType {
 }
 
 #[macro_export]
-macro_rules! try_sql {
+macro_rules! try_sqlx {
     ($self:ident, $index:ident) => {
         {
             use sqlx::Row;
+            match $self.row.try_get($index) {
+                Ok(o) => Ok(o),
+                Err(e) => Err(Box::new(e))
+            }
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! try_sql {
+    ($self:ident, $index:ident) => {
+        {
             match $self.row.try_get($index) {
                 Ok(o) => Ok(o),
                 Err(e) => Err(Box::new(e))

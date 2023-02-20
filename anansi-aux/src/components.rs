@@ -35,11 +35,17 @@ impl Pauser {
     pub fn to_string(&self) -> String {
 		let mut s = String::from("<script type=\"module\" src=\"/static/main.js\"></script><script type=\"app/json\">");
         s.push_str("{\"ctx\":{");
-        for c in &self.ctx {
-            s.push_str(&format!("{}", c));
-        }
-        s.push_str("},\"objs\":[");
         let mut b = false;
+        for c in &self.ctx {
+            if b {
+                s.push_str(&format!(",{}", c));
+            } else {
+                b = true;
+                s.push_str(&c);
+            }
+        }
+        b = false;
+        s.push_str("},\"objs\":[");
         for o in &self.objs {
             if b {
                 s.push_str(&format!(",{}", o));
@@ -51,16 +57,23 @@ impl Pauser {
         s.push_str("],\"subs\":[");
         b = false;
         for sub in &self.subs {
-            s.push('[');
-            for sb in sub {
+            if !sub.is_empty() {
+                for sb in sub {
+                    if b {
+                        s.push_str(&format!(",[\"{}\"]", sb));
+                    } else {
+                        b = true;
+                        s.push_str(&format!("[\"{}\"]", sb));
+                    }
+                }
+            } else {
                 if b {
-                    s.push_str(&format!(",{}", sb));
+                    s.push_str(",[]");
                 } else {
                     b = true;
-                    s.push_str(&sb);
+                    s.push_str("[]");
                 }
             }
-            s.push(']');
         }
         s.push_str("]}</script>");
         s

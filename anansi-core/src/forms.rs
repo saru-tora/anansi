@@ -468,7 +468,7 @@ pub trait ToRecord<B: BaseRequest>: Form + HasRecord {
         Ok(Self::new())
     }
 
-    async fn on_post(&mut self, data: <Self as Form>::Data, req: &B) -> Result<Self::Item>;
+    async fn on_post(&mut self, data: <Self as Form>::Data, req: &mut B) -> Result<Self::Item>;
 }
 
 impl fmt::Display for Checkbox {

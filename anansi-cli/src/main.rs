@@ -501,15 +501,16 @@ struct Parser {
     selectors: HashSet<String>,
     ncallbacks: usize,
     local: Local,
-    rchildren: HashMap<String, (TokenStream, usize)>,
+    depth: usize,
+    rchildren: HashMap<String, (TokenStream, usize, usize)>,
 }
 
 impl Parser {
     fn new() -> Self {
-        Self {ncallbacks: 0, local: Local::new(), rchildren: HashMap::new(), refs: HashMap::new(), lower_comp: String::new(), blocks: vec![], selectors: HashSet::new()}
+        Self {depth: 0, ncallbacks: 0, local: Local::new(), rchildren: HashMap::new(), refs: HashMap::new(), lower_comp: String::new(), blocks: vec![], selectors: HashSet::new()}
     }
     fn comp(refs: HashMap<String, Vec<usize>>, lower_comp: String, selectors: HashSet<String>, local: Local) -> Self {
-        Self {refs, lower_comp, blocks: vec![], selectors, ncallbacks: 0, local, rchildren: HashMap::new()}
+        Self {depth: 0, refs, lower_comp, blocks: vec![], selectors, ncallbacks: 0, local, rchildren: HashMap::new()}
     }
     fn to_html(&mut self, content: &str) -> String {
         let mut view = String::from("let mut _c = String::new();");
@@ -532,7 +533,7 @@ impl Parser {
         } else {
             let mut view = String::from("{let mut _c = String::new();");
             view.push_str(&self.process(&content));
-            view.push_str("Ok(anansi::web::Response::new(200, _c.into_bytes()))}");
+            view.push_str("_c.into_bytes()}");
             view
         };
         let out = if let Component::Normal(temp) = temp {
@@ -624,74 +625,7 @@ impl Parser {
                 } else if c != '@' {
                     view.push(c);
                 } else {
-                    let mut u = String::new();
-                    let (nws, extra) = collect_name(&mut rchars);
-                    if nws.starts_with("if") {
-                        u.push_str(&format!("{}{}", nws, extra));
-                        loop {
-                            let expr = get_expr(&mut rchars);
-                            let mut echars = expr.chars();
-                            while let Some(c) = echars.next() {
-                                if c == '@' {
-                                    let d = echars.next().expect("problem parsing attribute");
-                                    if d == ':' {
-                                        let t = collect(&mut echars, '\n');
-                                        u.push_str(&t);
-                                    } else {
-                                        unimplemented!();
-                                    }
-                                } else {
-                                    u.push(c)
-                                }
-                            }
-                            if expr.trim().starts_with("else") {
-                                break;
-                            }
-                        }
-                        view.push_str(&format!("\");_c.push_str(&{u}.to_string());_c.push_str(\""));
-                    } else if nws.starts_with("onclick") {
-                        let (callback, _) = collect_name(&mut rchars);
-                        let mut rn = String::new();
-                        let mut rchildren = vec![];
-                        if callback != "callback!" {
-                            view.push_str(&format!("\");_c.push_str(&format!(\"on:click=\\\"{}_{}[", self.lower_comp, callback));
-                            let refs = self.refs.get(&callback).expect("could not get callback");
-                            for n in refs {
-                                rn.push_str(&format!("{} ", n));
-                            }
-                            if !rn.is_empty() {
-                                rn.pop();
-                                view.push_str(&rn);
-                            }
-                        } else {
-                            let expr = custom_get_expr(&mut rchars, 0, 0);
-                            let name = format!("{}_on_click_{}", self.lower_comp, self.ncallbacks);
-                            view.push_str(&format!("\");_c.push_str(&format!(\"on:click=\\\"{}[", name));
-                            let callback: CallbackArgs = syn::parse_str(&expr).unwrap();
-                            let mut n = 0;
-                            for var in &callback.args {
-                                if let Some(_) = self.local.get(&var.to_string()) {
-                                    view.push_str(&format!("{} ", n));
-                                } else {
-                                    let (_, n) = self.rchildren.get(&var.to_string()).expect("problem getting variable data");
-                                    view.push_str(&format!("{}-{{}} ", n));
-                                    rchildren.push(var.clone());
-                                }
-                                n += 1;
-                            }
-                            if !callback.args.is_empty() {
-                                view.pop();
-                            }
-                            self.ncallbacks += 1;
-                        }
-                        view.push_str("]\\\" a:id=\\\"{}\\\"\"");
-                        for child in rchildren {
-                            view.push_str(&format!(", {}.pos()", child));
-                        }
-                        view.push_str(", _p.add()));_c.push_str(\"");
-                    } else {
-                        unimplemented!();
-                    }
+                    self.at(view, &mut rchars);
                 }
             }
             view.push('>');
@@ -827,6 +761,7 @@ fn collect_name(chars: &mut Chars) -> (String, char) {
                 '(' => {}
                 ')' => {}
                 '\n' => {}
+                '"' => {}
                 _ => {
                     name.push(c);
                     continue;
@@ -893,6 +828,7 @@ impl Parser {
         }
     }
     fn at(&mut self, view: &mut String, chars: &mut Chars) {
+        self.depth += 1;
         view.push_str("\");");
         let mut s = String::new();
         let mut extra = String::new();
@@ -912,10 +848,17 @@ impl Parser {
                     s.push(d);
                 }
                 view.push_str(&format!("_c.push_str(&{}::html_escape(&format!(\"{{}}\", {})));_c.push_str(\"", self.escape_path(), s));
+                self.depth -= 1;
+                return;
+            } else if c == ':' {
+                let t = collect(chars, '\n');
+                view.push_str(&format!("_c.push_str({});_c.push_str(\"", t));
+                self.depth -= 1;
                 return;
             }
             s.push(c);
         } else {
+            self.depth -= 1;
             return;
         }
         while let Some(c) = chars.next() {
@@ -932,6 +875,7 @@ impl Parser {
         let mut find_brace = true;
         match s.trim() {
             "if" => {}
+            "else" => view.push_str("}"),
             "for" => {}
             "loop" => {}
             "while" => {}
@@ -939,6 +883,7 @@ impl Parser {
                 let (name, ex) = collect_name(chars);
                 self.blocks.push(name.clone());
                 view.push_str(&format!("_c.push_str(&_base_args._{});_c.push_str(\"{}", name, ex));
+                self.depth -= 1;
                 return;
             }
             "load" => {
@@ -979,6 +924,7 @@ impl Parser {
                 } else {
                     view.push_str(&format!("_c.push_str(&format!(\"{{}}\", {}));_c.push_str(\"{}", name, ex));
                 }
+                self.depth -= 1;
                 return;
             }
             "link" => {
@@ -995,6 +941,7 @@ impl Parser {
                 let blk = collect(chars, '}');
                 view.push_str(&self.process(&blk));
                 view.push_str("_c.push_str(\"</a>");
+                self.depth -= 1;
                 return;
             }
             "href" => {
@@ -1009,11 +956,13 @@ impl Parser {
                 let blk = collect(chars, '}');
                 view.push_str(&self.process(&blk));
                 view.push_str("_c.push_str(\"</a>");
+                self.depth -= 1;
                 return;
             }
             "resource" => {
                 get_expr(chars);
                 view.push_str("_c.push_str(\"");
+                self.depth -= 1;
                 return;
             }
             "cache" => {
@@ -1035,11 +984,58 @@ impl Parser {
                 let blk = collect(chars, '}');
                 view.push_str(&self.process(&blk));
                 view.push_str(&format!("{req}.cache_mut().set_ex({key}, _c.as_bytes(), {timeout}).await?; _c\"}}; _c.push_str(&_d);}} _c.push_str(\""));
+                self.depth -= 1;
                 return;
             }
             "url!" => {
                 s = "anansi::url!".to_string();
                 variable(self.escape_path(), &extra, &mut s, chars, view);
+                self.depth -= 1;
+                return;
+            }
+            "onclick" => {
+                let (callback, _) = collect_name(chars);
+                let mut rn = String::new();
+                let mut rchildren = vec![];
+                if callback != "callback!" {
+                    view.push_str(&format!("_c.push_str(&format!(\"on:click=\\\"{}_{}[", self.lower_comp, callback));
+                    let refs = self.refs.get(&callback).expect("could not get callback");
+                    for n in refs {
+                        rn.push_str(&format!("{} ", n));
+                    }
+                    if !rn.is_empty() {
+                        rn.pop();
+                        view.push_str(&rn);
+                    }
+                } else {
+                    let mut expr = custom_get_expr(chars, 2, 0);
+                    expr.pop();
+                    expr.pop();
+                    let name = format!("{}_on_click_{}", self.lower_comp, self.ncallbacks);
+                    view.push_str(&format!("_c.push_str(&format!(\"on:click=\\\"{}[", name));
+                    let callback: CallbackArgs = syn::parse_str(&expr).unwrap();
+                    let mut n = 0;
+                    for var in &callback.args {
+                        if let Some(_) = self.local.get(&var.to_string()) {
+                            view.push_str(&format!("{} ", n));
+                        } else {
+                            let (_, n, _) = self.rchildren.get(&var.to_string()).expect("problem getting variable data");
+                            view.push_str(&format!("{}-{{}} ", n));
+                            rchildren.push(var.clone());
+                        }
+                        n += 1;
+                    }
+                    if !callback.args.is_empty() {
+                        view.pop();
+                    }
+                    self.ncallbacks += 1;
+                    self.depth -= 1;
+                }
+                view.push_str("]\\\" a:id=\\\"{}\\\"\"");
+                for child in rchildren {
+                    view.push_str(&format!(", {}.pos()", child));
+                }
+                view.push_str(", _p.add()));_c.push_str(\"");
                 return;
             }
             _ => {
@@ -1054,6 +1050,7 @@ impl Parser {
                 } else {
                     get_var(self.escape_path(), &extra, &mut s, chars, view);
                 }
+                self.depth -= 1;
                 return;
             }
         }
@@ -1062,7 +1059,7 @@ impl Parser {
             while let Some(c) = chars.next() {
                 s.push(c);
                 if c == '{' {
-                    if let Some((_, rest)) = s.split_once("for") {
+                    if let Some((_, rest)) = s.split_once("for ") {
                         let (name, rest) = rest.split_once("in").expect("problem parsing for loop");
                         let container = if let Some((container, _)) = rest.split_once('.') {
                             container.trim().to_string()
@@ -1075,7 +1072,7 @@ impl Parser {
                             } else {
                                 &name
                             };
-                            self.rchildren.insert(nm.trim().to_string(), (ty.clone(), *n));
+                            self.rchildren.insert(nm.trim().to_string(), (ty.clone(), *n, self.depth));
                         }
                     }
                     break;
@@ -1102,15 +1099,16 @@ impl Parser {
                             let mut preview = chars.clone();
                             let t = collect_nws(&mut preview);
                             if t == "else" {
-                                let e = collect(chars, '{');
-                                view.push_str(&format!("\");}}{}{{_c.push_str(\"", e));
-                                continue;
+                                self.depth -= 1;
+                                self.at(view, chars);
+                                return;
                             }
                             view.push_str("\");}_c.push_str(\"");
                         }
                         _ => view.push_str("\");}_c.push_str(\""),
                     }
-                    self.rchildren.clear();
+                    self.rchildren.retain(|_, (_, _, d)| *d != self.depth);
+                    self.depth -= 1;
                     return;
                 }
                 '@' => {

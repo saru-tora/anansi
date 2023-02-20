@@ -16,7 +16,7 @@ pub struct UserLogin {
 
 #[async_trait]
 impl<B: BaseRequest> ToRecord<B> for UserLogin {
-    async fn on_post(&mut self, data: UserLoginData, req: &B) -> Result<User> {
+    async fn on_post(&mut self, data: UserLoginData, req: &mut B) -> Result<User> {
         if let Ok(user) = User::whose(username().eq(&data.username)).get(req).await {
             if user.verify(&data.password).is_ok() {
                 return Ok(user);
@@ -33,7 +33,7 @@ pub struct UserTotp {
 
 #[async_trait]
 impl<B: BaseRequest + Auth> ToRecord<B> for UserTotp {
-    async fn on_post(&mut self, data: UserTotpData, req: &B) -> Result<User> {
+    async fn on_post(&mut self, data: UserTotpData, req: &mut B) -> Result<User> {
         if let Ok(secret) = req.temp_totp() {
             use anansi::web::BaseUser;
             let name = req.user().username().to_string();
@@ -74,7 +74,7 @@ impl UserNew {
 
 #[async_trait]
 impl<B: BaseRequest> ToRecord<B> for UserNew {
-    async fn on_post(&mut self, data: UserNewData, req: &B) -> Result<User> {
+    async fn on_post(&mut self, data: UserNewData, req: &mut B) -> Result<User> {
         let clean_name = data.username.as_str();
         let clean_name = match User::validate_username(clean_name, req.raw().pool()).await {
             Ok(username) => username,
@@ -125,7 +125,7 @@ pub struct GroupForm {
 
 #[async_trait]
 impl<B: Request> ToRecord<B> for GroupForm {
-    async fn on_post(&mut self, data: GroupFormData, req: &B) -> Result<Group> {
+    async fn on_post(&mut self, data: GroupFormData, req: &mut B) -> Result<Group> {
         let group = Group::new()
             .groupname(data.groupname);
         match group.saved(req).await {
@@ -144,7 +144,7 @@ pub struct FilterForm {
 
 #[async_trait]
 impl<B: Request> ToRecord<B> for FilterForm {
-    async fn on_post(&mut self, data: FilterFormData, req: &B) -> Result<Filter> {
+    async fn on_post(&mut self, data: FilterFormData, req: &mut B) -> Result<Filter> {
         let table_name = req.params().get("table_name")?.parse()?;
         let raw_query = req.params().get("raw_query")?.parse()?;
         let filter = Filter::new()

@@ -7,6 +7,6 @@ use crate::project::Request;
 impl<R: Request> ErrorView<R> {
     #[check(Site::is_visitor)]
     pub async fn not_found(_req: &mut R) -> Result<Response> {
-        render!("not_found")
+        Ok(Response::new(404, raw_render!("not_found")))
     }
 }
