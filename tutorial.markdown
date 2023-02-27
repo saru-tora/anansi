@@ -496,7 +496,7 @@ fn init(props: LoaderProps) -> Rsx {
 Tailwind
 --------
 
-If you have Tailwind and want to use it, first run:
+If you have [Tailwind](https://tailwindcss.com/) and want to use it, first run:
 
 ```shell
 $ ananc init-tailwind
@@ -530,7 +530,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ```
 
-For the cache, there are two options. The default cache uses local memory, which may work for testing. For an actual site, if you want to use Redis, add the feature `"redis"` to `Cargo.toml`. In `src/project.rs`, change `app_cache!(local)` to `app_cache!(redis)`. Finally, in `settings.toml`, change `[caches.default]` to:
+For the cache, there are two options. The default cache uses [Moka](https://crates.io/crates/moka), which may work for small to medium sites. For big sites, or if you just want to use [Redis](https://redis.io/), add the feature `"redis"` to `Cargo.toml`. In `src/project.rs`, change `app_cache!(local)` to `app_cache!(redis)`. Finally, in `settings.toml`, change `[caches.default]` to:
 
 ```toml
 location = "redis://127.0.0.1/"
