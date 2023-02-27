@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::net::{TcpSocket, TcpListener};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{Semaphore, oneshot::Sender};
-use tokio::{fs, time};
+use tokio::sync::{Semaphore, oneshot::Sender, broadcast, mpsc};
+use tokio::{fs, time, signal};
 use std::pin::Pin;
 use std::future::Future;
 
@@ -109,6 +109,9 @@ pub struct Server<B: BaseRequest + 'static, C: BaseCache, D: DbPool, S: Service<
     timer: Timer,
     site: AdminRef<B>,
     mailer: Option<Mailer>,
+    notify_shutdown: broadcast::Sender<()>,
+    shutdown_complete_tx: mpsc::Sender<()>,
+    shutdown_complete_rx: mpsc::Receiver<()>,
 }
 
 #[cfg(feature = "minimal")]
@@ -122,6 +125,9 @@ pub struct Server<B: BaseRequest + 'static, C: BaseCache, D: DbPool, S: Service<
     sem: Arc<Semaphore>,
     timer: Timer,
     mailer: Option<Mailer>,
+    notify_shutdown: broadcast::Sender<()>,
+    shutdown_complete_tx: mpsc::Sender<()>,
+    shutdown_complete_rx: mpsc::Receiver<()>,
 }
 
 async fn get_pool<D: DbPool>(not_test: bool, settings: &Settings, migrations: fn() -> Vec<AppMigration<D>>) -> D {
@@ -263,24 +269,45 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         };
         let sem = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let timer = Arc::new(RwLock::new(DateTime::now().to_gmt()));
-        let t2 = Arc::clone(&timer);
-        tokio::spawn(async move {
-            loop {
-                time::sleep(time::Duration::from_secs(1)).await;
-                let now = DateTime::now().to_gmt();
-                *t2.write().unwrap() = now;
-            }
-        });
 
         println!("Server running at http://{addr}/\nPress Ctrl+C to stop");
         if let Some(sender) = sender.take() {
             sender.send(()).unwrap();
         }
 
-        Some(Self {listener, urls, pool, cache, std_rng, router, sem, timer, site, mailer})
+        let (notify_shutdown, _) = broadcast::channel(1);
+        let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
+
+        Some(Self {listener, urls, pool, cache, std_rng, router, sem, timer, site, mailer, notify_shutdown, shutdown_complete_tx, shutdown_complete_rx})
     }
 
-    pub async fn run(self) {
+    pub async fn run(mut self) {
+        let shutdown_complete = self.shutdown_complete_tx.clone();
+        let mut sd = Shutdown::new(self.notify_shutdown.subscribe());
+        let tmr = self.timer.clone();
+
+        tokio::spawn(async move {
+            let _shutdown_complete = shutdown_complete;
+            while !sd.is_shutdown() {
+                tokio::select! {
+                    _ = time::sleep(time::Duration::from_secs(1)) => {}
+                    _ = sd.recv() => break,
+                }
+                let now = DateTime::now().to_gmt();
+                *tmr.write().unwrap() = now;
+            }
+        });
+        tokio::select! {
+            _ = self.serve() => {}
+            _ = signal::ctrl_c() => info!("Shutting down"),
+        }
+
+        let Server {notify_shutdown, shutdown_complete_tx, mut shutdown_complete_rx, ..} = self;
+        drop(notify_shutdown);
+        drop(shutdown_complete_tx);
+        let _ = shutdown_complete_rx.recv().await;
+    }
+    async fn serve(&mut self) {
         loop {
             let urls = self.urls.clone();
             let pool = self.pool.clone();
@@ -293,14 +320,20 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
             let site = self.site.clone();
             let mailer = self.mailer.clone();
             let (stream, _) = self.listener.accept().await.unwrap();
-            stream.set_nodelay(true).unwrap();
             if aq.is_ok() {
+                let mut sd = self.notify_shutdown.subscribe();
+                let shutdown_complete = self.shutdown_complete_tx.clone();
                 tokio::spawn(async move {
+                    let _shutdown_complete = shutdown_complete;
                     let addr = stream.peer_addr().unwrap();
-                    if let Err(err) = http1::Builder::new()
-                        .serve_connection(stream, Svc { addr, urls, pool, cache, std_rng, router, timer, site, mailer })
-                        .await
-                    {
+                    let svc = Svc { addr, urls, pool, cache, std_rng, router, timer, site, mailer };
+
+                    let res = tokio::select! {
+                        res = http1::Builder::new()
+                            .serve_connection(stream, svc) => res,
+                        _ = sd.recv() => return,
+                    };
+                    if let Err(err) = res {
                         error!("Failed to serve connection: {}", err);
                     }
                 });
@@ -418,23 +451,46 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         };
         let sem = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let timer = Arc::new(RwLock::new(DateTime::now().to_gmt()));
-        let t2 = Arc::clone(&timer);
-        tokio::spawn(async move {
-            loop {
-                time::sleep(time::Duration::from_secs(1)).await;
-                let now = DateTime::now().to_gmt();
-                *t2.write().unwrap() = now;
-            }
-        });
 
         println!("Server running at http://{addr}/\nPress Ctrl+C to stop");
         if let Some(sender) = sender.take() {
             sender.send(()).unwrap();
         }
-        Some(Self {listener, urls, pool, cache, std_rng, router, sem, timer, mailer})
+
+        let (notify_shutdown, _) = broadcast::channel(1);
+        let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
+
+        Some(Self {listener, urls, pool, cache, std_rng, router, sem, timer, mailer, notify_shutdown, shutdown_complete_tx, shutdown_complete_rx})
     }
 
-    pub async fn run(self) {
+    pub async fn run(mut self) {
+        let shutdown_complete = self.shutdown_complete_tx.clone();
+        let mut sd = Shutdown::new(self.notify_shutdown.subscribe());
+        let tmr = self.timer.clone();
+
+        tokio::spawn(async move {
+            let _shutdown_complete = shutdown_complete;
+            while !sd.is_shutdown() {
+                tokio::select! {
+                    _ = time::sleep(time::Duration::from_secs(1)) => {}
+                    _ = sd.recv() => break,
+                }
+                let now = DateTime::now().to_gmt();
+                *tmr.write().unwrap() = now;
+            }
+        });
+
+        tokio::select! {
+            _ = self.serve() => {}
+            _ = signal::ctrl_c() => info!("Shutting down"),
+        }
+
+        let Server {notify_shutdown, shutdown_complete_tx, mut shutdown_complete_rx, ..} = self;
+        drop(notify_shutdown);
+        drop(shutdown_complete_tx);
+        let _ = shutdown_complete_rx.recv().await;
+    }
+    async fn serve(&mut self) {
         loop {
             let urls = self.urls.clone();
             let pool = self.pool.clone();
@@ -446,14 +502,21 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
             let aq = sem.try_acquire();
             let mailer = self.mailer.clone();
             let (stream, _) = self.listener.accept().await.unwrap();
-            stream.set_nodelay(true).unwrap();
+            
             if aq.is_ok() {
+                let mut sd = self.notify_shutdown.subscribe();
+                let shutdown_complete = self.shutdown_complete_tx.clone();
                 tokio::spawn(async move {
+                    let _shutdown_complete = shutdown_complete;
+                    stream.set_nodelay(true).unwrap();
                     let addr = stream.peer_addr().unwrap();
-                    if let Err(err) = http1::Builder::new()
-                        .serve_connection(stream, Svc { addr, urls, pool, cache, std_rng, router, timer, mailer })
-                        .await
-                    {
+                    let svc = Svc { addr, urls, pool, cache, std_rng, router, timer, mailer };
+                    let res = tokio::select! {
+                        res = http1::Builder::new()
+                            .serve_connection(stream, svc) => res,
+                        _ = sd.recv() => return,
+                    };
+                    if let Err(err) = res {
                         error!("Failed to serve connection: {}", err);
                     }
                 });
@@ -461,6 +524,29 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                 error!("Open socket limit reached");
             }
         }
+    }
+}
+
+struct Shutdown {
+    shutdown: bool,
+    notify: broadcast::Receiver<()>,
+}
+
+impl Shutdown {
+    fn new(notify: broadcast::Receiver<()>) -> Self {
+        Self {shutdown: false, notify}
+    }
+    fn is_shutdown(&self) -> bool {
+        self.shutdown
+    }
+    async fn recv(&mut self) {
+        if self.shutdown {
+            return;
+        }
+
+        let _ = self.notify.recv().await;
+
+        self.shutdown = true;
     }
 }
 

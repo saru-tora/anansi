@@ -47,6 +47,8 @@ thread_local! {
     pub static COMP_RSX: RefCell<HashMap<CompId, Option<Rsx>>> = RefCell::new(HashMap::new());
     pub static VNODE_MAP: RefCell<HashMap<String, Node>> = RefCell::new(HashMap::new());
     pub static MOUNTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    pub static VIRT_NODES: RefCell<HashMap<String, Rsx>> = RefCell::new(HashMap::new());
+    pub static MAIN_RSX: RefCell<Option<Rsx>> = RefCell::new(None);
 }
 
 #[derive(PartialEq, Eq, Hash, Debug)]
@@ -441,6 +443,7 @@ pub struct Elem {
     pub name: &'static str,
     pub attrs: Vec<Attribute>,
     pub children: Vec<Rsx>,
+    pub el: Option<Element>,
 }
 
 #[derive(Debug, Clone)]
@@ -457,7 +460,10 @@ macro_rules! attributes {
 }
 
 impl Elem {
-    fn to_node(&self, document: &Document) -> Node {
+    fn node(&self) -> Node {
+        self.el.clone().expect("expected element").dyn_into::<Node>().unwrap()
+    }
+    fn to_node(&mut self, document: &Document) -> Node {
         let el = document.create_element(self.name).unwrap();
         for attr in &self.attrs {
             el.set_attribute(&attr.key, &attr.value).unwrap();
@@ -479,12 +485,13 @@ impl Elem {
                 });
             }
         }
-        for child in &self.children {
+        for child in &mut self.children {
             el.append_child(&child.to_node(document)).unwrap();
         }
+        self.el = Some(el.clone());
         el.dyn_into::<Node>().unwrap()
     }
-    fn diff(&self, node: &mut Node) {
+    fn diff(&mut self, node: &mut Node) {
         let mut name = node.node_name();
         if name == "#text" && node.node_value().unwrap() == "" {
             *node = node.next_sibling().unwrap();
@@ -538,24 +545,69 @@ impl Elem {
             *node = new;
         });
     }
+    fn vdiff(&mut self, old: &mut Rsx) {
+        if let Rsx::Element(el) = old {
+            if self.name == el.name {
+                let l = self.attrs.len();
+                let mut same = true;
+                if l == el.attrs.len() {
+                    for (attr, attribute) in self.attrs.iter().zip(el.attrs.iter()) {
+                        if attr.key == attribute.key {
+                            if attribute.value != attr.value {
+                                same = false;
+                                break;
+                            }
+                        } else {
+                            same = false;
+                            break;
+                        }
+                    }
+                } else {
+                    same = false;
+                }
+                if same {
+                    self.el = el.el.take();
+                    return;
+                }
+            }
+        }
+        let parent = old.node().parent_node().unwrap();
+        DOCUMENT.with(|document| {
+            let new = self.to_node(&document);
+
+            parent.insert_before(&new, Some(&old.node())).unwrap();
+        });
+    }
 }
 
 #[macro_export]
 macro_rules! element {
     ($n:literal, $a:expr, $c: expr) => {
-        Rsx::Element(Elem {name: $n, attrs: $a, children: $c})
+        Rsx::Element(Elem {name: $n, attrs: $a, children: $c, el: None})
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct Txt {
+    text: String,
+    node: Option<Text>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Rsx {
     Component(Comp),
     Element(Elem),
-    Text(String),
+    Text(Txt),
 }
 
 impl Rsx {
-    fn edit(&self, node: &Node) {
+    pub fn component() -> Self {
+        Rsx::Component(Comp {children: vec![]})
+    }
+    pub fn new_text(text: String) -> Self {
+        Rsx::Text(Txt {text, node: None})
+    }
+    fn edit(&mut self, node: &Node) {
         DOCUMENT.with(|document| {
             match self {
                 Self::Element(elem) => {
@@ -563,22 +615,74 @@ impl Rsx {
                     add_sibling(node, &new);
                 }
                 Self::Text(text) => {
-                    let new = document.create_text_node(&text).dyn_into::<Node>().unwrap();
+                    let new = document.create_text_node(&text.text).dyn_into::<Node>().unwrap();
                     add_sibling(node, &new);
                 }
                 Self::Component(_) => unimplemented!(),
             }
         });
     }
-    fn to_node(&self, document: &Document) -> Node {
+    fn parent_node(&mut self) -> Option<Node> {
+        match self {
+            Self::Element(elem) => {
+                elem.el.as_ref().expect("expected element").parent_node()
+            }
+            Self::Text(text) => {
+                text.node.clone().expect("expected text node").parent_node()
+            }
+            Self::Component(_) => unimplemented!(),
+        }
+    }
+    fn node(&self) -> Node {
+        match self {
+            Self::Element(elem) => {
+                elem.node()
+            }
+            Self::Text(text) => {
+                text.node.clone().expect("expected text node").dyn_into::<Node>().expect("expected node")
+            }
+            Self::Component(_) => unimplemented!(),
+        }
+    }
+    fn set_node(&mut self, node: Node) {
+        match self {
+            Self::Element(elem) => {
+                elem.el = Some(node.dyn_into::<Element>().expect("expected element"));
+            }
+            Self::Text(text) => {
+                text.node = Some(node.dyn_into::<Text>().expect("expected text"));
+            }
+            Self::Component(_) => unimplemented!(),
+        }
+    }
+    fn to_node(&mut self, document: &Document) -> Node {
         match self {
             Self::Element(elem) => {
                 elem.to_node(document)
             }
             Self::Text(text) => {
-                document.create_text_node(&text).dyn_into::<Node>().unwrap()
+                let text_node = document.create_text_node(&text.text);
+                text.node = Some(text_node.clone());
+                text_node.dyn_into::<Node>().unwrap()
             }
             Self::Component(_) => unimplemented!(),
+        }
+    }
+    fn children_mut(&mut self) -> Option<&mut Vec<Self>> {
+        match self {
+            Self::Element(elem) => {
+                if !elem.children.is_empty() {
+                    Some(&mut elem.children)
+                } else {
+                    None
+                }
+            }
+            Self::Text(_) => {
+                unimplemented!();
+            }
+            Self::Component(comp) => {
+                Some(&mut comp.children)
+            }
         }
     }
 }
@@ -733,21 +837,30 @@ pub fn setup(callbacks: HashMap<String, CallbackData>) {
     });
 }
 
-pub fn rerender(rsx: Rsx) {
+pub fn rerender(mut rsx: Rsx) {
     CONTEXTS.with(|contexts| {
         let contexts = contexts.borrow();
         VNODE_MAP.with(|vnode_map| {
             let mut vnode_map = vnode_map.borrow_mut();
             NODE_ID.with(|node_id| {
-                DOCUMENT.with(|document| {
-                    let nodes = document.body().unwrap().child_nodes();
-                    check_vnodes(&nodes, &mut vnode_map);
-                    let vn_index = match contexts.get(&*node_id.borrow()).unwrap() {
-                        Ctx::R(s) => s,
-                    };
-                    let mut node = vnode_map.get(vn_index).unwrap().clone().next_sibling().unwrap();
-                    update(&rsx, &mut node);
-                    close_vnode(&document, &node);
+                let node_id = node_id.borrow();
+                let vn_index = match contexts.get(&*node_id).unwrap() {
+                    Ctx::R(s) => s,
+                };
+                VIRT_NODES.with(|virt_nodes| {
+                    let mut virt_nodes = virt_nodes.borrow_mut();
+                    if let Some(mut virt) = virt_nodes.remove(vn_index) {
+                        vupdate(&mut rsx, &mut virt);
+                    } else {
+                        DOCUMENT.with(|document| {
+                            let nodes = document.body().unwrap().child_nodes();
+                            check_vnodes(&nodes, &mut vnode_map);
+                            let mut node = vnode_map.get(vn_index).unwrap().clone().next_sibling().unwrap();
+                            update(&mut rsx, &mut node);
+                            close_vnode(&document, &node);
+                        });
+                    }
+                    virt_nodes.insert(vn_index.to_string(), rsx);
                 });
             });
         });
@@ -873,31 +986,51 @@ pub fn lexical_scope() -> Vec<ScopeVar> {
     v
 }
 
-fn update(rsx: &Rsx, node: &mut Node) {
+fn update(rsx: &mut Rsx, node: &mut Node) {
     match rsx {
         Rsx::Element(element) => {
             element.diff(node);
             if let Some(mut first_child) = node.first_child() {
-                check_siblings(&element.children, &mut first_child);
+                check_siblings(&mut element.children, &mut first_child);
             }
         }
         Rsx::Text(text) => {
-            set_content(node, &text);
+            set_content(node, text);
         }
         Rsx::Component(comp) => {
-            check_siblings(&comp.children, node);
+            check_siblings(&mut comp.children, node);
         }
     }
 }
 
-fn check_siblings(children: &Vec<Rsx>, node: &mut Node) {
-    let mut children = children.iter();
+fn vupdate(rsx: &mut Rsx, node: &mut Rsx) {
+    match rsx {
+        Rsx::Element(element) => {
+            element.vdiff(node);
+            vcheck_children(&mut element.children, node);
+        }
+        Rsx::Text(text) => {
+            if let Rsx::Text(t) = node {
+                if text.text == t.text {
+                    return;
+                }
+            }
+            vset_content(node, text);
+        }
+        Rsx::Component(comp) => {
+            vcheck_children(&mut comp.children, node);
+        }
+    }
+}
+
+fn check_siblings(children: &mut Vec<Rsx>, node: &mut Node) {
+    let mut children = children.iter_mut();
     let l = children.len();
     let mut n = 0;
 
     loop {
-        if let Some(child) = children.next() {
-            update(child, node);
+        if let Some(mut child) = children.next() {
+            update(&mut child, node);
             
             if let Some(sib) = node.next_sibling() {
                 if sib.node_type() == Node::COMMENT_NODE && sib.text_content().unwrap() == "/av" {
@@ -946,6 +1079,48 @@ fn check_siblings(children: &Vec<Rsx>, node: &mut Node) {
     }
 }
 
+fn vcheck_children(children: &mut Vec<Rsx>, node: &mut Rsx) {
+    let (m, mut node_children) = if let Some(node) = node.children_mut() {
+        (node.len(), node.iter_mut())
+    } else {
+        return;
+    };
+    let mut children = children.iter_mut();
+    let mut n = 0;
+
+    loop {
+        if let Some(mut child) = children.next() {
+            let mut node = node_children.next().unwrap();
+            vupdate(&mut child, &mut node);
+
+            if n + 1 == m {
+                while let Some(c) = children.next() {
+                    let next_sibling = {
+                        let sib = node.node();
+                        c.edit(&sib);
+                        sib.next_sibling().unwrap()
+                    };
+                    node.set_node(next_sibling);
+                }
+                return;
+            } 
+        } else {
+            if let Some(s) = node_children.next() {
+                let parent = s.parent_node().unwrap();
+                RECALLS.with(|r| {
+                    let mut recall = r.borrow_mut();
+                    remove_recall(&mut recall, &parent, &s.node());
+                    while let Some(sib) = node_children.next() {
+                        remove_recall(&mut recall, &parent, &sib.node());
+                    }
+                });
+            }
+            return;
+        }
+        n += 1;
+    }
+}
+
 fn remove_recall(recalls: &mut HashMap<String, RecallData>, parent: &Node, child: &Node) {
     if child.node_type() == Node::ELEMENT_NODE {
         let el = child.dyn_ref::<Element>().unwrap();
@@ -968,14 +1143,26 @@ fn replace_recall(recalls: &mut HashMap<String, RecallData>, parent: &Node, chil
     parent.replace_child(new, child).unwrap();
 }
 
-fn set_content(node: &mut Node, content: &str) {
-    let text = Text::new_with_data(content).unwrap();
+fn set_content(node: &mut Node, content: &mut Txt) {
+    let text = Text::new_with_data(&content.text).unwrap();
     let parent = node.parent_node().unwrap();
     RECALLS.with(|r| {
         let mut recall = r.borrow_mut();
+        content.node = Some(text.clone());
         let text_node = text.dyn_into::<Node>().unwrap();
         replace_recall(&mut recall, &parent, node, &text_node);
         *node = text_node;
+    });
+}
+
+fn vset_content(node: &mut Rsx, content: &mut Txt) {
+    let text = Text::new_with_data(&content.text).unwrap();
+    let parent = node.parent_node().unwrap();
+    RECALLS.with(|r| {
+        let mut recall = r.borrow_mut();
+        content.node = Some(text.clone());
+        let text_node = text.dyn_into::<Node>().unwrap();
+        replace_recall(&mut recall, &parent, &node.node(), &text_node);
     });
 }
 

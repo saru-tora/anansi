@@ -896,7 +896,7 @@ impl CompParser {
                 _ => txt.push(d),
             }
         }
-        view.push_str(&format!("_children.push(Rsx::Text(\"{}\".to_string()));", txt.trim()));
+        view.push_str(&format!("_children.push(Rsx::new_text(\"{}\".to_string()));", txt.trim()));
         view.push_str(&vw);
     }
     fn tag(&mut self, tags: &mut Vec<String>, view: &mut String, chars: &mut Chars) {
@@ -1278,11 +1278,11 @@ fn comp_var(extra: &str, s: &mut String, chars: &mut Chars, view: &mut String) {
         s.push_str(extra);
         let expr = custom_get_expr(chars, 1, 0);
         s.push_str(&expr);
-        view.push_str(&format!("_children.push(Rsx::Text(anansi_aux::html_escape(&format!(\"{{}}\", {}))));", s));
+        view.push_str(&format!("_children.push(Rsx::new_text(anansi_aux::html_escape(&format!(\"{{}}\", {}))));", s));
     } else {
         let var = collect_var(chars);
         s.push_str(&var);
-        view.push_str(&format!("_children.push(Rsx::Text(anansi_aux::html_escape(&format!(\"{{}}\", {}))));", s));
+        view.push_str(&format!("_children.push(Rsx::new_text(anansi_aux::html_escape(&format!(\"{{}}\", {}))));", s));
     }
 }
 

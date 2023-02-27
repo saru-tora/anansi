@@ -1,8 +1,10 @@
 use std::str;
+use std::fmt;
 use std::sync::Arc;
 use toml::Value::Table;
 use async_trait::async_trait;
 use tokio_postgres::types::ToSql;
+use moka::future::Cache;
 
 use crate::try_sql;
 use crate::server::Settings;
@@ -111,8 +113,68 @@ impl<'a> Iterator for PgDbRowIntoIter {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct PgDbPool(pub(in crate) Arc<tokio_postgres::Client>);
+#[derive(Clone)]
+pub struct PgStatement(tokio_postgres::Statement);
+
+impl PgStatement {
+    pub async fn new(query: &str, pool: &PgDbPool) -> Result<Self> {
+        let statement = pool.0.prepare(query).await?;
+        Ok(Self(statement))
+    }
+    pub async fn fetch_all(&self, params: &[&(dyn ToSql + Sync)], pool: &PgDbPool) -> Result<PgDbRowVec> {
+        Ok(PgDbRowVec {rows: pool.0.query(&self.0, params).await?})
+    }
+    pub async fn fetch_one(&self, params: &[&(dyn ToSql + Sync)], pool: &PgDbPool) -> Result<PgDbRow> {
+        Ok(PgDbRow {row: pool.0.query_one(&self.0, params).await?})
+    }
+    pub async fn execute(&self, params: &[&(dyn ToSql + Sync)], pool: &PgDbPool) -> Result<()> {
+        match pool.0.execute(&self.0, params).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! prep {
+    ($req:ident, $key:literal, $s:literal, $params:expr, $q:ident) => {
+        {
+            let opt = $req.raw().pool().1.get($key);
+            let stmt = if let Some(st) = opt {
+                st
+            } else {
+                let statement = std::sync::Arc::new(anansi::db::postgres::PgStatement::new($s, $req.raw().pool()).await?);
+                $req.raw().pool().1.insert($key.to_string(), statement.clone()).await;
+                statement
+            };
+            stmt.$q($params, $req.raw().pool()).await
+        }
+    };
+    ($req:ident, $key:expr, $s:expr, $params:expr, $q:ident) => {
+        {
+            let opt = $req.raw().pool().1.get(&$key).map(|s| s.clone());
+            let stmt = if let Some(st) = opt {
+                st
+            } else {
+                let statement = std::sync::Arc::new(anansi::db::postgres::PgStatement::new(&$s, $req.raw().pool()).await?);
+                $req.raw().pool().1.insert($key, statement.clone()).await;
+                statement
+            };
+            stmt.$q($params, $req.raw().pool()).await
+        }
+    };
+}
+
+#[derive(Clone)]
+pub struct PgDbPool(pub(in crate) Arc<tokio_postgres::Client>, pub Cache<String, Arc<PgStatement>>);
+
+impl fmt::Debug for PgDbPool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PgDbPool")
+         .field("0", &self.0)
+         .finish()
+    }
+}
 
 #[async_trait]
 impl DbPool for PgDbPool {
@@ -139,7 +201,7 @@ impl DbPool for PgDbPool {
                     p.execute("CREATE TABLE \"anansi_records\"(\n\t\"name\" text NOT NULL,\n\t\"schema\" text NOT NULL\n);", &[]).await?;
                     p.execute("CREATE TABLE \"anansi_migrations\"(\n\t\"id\" SERIAL PRIMARY KEY,\n\t\"app\" TEXT NOT NULL,\n\t\"name\" TEXT NOT NULL,\n\t\"applied\" TIMESTAMP NOT NULL\n);\n", &[]).await?;
                 }
-                Ok(Self(Arc::new(p)))
+                Ok(Self(Arc::new(p), Cache::new(100)))
             }
             Err(e) => {
                 Err(e)

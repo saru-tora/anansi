@@ -1,152 +1,42 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::time::{SystemTime, Duration, UNIX_EPOCH};
 use super::BaseCache;
 use crate::server::Settings;
 use crate::web::{Result, WebErrorKind};
 
-#[derive(Debug)]
-struct LocalValue {
-    index: usize,
-    expires: Option<usize>,
-}
-
-impl LocalValue {
-    fn new(index: usize, expires: Option<usize>) -> Self {
-        Self {index, expires}
-    }
-}
-
-#[derive(Debug)]
-struct Entry {
-    val: Vec<u8>,
-    prev: usize,
-    next: usize,
-}
+use moka::future::Cache;
 
 #[derive(Clone, Debug)]
-pub struct LocalCache(Arc<RwLock<Lru>>);
+pub struct LocalCache(MokaCache);
 
-#[derive(Debug)]
-struct Lru {
+#[derive(Clone, Debug)]
+struct MokaCache {
     default_timeout: Option<usize>,
-    length: usize,
-    head: usize,
-    tail: usize,
-    entries: Vec<Entry>,
-    storage: HashMap<String, LocalValue>,
+    cache: Cache<String, Vec<u8>>,
+    timeout: Cache<String, usize>,
 }
 
-impl Lru {
-    async fn set(&mut self, key: &str, value: &[u8]) -> Result<()> {
-        self.set_ex(key, value, self.default_timeout).await
+#[async_trait::async_trait]
+impl BaseCache for LocalCache {
+    async fn new(_settings: &Settings) -> Result<Self> where Self: Sized {
+        let default_timeout = Some(300);
+        let cache = Cache::new(10_000);
+        let timeout = Cache::new(10_000);
+        Ok(Self(MokaCache {default_timeout, cache, timeout} ))
     }
-    async fn set_ex(&mut self, key: &str, value: &[u8], timeout: Option<usize>) -> Result<()> {
-        let index = self.insert(value.to_vec());
-        let t = if let Some(to) = timeout {
-            Some(to + now())
-        } else {
-            None
-        };
-        let lv = LocalValue::new(index, t);
-        self.storage.insert(key.to_string(), lv);
-        Ok(())
+    async fn set(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.0.set(key, value).await
     }
-    async fn get(&mut self, key: &str) -> Result<Vec<u8>> {
-        let mut change = false;
-        let index = if let Some(lv) = self.storage.get(key) {
-            if let Some(t) = lv.expires {
-                let n = now();
-                if t >= n {
-                    change = true;
-                }
-                lv.index
-            } else {
-                return Err(WebErrorKind::NoCache.to_box());
-            }
-        } else {
-            return Err(WebErrorKind::NoCache.to_box());
-        };
-        if change {
-            self.touch(index);
-            let e = &self.entries[index];
-            return Ok(e.val.clone());
-        } else {
-            self.remove(index);
-            self.storage.remove(key);
-            return Err(WebErrorKind::NoCache.to_box());
-        }
+    async fn set_ex(&self, key: &str, value: &[u8], timeout: Option<usize>) -> Result<()> {
+        self.0.set_ex(key, value, timeout).await
     }
-    async fn get_many(&mut self, key: Vec<String>) -> Result<Vec<Vec<u8>>> {
-        let mut v = vec![];
-        for k in key {
-            v.push(self.get(&k).await?)
-        }
-        Ok(v)
+    async fn set_many<'a>(&self, items: &'a[(String, Vec<u8>)]) -> Result<()> {
+        self.0.set_many(items).await
     }
-    async fn set_many<'a>(&mut self, items: &'a[(String, Vec<u8>)]) -> Result<()> {
-        for (k, v) in items {
-            self.set(&k, &v).await?
-        }
-        Ok(())
+    async fn get(&self, key: &str) -> Result<Vec<u8>> {
+        self.0.get(key).await
     }
-    fn push_front(&mut self, index: usize) {
-        if self.entries.len() == 1 {
-            self.tail = index;
-        } else {
-            self.entries[index].next = self.head;
-            self.entries[self.head].prev = index;
-        }
-    }
-    fn pop_back(&mut self) -> usize {
-        let old_tail = self.tail;
-        let new_tail = self.entries[old_tail].prev;
-        self.tail = new_tail;
-        old_tail
-    }
-    fn remove(&mut self, index: usize) {
-        assert!(self.length > 0);
-
-        let prev = self.entries[index].prev;
-        let next = self.entries[index].next;
-
-        if index == self.head {
-            self.head = next;
-        } else {
-            self.entries[prev].next = next;
-        }
-
-        if index == self.tail {
-            self.tail = prev;
-        } else {
-            self.entries[next].prev = prev;
-        }
-
-        self.length -= 1;
-    }
-    fn touch(&mut self, index: usize) {
-        if index != self.head {
-            self.remove(index);
-            self.length += 1;
-            self.push_front(index);
-        }
-    }
-    fn insert(&mut self, val: Vec<u8>) -> usize {
-        let entry = Entry {val, prev: 0, next: 0};
-
-        let new_head = if self.length == self.entries.capacity() {
-            let last_index = self.pop_back();
-            self.entries[last_index] = entry;
-            last_index
-        } else {
-            self.entries.push(entry);
-            self.length += 1;
-            self.entries.len() - 1
-        };
-
-        self.push_front(new_head);
-        new_head
+    async fn get_many(&self, key: Vec<String>) -> Result<Vec<Vec<u8>>> {
+        self.0.get_many(key).await
     }
 }
 
@@ -154,25 +44,58 @@ fn now() -> usize {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as usize
 }
 
-#[async_trait::async_trait]
-impl BaseCache for LocalCache {
-    async fn new(_settings: &Settings) -> Result<Self> {
-        let default_timeout = Some(300);
-        Ok(Self {0: Arc::new(RwLock::new(Lru {default_timeout, length: 0, head: 0, tail: 0, entries: Vec::with_capacity(300), storage: HashMap::with_capacity(300)}))})
-    }
+impl MokaCache {
     async fn set(&self, key: &str, value: &[u8]) -> Result<()> {
-        self.0.write().await.set(key, value).await
-    }
-    async fn set_many<'a>(&self, items: &'a[(String, Vec<u8>)]) -> Result<()> {
-        self.0.write().await.set_many(items).await
+        match self.set_ex(key, value, self.default_timeout).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
     async fn set_ex(&self, key: &str, value: &[u8], timeout: Option<usize>) -> Result<()> {
-        self.0.write().await.set_ex(key, value, timeout).await
+        self.cache.insert(key.to_string(), value.to_vec()).await;
+        if let Some(t) = timeout {
+            let cache = self.cache.clone();
+            let to = self.timeout.clone();
+            let timestamp = now() + t;
+            self.timeout.insert(key.to_string(), timestamp).await;
+            let key = key.to_string();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(t as u64)).await;
+                if let Some(t) = to.get(&key) {
+                    if t == timestamp {
+                        cache.invalidate(&key).await;
+                        to.invalidate(&key).await;
+                    }
+                }
+            });
+        }
+        Ok(())
+    }
+    async fn set_many<'a>(&self, items: &'a[(String, Vec<u8>)]) -> Result<()> {
+        for (key, value) in items {
+            self.set(key, value).await?;
+        }
+        Ok(())
     }
     async fn get(&self, key: &str) -> Result<Vec<u8>> {
-        self.0.write().await.get(key).await
+        match self.cache.get(key) {
+            Some(r) => {
+                Ok(r)
+            }
+            None => {
+                Err(WebErrorKind::NoCache.to_box())
+            }
+        }
     }
-    async fn get_many(&self, key: Vec<String>) -> Result<Vec<Vec<u8>>> {
-        self.0.write().await.get_many(key).await
+    async fn get_many(&self, keys: Vec<String>) -> Result<Vec<Vec<u8>>> {
+        let mut v = vec![];
+        for key in keys {
+            if let Some(val) = self.cache.get(&key) {
+                v.push(val);
+            } else {
+                return Err(WebErrorKind::NoCache.to_box());
+            }
+        }
+        Ok(v)
     }
 }

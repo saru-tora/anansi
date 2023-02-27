@@ -1,6 +1,6 @@
 [package]
 name = "anansi-core"
-version = "0.13.2"
+version = "0.13.3"
 edition = "2021"
 authors = ["sarutora"]
 license = "MIT"
@@ -36,4 +36,5 @@ log = "0.4.0"
 env_logger = "0.9.0"
 chrono = { version = "0.4.23", features = ["serde"] }
 lettre = { version = "0.10", features = ["tokio1", "tokio1-native-tls"] }
+moka = { version = "0.10", features = ["future"] }
 redis = { version = "0.22.1", features = ["aio", "tokio-comp"], optional = true }
