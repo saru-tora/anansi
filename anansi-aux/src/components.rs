@@ -7,7 +7,7 @@ pub trait Component<'de> {
 }
 
 pub struct Pauser {
-    r: u32,
+    r: Vec<u32>,
     n: u32,
     ctx: Vec<String>,
     objs: Vec<String>,
@@ -16,15 +16,23 @@ pub struct Pauser {
 
 impl Pauser {
     pub fn new() -> Self {
-        Self {r: 0, n: 0, ctx: vec![], objs: vec![], subs: vec![]}
+        Self {r: vec![], n: 0, ctx: vec![], objs: vec![], subs: vec![]}
     }
     pub fn id(&self) -> u32 {
         self.n
     }
+    pub fn comp(&mut self) -> u32 {
+        self.r.push(self.n);
+        self.add()
+    }
+    pub fn uncomp(&mut self) {
+        self.r.pop();
+    }
     pub fn add(&mut self) -> u32 {
+        self.ctx.push(format!("\"{}\":{{\"R\":\"{}\"}}", self.n, self.r.last().unwrap()));
+        let n = self.n;
         self.n += 1;
-        self.ctx.push(format!("\"{}\":{{\"R\":\"{}\"}}", self.n, self.r));
-        self.n
+        n
     }
     pub fn push_obj(&mut self, v: String) {
         self.objs.push(v);

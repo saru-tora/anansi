@@ -9,7 +9,8 @@ use std::marker::PhantomData;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{Element, Node, NodeList, Document, Text, Window};
+use wasm_bindgen::closure::Closure;
+use web_sys::{Element, Node, NodeList, Document, Text, Window, Event};
 
 use serde_json::Value;
 use serde::{Serialize, Serializer, ser::SerializeSeq, Deserialize, de::DeserializeOwned};
@@ -23,7 +24,7 @@ pub mod prelude {
     pub use serde_json::Value;
     pub use serde::{Serialize, Deserialize};
     pub use anansi_macros::{store, Properties, component, function_component, refchild, release};
-    pub use super::{attributes, element, Rsx, Sub, Proxy, Comp, Elem, Attribute, CbCmd, Resource, Rendered, RefVec, RefChild, Signal};
+    pub use super::{attributes, element, document, Rsx, Sub, Proxy, Comp, Elem, Attribute, CbCmd, Resource, Rendered, RefVec, RefChild, Signal};
 }
 
 pub mod components;
@@ -42,13 +43,13 @@ thread_local! {
     pub static NODE_ID: RefCell<String> = RefCell::new(String::new());
     pub static IDS: RefCell<Vec<String>> = RefCell::new(vec![]);
     pub static RID: RefCell<usize> = RefCell::new(0);
-    pub static CONTEXTS: RefCell<HashMap<String, Ctx>> = RefCell::new(HashMap::new());
+    pub static CTX: RefCell<HashMap<String, Ctx>> = RefCell::new(HashMap::new());
     pub static REFS: RefCell<HashMap<usize, Vec<usize>>> = RefCell::new(HashMap::new());
     pub static COMP_RSX: RefCell<HashMap<CompId, Option<Rsx>>> = RefCell::new(HashMap::new());
     pub static VNODE_MAP: RefCell<HashMap<String, Node>> = RefCell::new(HashMap::new());
     pub static MOUNTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     pub static VIRT_NODES: RefCell<HashMap<String, Rsx>> = RefCell::new(HashMap::new());
-    pub static MAIN_RSX: RefCell<Option<Rsx>> = RefCell::new(None);
+    pub static EVENT_CB: RefCell<HashMap<&'static str, Closure<dyn Fn(Event)>>> = RefCell::new(HashMap::new());
 }
 
 #[derive(PartialEq, Eq, Hash, Debug)]
@@ -66,6 +67,13 @@ impl CompId {
     }
     pub fn n(&self) -> usize {
         self.n
+    }
+}
+
+#[macro_export]
+macro_rules! document {
+    ($e:expr) => {
+        anansi_aux::DOCUMENT.with($e)
     }
 }
 
@@ -88,6 +96,10 @@ macro_rules! main_separator {
 #[cfg(target_os = "windows")]
 macro_rules! main_separator {
     () => {r"\"}
+}
+
+pub fn box_closure<F: Fn(Event) + 'static>(closure: F) -> Box<dyn Fn(Event)> {
+    Box::new(closure)
 }
 
 pub fn load_style(url: &'static str) {
@@ -545,11 +557,11 @@ impl Elem {
             *node = new;
         });
     }
-    fn vdiff(&mut self, old: &mut Rsx) {
+    fn vcheck(&mut self, old: &mut Rsx) -> bool {
+        let mut same = true;
         if let Rsx::Element(el) = old {
             if self.name == el.name {
                 let l = self.attrs.len();
-                let mut same = true;
                 if l == el.attrs.len() {
                     for (attr, attribute) in self.attrs.iter().zip(el.attrs.iter()) {
                         if attr.key == attribute.key {
@@ -566,16 +578,34 @@ impl Elem {
                     same = false;
                 }
                 if same {
-                    self.el = el.el.take();
-                    return;
+                    self.el = el.el.clone();
                 }
+            } else {
+                same = false;
             }
+        }
+        same
+    }
+    fn vdiff(&mut self, old: &mut Rsx) {
+        if self.vcheck(old) {
+            return;
         }
         let parent = old.node().parent_node().unwrap();
         DOCUMENT.with(|document| {
             let new = self.to_node(&document);
 
             parent.insert_before(&new, Some(&old.node())).unwrap();
+        });
+    }
+    fn vlast(&mut self, old: &mut Rsx) {
+        if self.vcheck(old) {
+            return;
+        }
+        let parent = old.node().parent_node().unwrap();
+        DOCUMENT.with(|document| {
+            let new = self.to_node(&document);
+
+            parent.replace_child(&new, &old.node()).unwrap();
         });
     }
 }
@@ -838,7 +868,7 @@ pub fn setup(callbacks: HashMap<String, CallbackData>) {
 }
 
 pub fn rerender(mut rsx: Rsx) {
-    CONTEXTS.with(|contexts| {
+    CTX.with(|contexts| {
         let contexts = contexts.borrow();
         VNODE_MAP.with(|vnode_map| {
             let mut vnode_map = vnode_map.borrow_mut();
@@ -850,7 +880,7 @@ pub fn rerender(mut rsx: Rsx) {
                 VIRT_NODES.with(|virt_nodes| {
                     let mut virt_nodes = virt_nodes.borrow_mut();
                     if let Some(mut virt) = virt_nodes.remove(vn_index) {
-                        vupdate(&mut rsx, &mut virt);
+                        vupdate(&mut rsx, &mut virt, false);
                     } else {
                         DOCUMENT.with(|document| {
                             let nodes = document.body().unwrap().child_nodes();
@@ -888,7 +918,7 @@ pub fn recall(rid: &str) -> bool {
 
 fn check_mount(node_id: &str) -> bool {
     let mut b = true;
-    CONTEXTS.with(|contexts| {
+    CTX.with(|contexts| {
         let contexts = contexts.borrow();
         MOUNTED.with(|m| {
             let mounted = m.borrow();
@@ -922,7 +952,7 @@ pub fn call(callback: &str, node_id: &str) -> Result<(), JsValue> {
 
                 if check_mount(node_id) {
                     (cb.new)(node_id.to_string());
-                    CONTEXTS.with(|contexts| {
+                    CTX.with(|contexts| {
                         let contexts = contexts.borrow();
                         MOUNTED.with(|m| {
                             let mut mounted = m.borrow_mut();
@@ -986,12 +1016,22 @@ pub fn lexical_scope() -> Vec<ScopeVar> {
     v
 }
 
+fn add_children(children: &mut Vec<Rsx>, node: &Node) {
+    DOCUMENT.with(|document| {
+        for child in children {
+            node.append_child(&child.to_node(document)).expect("problem appending child");
+        }
+    });
+}
+
 fn update(rsx: &mut Rsx, node: &mut Node) {
     match rsx {
         Rsx::Element(element) => {
             element.diff(node);
             if let Some(mut first_child) = node.first_child() {
                 check_siblings(&mut element.children, &mut first_child);
+            } else if !element.children.is_empty() {
+                add_children(&mut element.children, node);
             }
         }
         Rsx::Text(text) => {
@@ -1003,10 +1043,14 @@ fn update(rsx: &mut Rsx, node: &mut Node) {
     }
 }
 
-fn vupdate(rsx: &mut Rsx, node: &mut Rsx) {
+fn vupdate(rsx: &mut Rsx, node: &mut Rsx, last: bool) {
     match rsx {
         Rsx::Element(element) => {
-            element.vdiff(node);
+            if !last {
+                element.vdiff(node);
+            } else {
+                element.vlast(node);
+            }
             vcheck_children(&mut element.children, node);
         }
         Rsx::Text(text) => {
@@ -1023,6 +1067,10 @@ fn vupdate(rsx: &mut Rsx, node: &mut Rsx) {
     }
 }
 
+fn avcheck(node: &Node) -> bool {
+    node.node_type() == Node::COMMENT_NODE && node.text_content().unwrap() == "/av"
+}
+
 fn check_siblings(children: &mut Vec<Rsx>, node: &mut Node) {
     let mut children = children.iter_mut();
     let l = children.len();
@@ -1033,7 +1081,7 @@ fn check_siblings(children: &mut Vec<Rsx>, node: &mut Node) {
             update(&mut child, node);
             
             if let Some(sib) = node.next_sibling() {
-                if sib.node_type() == Node::COMMENT_NODE && sib.text_content().unwrap() == "/av" {
+                if avcheck(&sib) {
                     while let Some(c) = children.next() {
                         c.edit(&node);
                         *node = node.next_sibling().unwrap();
@@ -1069,7 +1117,11 @@ fn check_siblings(children: &mut Vec<Rsx>, node: &mut Node) {
                     let mut recall = r.borrow_mut();
                     remove_recall(&mut recall, &parent, &s);
                     while let Some(sib) = node.next_sibling() {
-                        remove_recall(&mut recall, &parent, &sib);
+                        if !avcheck(&sib) {
+                            remove_recall(&mut recall, &parent, &sib);
+                        } else {
+                            return;
+                        }
                     }
                 });
             }
@@ -1083,39 +1135,48 @@ fn vcheck_children(children: &mut Vec<Rsx>, node: &mut Rsx) {
     let (m, mut node_children) = if let Some(node) = node.children_mut() {
         (node.len(), node.iter_mut())
     } else {
+        if !children.is_empty() {
+            add_children(children, &node.node());
+        }
         return;
     };
     let mut children = children.iter_mut();
     let mut n = 0;
+    let mut node = node_children.next().unwrap();
 
     loop {
         if let Some(mut child) = children.next() {
-            let mut node = node_children.next().unwrap();
-            vupdate(&mut child, &mut node);
+            let last = children.len() == 0;
+            vupdate(&mut child, &mut node, last);
 
             if n + 1 == m {
-                while let Some(c) = children.next() {
-                    let next_sibling = {
-                        let sib = node.node();
-                        c.edit(&sib);
-                        sib.next_sibling().unwrap()
-                    };
-                    node.set_node(next_sibling);
+                if children.len() > 0 {
+                    while let Some(c) = children.next() {
+                        let next_sibling = {
+                            let sib = node.node();
+                            c.edit(&sib);
+                            sib.next_sibling().unwrap()
+                        };
+                        node.set_node(next_sibling);
+                    }
                 }
                 return;
             } 
         } else {
-            if let Some(s) = node_children.next() {
-                let parent = s.parent_node().unwrap();
-                RECALLS.with(|r| {
-                    let mut recall = r.borrow_mut();
-                    remove_recall(&mut recall, &parent, &s.node());
-                    while let Some(sib) = node_children.next() {
-                        remove_recall(&mut recall, &parent, &sib.node());
-                    }
-                });
-            }
+            let parent = node.parent_node().unwrap();
+            RECALLS.with(|r| {
+                let mut recall = r.borrow_mut();
+                remove_recall(&mut recall, &parent, &node.node());
+                while let Some(sib) = node_children.next() {
+                    remove_recall(&mut recall, &parent, &sib.node());
+                }
+            });
             return;
+        }
+        if let Some(n) = node_children.next() {
+            node = n;
+        } else {
+            break;
         }
         n += 1;
     }

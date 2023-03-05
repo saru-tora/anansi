@@ -162,6 +162,7 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
     let mut comp_rsx_ids = vec![];
     let mut restart_comp_rsx_ids = vec![];
     let mut local = Local::new();
+    let mut events = vec![];
     if props != "_props" {
         local.insert(props.to_string(), properties.clone());
     }
@@ -384,10 +385,11 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
                     let (s, _) = s.rsplit_once('}').unwrap();
 
                     let lower = component.to_string().to_lowercase();
-                    let mut c_parser = CompParser {start: vec![], callbacks: vec![], rchildren: HashMap::new(), refs: comp_refs.clone(), in_resource: false, lower_comp: lower.clone(), in_block: false, in_element: false, res_types: resource_types.clone(), resource_calls: vec![], res_fn: vec![], selectors: selectors.clone(), comp_rsx_ids: vec![], restart_comp_rsx_ids: vec![], local: local.clone()};
+                    let mut c_parser = CompParser {start: vec![], events: vec![], callbacks: vec![], rchildren: HashMap::new(), refs: comp_refs.clone(), in_resource: false, lower_comp: lower.clone(), in_block: false, in_element: false, res_types: resource_types.clone(), resource_calls: vec![], res_fn: vec![], selectors: selectors.clone(), comp_rsx_ids: vec![], restart_comp_rsx_ids: vec![], local: local.clone()};
                     let c_parsed = c_parser.parse_rsx(&s);
                     comp_rsx_ids = c_parser.comp_rsx_ids;
                     restart_comp_rsx_ids = c_parser.restart_comp_rsx_ids;
+                    events = c_parser.events;
                     resource_calls.append(&mut c_parser.resource_calls);
                     res_fn.append(&mut c_parser.res_fn);
 
@@ -433,13 +435,26 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
                 anansi_aux::rerender(_rsx);
             }
         }
+    } else if !callbacks.is_empty() {
+        quote! {
+            fn #comp_set_render() {
+                let _rsx = #comp_render();
+                anansi_aux::rerender(_rsx);
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let ls = if !lexical_scope.is_empty() {
+        quote! { let mut _scope = anansi_aux::lexical_scope(); }
     } else {
         quote! {}
     };
 
     let qr = quote! {
         fn #comp_render() -> Rsx {
-            let mut _scope = anansi_aux::lexical_scope();
+            #ls
             #(#lexical_scope)*
             #rsx
         }
@@ -525,7 +540,18 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
         };
     }
     let c_init = if set_scope.is_empty() {
-        quote! {}
+        quote! {
+            anansi_aux::APP_STATE.with(|a| {
+                let mut app_state = a.borrow_mut();
+                if app_state.is_none() {
+                    let mut contexts = std::collections::HashMap::new();
+                    anansi_aux::DOCUMENT.with(|document| {
+                        *app_state = anansi_aux::get_state(&document, &mut contexts);
+                    });
+                    anansi_aux::CTX.with(|c| *c.borrow_mut() = contexts);
+                }
+            });
+        }
     } else {
         quote! {
             anansi_aux::APP_STATE.with(|a| {
@@ -537,7 +563,7 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
                     anansi_aux::DOCUMENT.with(|document| {
                         *app_state = anansi_aux::get_state(&document, &mut contexts);
                     });
-                    anansi_aux::CONTEXTS.with(|c| *c.borrow_mut() = contexts);
+                    anansi_aux::CTX.with(|c| *c.borrow_mut() = contexts);
                     app_state.as_mut().unwrap()
                 };
 
@@ -561,13 +587,42 @@ fn parse_component(split: &str, path: &PathBuf, fn_comp: bool) {
     } else {
         quote! {}
     };
+    let (ev, drp) = if events.is_empty() {
+        (quote! {}, quote! {})
+    } else {
+        let mut e = vec![];
+        let mut d = vec![];
+        for (q1, q2) in events {
+            e.push(q1);
+            d.push(q2);
+        }
+        (quote! {
+            anansi_aux::EVENT_CB.with(|ecb| {
+                let mut ecb = ecb.borrow_mut();
+                #(#e)*
+            })
+        }, 
+        quote! {
+            impl Drop for #component {
+                fn drop(&mut self) {
+                    anansi_aux::EVENT_CB.with(|ecb| {
+                        let mut ecb = ecb.borrow_mut();
+                        #(#d)*
+                    });
+                }
+            }
+        })
+    };
     let q = quote! {
         pub fn #comp_mount(_node_id: String) {
             #comp_rsx_init
             #c_init
             
             #use_styles
+            #ev
         }
+
+        #drp
         
         #(#callbacks)*
         #(#res_fn)*
@@ -674,6 +729,7 @@ struct CompParser {
     res_fn: Vec<TokenStream>,
     res_types: HashMap<String, TokenStream>,
     selectors: HashSet<String>,
+    events: Vec<(TokenStream, TokenStream)>,
 }
 
 pub fn collect_tag(chrs: &mut Chars) -> String {
@@ -710,11 +766,19 @@ impl CompParser {
                     match c {
                         '@' => {
                             let mut at = String::new();
+                            let mut paren = 0;
                             let mut bracket = 0;
                             while let Some(d) = chrs.next() {
                                 match d {
-                                    '>' => if bracket == 0 {
+                                    '>' => if bracket == 0 && paren == 0 {
                                         break
+                                    }
+                                    '(' => paren += 1,
+                                    ')' => {
+                                        paren -= 1;
+                                        if paren == 0 && bracket == 0 {
+                                            break;
+                                        }
                                     }
                                     '{' => bracket += 1,
                                     '}' => bracket -= 1,
@@ -725,17 +789,32 @@ impl CompParser {
                             if at.starts_with("onclick") {
                                 let (_, second) = at.split_once('(').unwrap();
                                 let mut schars = second.chars();
-                                let mut expr = custom_get_expr(&mut schars, 1, 0);
+                                let expr = custom_get_expr(&mut schars, 1, 0);
                                 let mut rchildren = vec![];
                                 if !expr.starts_with("callback!") {
-                                    expr.pop();
-                                    s.push_str(&format!("(\"on:click\".to_string(), format!(\"{}_{}[", self.lower_comp, expr));
-                                    let refs = self.refs.get(&expr).expect("could not get callback");
-                                    for n in refs {
-                                        s.push_str(&format!("{} ", n));
-                                    }
-                                    if !refs.is_empty() {
-                                        s.pop();
+                                    if syn::parse_str::<Ident>(&expr).is_ok() {
+                                        s.push_str(&format!("(\"on:click\".to_string(), format!(\"{}_{}[", self.lower_comp, expr));                                        let refs = self.refs.get(&expr).expect("could not get callback");
+                                        for n in refs {
+                                            s.push_str(&format!("{} ", n));
+                                        }
+                                        if !refs.is_empty() {
+                                            s.pop();
+                                        }
+                                    } else {
+                                        let name = format_ident!("{}_on_click_{}", self.lower_comp, self.callbacks.len());
+                                        s.push_str(&format!("(\"on:click\".to_string(), format!(\"{}[", name.to_string()));
+                                        let comp_set_render = format_ident!("{}_set_render", self.lower_comp);
+                                        let e = syn::parse_str::<syn::Expr>(&expr).expect("expected expr");
+                                        let q = quote! {
+                                            fn #name() {
+                                                #e;
+                                                #comp_set_render();
+                                            }
+                                        };
+                                        let ns = name.to_string();
+                                        let comp_mount = format_ident!("{}_mount", self.lower_comp);
+                                        self.start.push(quote! {(#ns, #comp_mount, #name)});
+                                        self.callbacks.push(q);
                                     }
                                 } else {
                                     let (_, rest) = expr.split_once("callback!(").expect("problem parsing callback");
@@ -797,10 +876,39 @@ impl CompParser {
                                     s.push_str(&format!(", {}.pos()", child));
                                 }
                                 s.push_str(")),");
+                            } else if at.starts_with("window:") {
+                                let (_, rest) = at.split_once("window:").unwrap();
+                                let (ty_, second) = rest.split_once('(').unwrap();
+                                let type_ = match ty_ {
+                                    "onclick" => "click",
+                                    _ => unimplemented!(),
+                                };
+                                let closure: syn::Expr = syn::parse_str(&second).unwrap();
+                                let key = format!("{}_{}", self.lower_comp, self.events.len());
+                                let q1 = quote! {
+                                    if !ecb.contains_key(#key) {
+                                        anansi_aux::WINDOW.with(|window| {
+                                            use wasm_bindgen::JsCast;
+                                            use wasm_bindgen::closure::Closure;
+                                            let cb = Closure::wrap(anansi_aux::box_closure(#closure));
+                                            window.add_event_listener_with_callback(#type_, cb.as_ref().unchecked_ref()).expect("problem adding event listener");
+                                            ecb.insert(#key, cb);
+                                        });
+                                    }
+                                };
+                                let q2 = quote! {
+                                    if let Some(cb) = ecb.remove(#key) {
+                                        anansi_aux::WINDOW.with(|window| {
+                                            use wasm_bindgen::JsCast;
+                                            window.remove_event_listener_with_callback(#type_, cb.as_ref().unchecked_ref()).expect("problem removing event listener");
+                                        });
+                                    }
+                                };
+                                self.events.push((q1, q2));
                             } else {
                                 unimplemented!();
                             }
-                            return s;
+                            continue;
                         }
                         '=' => {
                             break;
@@ -896,7 +1004,10 @@ impl CompParser {
                 _ => txt.push(d),
             }
         }
-        view.push_str(&format!("_children.push(Rsx::new_text(\"{}\".to_string()));", txt.trim()));
+        let trimmed = txt.trim();
+        if !trimmed.is_empty() {
+            view.push_str(&format!("_children.push(Rsx::new_text(\"{}\".to_string()));", trimmed));
+        }
         view.push_str(&vw);
     }
     fn tag(&mut self, tags: &mut Vec<String>, view: &mut String, chars: &mut Chars) {
@@ -1415,7 +1526,6 @@ client = []", VERSION).into_bytes());
 registerServiceWorker();
 
 let mod;
-const ids = new Map();
 
 document.addEventListener('click', (e) => {
   let paths = e.composedPath();
@@ -1429,22 +1539,18 @@ document.addEventListener('click', (e) => {
     if (attributes) {
       let onclick = attributes.getNamedItem('on:click');
       if (onclick) {
-        let aid = ids.get(onclick.value);
-        if (!aid) {
-          aid = attributes.getNamedItem('a:id');
-          ids.set(onclick.value, aid);
+        let rid = attributes.getNamedItem('rid');
+        if (rid) {
+          let called = mod.recall(rid.value);
+          if (called) {
+            return;
+          }
         }
-        if (onclick && aid) {
-          callback = onclick.value;
+        let aid = attributes.getNamedItem('a:id');
+        if (aid) {
           id = aid.value;
+          callback = onclick.value;
           break;
-        }
-      }
-      let rid = attributes.getNamedItem('rid');
-      if (rid) {
-        let called = mod.recall(rid.value);
-        if (called) {
-          return;
         }
       }
     }

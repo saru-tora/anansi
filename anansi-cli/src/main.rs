@@ -658,7 +658,7 @@ impl Parser {
             } else {
                 "anansi_aux::EmptyProp, &mut _p".to_string()
             };
-            view.push_str(&format!("\");_c.push_str(&format!(\"<!--av a:id={{}}-->\", _p.id()));_c.push_str(&<{} as anansi_aux::components::Component>::init({}));_c.push_str(\"<!--/av-->", name, prop));
+            view.push_str(&format!("\");_c.push_str(&format!(\"<!--av a:id={{}}-->\", _p.comp()));_c.push_str(&<{} as anansi_aux::components::Component>::init({}));_p.uncomp();_c.push_str(\"<!--/av-->", name, prop));
         }
     }
     fn extend(&mut self, chars: &mut Chars) -> String {
@@ -862,7 +862,7 @@ impl Parser {
             return;
         }
         while let Some(c) = chars.next() {
-            if c == ' ' || c == '<' || c == '\n' || c == '(' || c == '/' {
+            if c == ' ' || c == '<' || c == '\n' || c == '(' || c == '/' || c == ':' {
                 extra.push(c);
                 break;
             } else if c == '"' {
@@ -994,18 +994,30 @@ impl Parser {
                 return;
             }
             "onclick" => {
-                let (callback, _) = collect_name(chars);
+                let (callback, x) = collect_name(chars);
                 let mut rn = String::new();
                 let mut rchildren = vec![];
                 if callback != "callback!" {
-                    view.push_str(&format!("_c.push_str(&format!(\"on:click=\\\"{}_{}[", self.lower_comp, callback));
-                    let refs = self.refs.get(&callback).expect("could not get callback");
-                    for n in refs {
-                        rn.push_str(&format!("{} ", n));
-                    }
-                    if !rn.is_empty() {
-                        rn.pop();
-                        view.push_str(&rn);
+                    if syn::parse_str::<syn::Ident>(&callback).is_ok() {
+                        view.push_str(&format!("_c.push_str(&format!(\"on:click=\\\"{}_{}[", self.lower_comp, callback));
+                        let refs = self.refs.get(&callback).expect("could not get callback");
+                        for n in refs {
+                            rn.push_str(&format!("{} ", n));
+                        }
+                        if !rn.is_empty() {
+                            rn.pop();
+                            view.push_str(&rn);
+                        }
+                    } else {
+                        let mut n = 1;
+                        if x == '(' {
+                            n += 1;
+                        }
+                        custom_get_expr(chars, n, 0);
+                        let name = format!("{}_on_click_{}", self.lower_comp, self.ncallbacks);
+                        view.push_str(&format!("_c.push_str(&format!(\"on:click=\\\"{}[", name));
+                        self.ncallbacks += 1;
+                        self.depth -= 1;
                     }
                 } else {
                     let mut expr = custom_get_expr(chars, 2, 0);
@@ -1036,6 +1048,11 @@ impl Parser {
                     view.push_str(&format!(", {}.pos()", child));
                 }
                 view.push_str(", _p.add()));_c.push_str(\"");
+                return;
+            }
+            "window" => {
+                get_expr(chars);
+                view.push_str("_c.push_str(\"");
                 return;
             }
             _ => {

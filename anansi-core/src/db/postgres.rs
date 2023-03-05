@@ -1,6 +1,6 @@
 use std::str;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use toml::Value::Table;
 use async_trait::async_trait;
 use tokio_postgres::types::ToSql;
@@ -133,6 +133,14 @@ impl PgStatement {
             Err(e) => Err(Box::new(e)),
         }
     }
+    pub async fn raw_one(idx: usize, params: &[&(dyn ToSql + Sync)], pool: &PgDbPool) -> Result<PgDbRow> {
+        let s = pool.2.read().unwrap()[idx].clone();
+        s.fetch_one(params, pool).await
+    }
+    pub async fn raw_all(idx: usize, params: &[&(dyn ToSql + Sync)], pool: &PgDbPool) -> Result<PgDbRowVec> {
+        let s = pool.2.read().unwrap()[idx].clone();
+        s.fetch_all(params, pool).await
+    }
 }
 
 #[macro_export]
@@ -166,7 +174,7 @@ macro_rules! prep {
 }
 
 #[derive(Clone)]
-pub struct PgDbPool(pub(in crate) Arc<tokio_postgres::Client>, pub Cache<String, Arc<PgStatement>>);
+pub struct PgDbPool(pub(in crate) Arc<tokio_postgres::Client>, pub Cache<String, Arc<PgStatement>, ahash::RandomState>, pub Arc<RwLock<Vec<Arc<PgStatement>>>>);
 
 impl fmt::Debug for PgDbPool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -201,7 +209,7 @@ impl DbPool for PgDbPool {
                     p.execute("CREATE TABLE \"anansi_records\"(\n\t\"name\" text NOT NULL,\n\t\"schema\" text NOT NULL\n);", &[]).await?;
                     p.execute("CREATE TABLE \"anansi_migrations\"(\n\t\"id\" SERIAL PRIMARY KEY,\n\t\"app\" TEXT NOT NULL,\n\t\"name\" TEXT NOT NULL,\n\t\"applied\" TIMESTAMP NOT NULL\n);\n", &[]).await?;
                 }
-                Ok(Self(Arc::new(p), Cache::new(100)))
+                Ok(Self(Arc::new(p), Cache::builder().max_capacity(100).build_with_hasher(ahash::RandomState::default()), Arc::new(RwLock::new(vec![]))))
             }
             Err(e) => {
                 Err(e)

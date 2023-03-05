@@ -11,16 +11,16 @@ pub struct LocalCache(MokaCache);
 #[derive(Clone, Debug)]
 struct MokaCache {
     default_timeout: Option<usize>,
-    cache: Cache<String, Vec<u8>>,
-    timeout: Cache<String, usize>,
+    cache: Cache<String, Vec<u8>, ahash::RandomState>,
+    timeout: Cache<String, usize, ahash::RandomState>,
 }
 
 #[async_trait::async_trait]
 impl BaseCache for LocalCache {
     async fn new(_settings: &Settings) -> Result<Self> where Self: Sized {
         let default_timeout = Some(300);
-        let cache = Cache::new(10_000);
-        let timeout = Cache::new(10_000);
+        let cache = Cache::builder().max_capacity(10_000).build_with_hasher(ahash::RandomState::default());
+        let timeout = Cache::builder().max_capacity(10_000).build_with_hasher(ahash::RandomState::default());
         Ok(Self(MokaCache {default_timeout, cache, timeout} ))
     }
     async fn set(&self, key: &str, value: &[u8]) -> Result<()> {
