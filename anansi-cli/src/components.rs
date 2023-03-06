@@ -822,7 +822,6 @@ impl CompParser {
                                     s.push_str(&format!("(\"on:click\".to_string(), format!(\"{}[", name.to_string()));
                                     let mut processed = rest.to_string();
                                     processed.pop();
-                                    processed.pop();
                                     let callback: CallbackArgs = syn::parse_str(&processed).unwrap();
                                     let mut args = vec![];
                                     let mut rargs = vec![];

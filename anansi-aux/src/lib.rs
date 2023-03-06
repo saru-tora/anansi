@@ -583,6 +583,8 @@ impl Elem {
             } else {
                 same = false;
             }
+        } else {
+            same = false;
         }
         same
     }
@@ -594,7 +596,7 @@ impl Elem {
         DOCUMENT.with(|document| {
             let new = self.to_node(&document);
 
-            parent.insert_before(&new, Some(&old.node())).unwrap();
+            parent.replace_child(&new, &old.node()).unwrap();
         });
     }
     fn vlast(&mut self, old: &mut Rsx) {
@@ -623,6 +625,14 @@ pub struct Txt {
     node: Option<Text>,
 }
 
+impl Txt {
+    fn to_node(&mut self, document: &Document) -> Node {
+        let text_node = document.create_text_node(&self.text);
+        self.node = Some(text_node.clone());
+        text_node.dyn_into::<Node>().unwrap()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Rsx {
     Component(Comp),
@@ -645,7 +655,7 @@ impl Rsx {
                     add_sibling(node, &new);
                 }
                 Self::Text(text) => {
-                    let new = document.create_text_node(&text.text).dyn_into::<Node>().unwrap();
+                    let new = text.to_node(&document);
                     add_sibling(node, &new);
                 }
                 Self::Component(_) => unimplemented!(),
@@ -658,7 +668,11 @@ impl Rsx {
                 elem.el.as_ref().expect("expected element").parent_node()
             }
             Self::Text(text) => {
-                text.node.clone().expect("expected text node").parent_node()
+                if let Some(node) = text.node.clone() {
+                    node.parent_node()
+                } else {
+                    panic!("expected node for text: {}", text.text)
+                }
             }
             Self::Component(_) => unimplemented!(),
         }
@@ -691,9 +705,7 @@ impl Rsx {
                 elem.to_node(document)
             }
             Self::Text(text) => {
-                let text_node = document.create_text_node(&text.text);
-                text.node = Some(text_node.clone());
-                text_node.dyn_into::<Node>().unwrap()
+                text.to_node(document)
             }
             Self::Component(_) => unimplemented!(),
         }
@@ -1056,6 +1068,7 @@ fn vupdate(rsx: &mut Rsx, node: &mut Rsx, last: bool) {
         Rsx::Text(text) => {
             if let Rsx::Text(t) = node {
                 if text.text == t.text {
+                    text.node = t.node.clone();
                     return;
                 }
             }
