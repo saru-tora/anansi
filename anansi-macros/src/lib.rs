@@ -46,14 +46,35 @@ pub fn min_main(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             pub use anansi::site::Site;
         }
 
-        #[tokio::main]
-        async fn main() {
+        async fn serve(last: bool) {
             use server_prelude::*;
 
             let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
-            if let Some(#server) = anansi::server::Server::new(APP_STATICS, None, app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations).await {
+            if let Some(#server) = anansi::server::Server::new(APP_STATICS, None, app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, last).await {
                 #init
-                #server.run().await
+                #server.run().await;
+            }
+        }
+
+        fn main() {
+            anansi::server::init_logger();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let mut handles = vec![];
+            for _ in 1..std::thread::available_parallelism().map(|n| n.get()).unwrap_or(16) {
+                handles.push(std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    rt.block_on(serve(false));
+                }));
+            }
+            rt.block_on(serve(true));
+            for handle in handles{
+                handle.join().unwrap();
             }
         }
 
@@ -1310,6 +1331,24 @@ pub fn wasm_statics(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         ]
     };
     names.into()
+}
+
+#[proc_macro]
+pub fn raw_middleware(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as SchemaArgs);
+    let _vars = input.vars;
+
+    let args = quote! {<anansi::web::SecurityHeaders<anansi::web::ViewService> as Service<B>>::init(vs, settings).await};
+    let retval = quote! {anansi::web::SecurityHeaders<anansi::web::ViewService>};
+
+    let q = quote! {
+        pub fn app_services<B: anansi::web::BaseRequest>(settings: &anansi::server::Settings) -> std::pin::Pin<Box<dyn std::future::Future<Output = #retval> + Send + '_>> {
+            use anansi::web::Service;
+            let vs = anansi::web::ViewService;
+            Box::pin(async {#args})
+        }
+    }.into();
+    q
 }
 
 #[proc_macro]

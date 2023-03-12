@@ -1,6 +1,7 @@
 use std::str;
 use std::fmt;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use std::slice::Iter;
 use toml::Value::Table;
 use async_trait::async_trait;
 use tokio_postgres::types::ToSql;
@@ -40,6 +41,18 @@ impl<'q> PgQuery<'q> {
 
 pub struct PgDbRow {
     row: tokio_postgres::row::Row,
+}
+
+impl PgDbRow {
+    pub fn get_i32(&self, index: usize) -> i32 {
+        self.row.get(index)
+    }
+    pub fn get_i64(&self, index: usize) -> i64 {
+        self.row.get(index)
+    }
+    pub fn get_string(&self, index: usize) -> String {
+        self.row.get(index)
+    }
 }
 
 impl DbRow for PgDbRow {
@@ -88,6 +101,15 @@ impl DbRowVec for PgDbRowVec {
     }
 }
 
+impl PgDbRowVec {
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+    pub fn iter(&self) -> Iter<'_, tokio_postgres::Row> {
+        self.rows.iter()
+    }
+}
+
 impl IntoIterator for PgDbRowVec {
     type Item = PgDbRow;
     type IntoIter = PgDbRowIntoIter;
@@ -133,14 +155,6 @@ impl PgStatement {
             Err(e) => Err(Box::new(e)),
         }
     }
-    pub async fn raw_one(idx: usize, params: &[&(dyn ToSql + Sync)], pool: &PgDbPool) -> Result<PgDbRow> {
-        let s = pool.2.read().unwrap()[idx].clone();
-        s.fetch_one(params, pool).await
-    }
-    pub async fn raw_all(idx: usize, params: &[&(dyn ToSql + Sync)], pool: &PgDbPool) -> Result<PgDbRowVec> {
-        let s = pool.2.read().unwrap()[idx].clone();
-        s.fetch_all(params, pool).await
-    }
 }
 
 #[macro_export]
@@ -174,7 +188,7 @@ macro_rules! prep {
 }
 
 #[derive(Clone)]
-pub struct PgDbPool(pub(in crate) Arc<tokio_postgres::Client>, pub Cache<String, Arc<PgStatement>, ahash::RandomState>, pub Arc<RwLock<Vec<Arc<PgStatement>>>>);
+pub struct PgDbPool(pub(in crate) Arc<tokio_postgres::Client>, pub Cache<String, Arc<PgStatement>, ahash::RandomState>);
 
 impl fmt::Debug for PgDbPool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -209,7 +223,7 @@ impl DbPool for PgDbPool {
                     p.execute("CREATE TABLE \"anansi_records\"(\n\t\"name\" text NOT NULL,\n\t\"schema\" text NOT NULL\n);", &[]).await?;
                     p.execute("CREATE TABLE \"anansi_migrations\"(\n\t\"id\" SERIAL PRIMARY KEY,\n\t\"app\" TEXT NOT NULL,\n\t\"name\" TEXT NOT NULL,\n\t\"applied\" TIMESTAMP NOT NULL\n);\n", &[]).await?;
                 }
-                Ok(Self(Arc::new(p), Cache::builder().max_capacity(100).build_with_hasher(ahash::RandomState::default()), Arc::new(RwLock::new(vec![]))))
+                Ok(Self(Arc::new(p), Cache::builder().max_capacity(100).build_with_hasher(ahash::RandomState::default())))
             }
             Err(e) => {
                 Err(e)

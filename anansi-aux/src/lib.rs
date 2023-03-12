@@ -268,6 +268,13 @@ impl<T: RefChild> RefVec<T> {
         self.0.clear();
     }
     pub fn swap(&mut self, a: usize, b: usize) {
+        {
+            let mut first = self.0[a].borrow_mut();
+            let mut second = self.0[b].borrow_mut();
+            let p = first.pos();
+            *first.pos_mut() = second.pos();
+            *second.pos_mut() = p;
+        }
         self.0.swap(a, b);
     }
     pub fn remove(&mut self, index: usize) -> Rc<RefCell<T>> {
@@ -498,7 +505,7 @@ impl Elem {
             }
         }
         for child in &mut self.children {
-            el.append_child(&child.to_node(document)).unwrap();
+            child.attach_to_element(&el, document);
         }
         self.el = Some(el.clone());
         el.dyn_into::<Node>().unwrap()
@@ -557,38 +564,49 @@ impl Elem {
             *node = new;
         });
     }
-    fn vcheck(&mut self, old: &mut Rsx) -> bool {
-        let mut same = true;
+    fn vcheck(&mut self, old: &Rsx) -> bool {
         if let Rsx::Element(el) = old {
             if self.name == el.name {
-                let l = self.attrs.len();
-                if l == el.attrs.len() {
-                    for (attr, attribute) in self.attrs.iter().zip(el.attrs.iter()) {
-                        if attr.key == attribute.key {
-                            if attribute.value != attr.value {
-                                same = false;
-                                break;
-                            }
-                        } else {
-                            same = false;
-                            break;
-                        }
+                self.el = el.el.clone();
+                Self::echeck(&el.el.as_ref().unwrap(), &self.attrs, &el.attrs);
+                return true;
+            }
+        }
+        false
+    }
+    fn echeck(node: &Element, attrs: &[Attribute], attrs2: &[Attribute]) {
+        let mut attrs = attrs.iter();
+        let mut attrs2 = attrs2.iter();
+        while let Some(attr) = attrs.next() {
+            if let Some(attr2) = attrs2.next() {
+                if attr.key == attr2.key {
+                    if attr.value == attr2.value {
+                        continue;
                     }
                 } else {
-                    same = false;
+                    node.remove_attribute(&attr.key).unwrap();
                 }
-                if same {
-                    self.el = el.el.clone();
-                }
+                node.set_attribute(&attr.key, &attr.value).unwrap();
             } else {
-                same = false;
+                while let Some(attr) = attrs.next() {
+                    node.set_attribute(&attr.key, &attr.value).unwrap();
+                }
+                return;
             }
-        } else {
-            same = false;
         }
-        same
+        if let Some(attr2) = attrs2.next() {
+            node.remove_attribute(&attr2.key).unwrap();
+            while let Some(attr) = attrs.next() {
+                node.remove_attribute(&attr.key).unwrap();
+            }
+        }
     }
-    fn vdiff(&mut self, old: &mut Rsx) {
+    fn kdiff(&mut self, old: &Elem) {
+        self.el = old.el.clone();
+        Self::echeck(old.el.as_ref().unwrap(), &self.attrs[1..], &old.attrs[1..]);
+        vcheck_both(&mut self.children, &old.children);
+    }
+    fn vdiff(&mut self, old: &Rsx) {
         if self.vcheck(old) {
             return;
         }
@@ -599,7 +617,7 @@ impl Elem {
             parent.replace_child(&new, &old.node()).unwrap();
         });
     }
-    fn vlast(&mut self, old: &mut Rsx) {
+    fn vlast(&mut self, old: &Rsx) {
         if self.vcheck(old) {
             return;
         }
@@ -634,18 +652,158 @@ impl Txt {
 }
 
 #[derive(Debug, Clone)]
+pub struct Keys {
+    parent: Option<Node>,
+    children: Vec<Rsx>,
+}
+
+impl Keys {
+    fn kcheck(&mut self, k: &Self) {
+        self.parent = k.parent.clone();
+        let parent = self.parent.clone().expect("expected parent");
+        let mut children = self.children.iter_mut().map(|c| if let Rsx::Element(e) = c {e} else {unimplemented!()});
+        let mut children2 = k.children.iter().map(|c| if let Rsx::Element(e) = c {e} else {unimplemented!()});
+        let mut c1 = if let Some(c) = children.next() {
+            c
+        } else {
+            while let Some(child) = children2.next() {
+                parent.remove_child(&child.node()).unwrap();
+            }
+            return;
+        };
+        DOCUMENT.with(|doc| {
+            let mut c2 = if let Some(c) = children2.next() {
+                c
+            } else {
+                parent.append_child(&c1.to_node(&doc)).unwrap();
+                while let Some(child) = children.next() {
+                    parent.append_child(&child.to_node(&doc)).unwrap();
+                }
+                return;
+            };
+            let mut old = HashMap::new();
+
+            loop {
+                let k2 = &c2.attrs[0].value;
+                if c1.attrs[0].value == c2.attrs[0].value {
+                    c1.kdiff(c2);
+                    if let Some(c) = children.next() {
+                        c1 = c;
+                        if let Some(c) = children2.next() {
+                            c2 = c;
+                            continue;
+                        } else {
+                            parent.append_child(&c1.to_node(&doc)).unwrap();
+                            while let Some(child) = children.next() {
+                                parent.append_child(&child.to_node(&doc)).unwrap();
+                            }
+                            return;
+                        }
+                    } else {
+                        while let Some(child) = children2.next() {
+                            parent.remove_child(&child.node()).unwrap();
+                        }
+                        return;
+                    }
+                } else {
+                    let b;
+                    if let Some((child, n)) = old.remove(k2) {
+                        c1.kdiff(child);
+                        let node = parent.child_nodes().get(n).unwrap();
+                        parent.insert_before(&c1.node(), Some(&node)).unwrap();
+                    } else {
+                        let mut n = 0;
+                        for c in k.children.iter().map(|c| c.as_elem()) {
+                            let k = &c.attrs[0].value;
+                            if &c1.attrs[0].value == k {
+                                c1.kdiff(c);
+                                old.insert(c1.attrs[0].value.to_string(), (c2, n));
+                                let child = c.node();
+                                let other = c2.node();
+                                parent.replace_child(&child, &other).unwrap();
+                                break;
+                            }
+                            n += 1;
+                        }
+                        if n == k.children.len() as u32 {
+                            parent.replace_child(&c1.to_node(doc), &c2.node()).unwrap();
+                        }
+                    }
+                    if let Some(c) = children.next() {
+                        c1 = c;
+                        if let Some(c) = children2.next() {
+                            c2 = c;
+                            b = true;
+                        } else {
+                            parent.append_child(&c1.to_node(&doc)).unwrap();
+                            while let Some(child) = children.next() {
+                                parent.append_child(&child.to_node(&doc)).unwrap();
+                            }
+                            return;
+                        }
+                    } else {
+                        while let Some(child) = children2.next() {
+                            parent.remove_child(&child.node()).unwrap();
+                        }
+                        return;
+                    }
+                    if b {
+                        continue;
+                    }
+                    parent.insert_before(&c1.to_node(&doc), Some(&c2.node())).unwrap();
+                    if let Some(c) = children.next() {
+                        c1 = c;
+                        continue;
+                    }
+                    while let Some(child) = children2.next() {
+                        parent.remove_child(&child.node()).unwrap();
+                    }
+                }
+            }
+        });
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Rsx {
     Component(Comp),
     Element(Elem),
     Text(Txt),
+    Keyed(Keys),
 }
 
 impl Rsx {
     pub fn component() -> Self {
         Rsx::Component(Comp {children: vec![]})
     }
+    pub fn as_elem(&self) -> &Elem {
+        if let Rsx::Element(e) = self {
+            e
+        } else {
+            unimplemented!();
+        }
+    }
     pub fn new_text(text: String) -> Self {
         Rsx::Text(Txt {text, node: None})
+    }
+    pub fn new_keyed(children: Vec<Rsx>) -> Self {
+        Rsx::Keyed(Keys {parent: None, children})
+    }
+    fn attach_to_element(&mut self, el: &Element, document: &Document) {
+        match self {
+            Self::Element(elem) => {
+                el.append_child(&elem.to_node(document)).unwrap();
+            }
+            Self::Text(text) => {
+                el.append_child(&text.to_node(document)).unwrap();
+            }
+            Self::Component(_) => unimplemented!(),
+            Self::Keyed(keyed) => {
+                for child in &mut keyed.children {
+                    el.append_child(&child.to_node(document)).unwrap();
+                }
+            }
+        }
     }
     fn edit(&mut self, node: &Node) {
         DOCUMENT.with(|document| {
@@ -659,10 +817,11 @@ impl Rsx {
                     add_sibling(node, &new);
                 }
                 Self::Component(_) => unimplemented!(),
+                Self::Keyed(_) => unimplemented!(),
             }
         });
     }
-    fn parent_node(&mut self) -> Option<Node> {
+    fn parent_node(&self) -> Option<Node> {
         match self {
             Self::Element(elem) => {
                 elem.el.as_ref().expect("expected element").parent_node()
@@ -675,6 +834,7 @@ impl Rsx {
                 }
             }
             Self::Component(_) => unimplemented!(),
+            Self::Keyed(_) => unimplemented!(),
         }
     }
     fn node(&self) -> Node {
@@ -686,17 +846,7 @@ impl Rsx {
                 text.node.clone().expect("expected text node").dyn_into::<Node>().expect("expected node")
             }
             Self::Component(_) => unimplemented!(),
-        }
-    }
-    fn set_node(&mut self, node: Node) {
-        match self {
-            Self::Element(elem) => {
-                elem.el = Some(node.dyn_into::<Element>().expect("expected element"));
-            }
-            Self::Text(text) => {
-                text.node = Some(node.dyn_into::<Text>().expect("expected text"));
-            }
-            Self::Component(_) => unimplemented!(),
+            Self::Keyed(_) => unimplemented!(),
         }
     }
     fn to_node(&mut self, document: &Document) -> Node {
@@ -708,13 +858,14 @@ impl Rsx {
                 text.to_node(document)
             }
             Self::Component(_) => unimplemented!(),
+            Self::Keyed(_) => unimplemented!(),
         }
     }
-    fn children_mut(&mut self) -> Option<&mut Vec<Self>> {
+    fn children(&self) -> Option<&Vec<Self>> {
         match self {
             Self::Element(elem) => {
                 if !elem.children.is_empty() {
-                    Some(&mut elem.children)
+                    Some(&elem.children)
                 } else {
                     None
                 }
@@ -723,7 +874,10 @@ impl Rsx {
                 unimplemented!();
             }
             Self::Component(comp) => {
-                Some(&mut comp.children)
+                Some(&comp.children)
+            }
+            Self::Keyed(keyed) => {
+                Some(&keyed.children)
             }
         }
     }
@@ -891,8 +1045,8 @@ pub fn rerender(mut rsx: Rsx) {
                 };
                 VIRT_NODES.with(|virt_nodes| {
                     let mut virt_nodes = virt_nodes.borrow_mut();
-                    if let Some(mut virt) = virt_nodes.remove(vn_index) {
-                        vupdate(&mut rsx, &mut virt, false);
+                    if let Some(virt) = virt_nodes.remove(vn_index) {
+                        vupdate(&mut rsx, &virt, false);
                     } else {
                         DOCUMENT.with(|document| {
                             let nodes = document.body().unwrap().child_nodes();
@@ -1052,10 +1206,14 @@ fn update(rsx: &mut Rsx, node: &mut Node) {
         Rsx::Component(comp) => {
             check_siblings(&mut comp.children, node);
         }
+        Rsx::Keyed(key) => {
+            key.parent = node.parent_node();
+            check_siblings(&mut key.children, node);
+        }
     }
 }
 
-fn vupdate(rsx: &mut Rsx, node: &mut Rsx, last: bool) {
+fn vupdate(rsx: &mut Rsx, node: &Rsx, last: bool) {
     match rsx {
         Rsx::Element(element) => {
             if !last {
@@ -1067,15 +1225,24 @@ fn vupdate(rsx: &mut Rsx, node: &mut Rsx, last: bool) {
         }
         Rsx::Text(text) => {
             if let Rsx::Text(t) = node {
+                text.node = t.node.clone();
                 if text.text == t.text {
-                    text.node = t.node.clone();
                     return;
+                } else {
+                    text.node.as_ref().unwrap().set_data(&text.text);
                 }
             }
             vset_content(node, text);
         }
         Rsx::Component(comp) => {
             vcheck_children(&mut comp.children, node);
+        }
+        Rsx::Keyed(keyed) => {
+            if let Rsx::Keyed(k) = node {
+                keyed.kcheck(k);
+            } else {
+                unimplemented!();
+            }
         }
     }
 }
@@ -1144,15 +1311,20 @@ fn check_siblings(children: &mut Vec<Rsx>, node: &mut Node) {
     }
 }
 
-fn vcheck_children(children: &mut Vec<Rsx>, node: &mut Rsx) {
-    let (m, mut node_children) = if let Some(node) = node.children_mut() {
-        (node.len(), node.iter_mut())
+fn vcheck_children(children: &mut Vec<Rsx>, node: &Rsx) {
+    if let Some(node) = node.children() {
+        vcheck_both(children, node);
     } else {
         if !children.is_empty() {
             add_children(children, &node.node());
         }
         return;
-    };
+    }
+}
+
+fn vcheck_both(children: &mut Vec<Rsx>, node: &Vec<Rsx>) {
+    let m = node.len();
+    let mut node_children = node.iter();
     let mut children = children.iter_mut();
     let mut n = 0;
     let mut node = node_children.next().unwrap();
@@ -1160,17 +1332,17 @@ fn vcheck_children(children: &mut Vec<Rsx>, node: &mut Rsx) {
     loop {
         if let Some(mut child) = children.next() {
             let last = children.len() == 0;
-            vupdate(&mut child, &mut node, last);
+            vupdate(&mut child, &node, last);
 
             if n + 1 == m {
                 if children.len() > 0 {
+                    let mut sib = node.node();
                     while let Some(c) = children.next() {
                         let next_sibling = {
-                            let sib = node.node();
                             c.edit(&sib);
                             sib.next_sibling().unwrap()
                         };
-                        node.set_node(next_sibling);
+                        sib = next_sibling;
                     }
                 }
                 return;
@@ -1229,7 +1401,7 @@ fn set_content(node: &mut Node, content: &mut Txt) {
     });
 }
 
-fn vset_content(node: &mut Rsx, content: &mut Txt) {
+fn vset_content(node: &Rsx, content: &mut Txt) {
     let text = Text::new_with_data(&content.text).unwrap();
     let parent = node.parent_node().unwrap();
     RECALLS.with(|r| {

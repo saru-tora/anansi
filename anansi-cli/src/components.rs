@@ -953,7 +953,21 @@ impl CompParser {
                     }
                     s.push_str(&format!("(\"{name}\".to_string(), {u}.to_string()),"));
                 } else {
-                    unimplemented!();
+                    let mut t = String::new();
+                    let mut p = 0;
+                    chrs.next();
+                    while let Some(d) = chrs.next() {
+                        t.push(d);
+                        if d == '(' {
+                            p += 1;
+                        } else if d == ')' {
+                            p -= 1;
+                            if p == 0 {
+                                break;
+                            }
+                        }
+                    }
+                    s.push_str(&format!("(\"{name}\".to_string(), anansi_aux::html_escape(&format!(\"{{}}\", {}))),", t));
                 }
             }
         }
@@ -1082,25 +1096,28 @@ impl CompParser {
             view.push_str("_children}));");
         }
     }
+    fn var(&mut self, chars: &mut Chars, s: &mut String) {
+        let mut p = 0;
+        while let Some(d) = chars.next() {
+            if d == '(' {
+                p += 1;
+            } else if d == ')' {
+                if p == 0 {
+                    break;
+                } else {
+                    p -= 1;
+                }
+            }
+            s.push(d);
+        }
+    }
     fn at(&mut self, view: &mut String, chars: &mut Chars) {
         let mut s = String::new();
         let mut extra = String::new();
         if let Some(c) = chars.next() {
             match c {
                 '(' => {
-                    let mut p = 0;
-                    while let Some(d) = chars.next() {
-                        if d == '(' {
-                            p += 1;
-                        } else if d == ')' {
-                            if p == 0 {
-                                break;
-                            } else {
-                                p -= 1;
-                            }
-                        }
-                        s.push(d);
-                    }
+                    self.var(chars, &mut s);
                     view.push_str(&format!("_c.push_str(&anansi_aux::html_escape(&format!(\"{{}}\", {})));_c.push_str(\"", s));
                     return;
                 }
@@ -1167,6 +1184,26 @@ impl CompParser {
                 let blk = collect(chars, '}');
                 view.push_str(&self.process(&blk));
                 view.push_str("));");
+                return;
+            }
+            "keyed" => {
+                let key = collect(chars, '{');
+                
+                let (val, iter) = key.split_once(" in ").unwrap();
+                let container = if let Some((container, _)) = iter.split_once('.') {
+                    container.trim().to_string()
+                } else {
+                    iter.trim().to_string()
+                };
+                if let Some((ty, n)) = self.local.get(&container) {
+                    self.rchildren.insert(val.trim().to_string(), (ty.clone(), *n));
+                }
+                let mut c = custom_get_expr(chars, 0, 1);
+                c.pop();
+                let processed = self.process(&c);
+                let (_, processed) = processed.split_once("_children.push(").unwrap();
+                let (processed, _) = processed.rsplit_once(");").unwrap();
+                view.push_str(&format!("_children.push(anansi_aux::Rsx::new_keyed({{let mut _keys = vec![]; for {val} in {iter} {{_keys.push({processed})}} _keys }}));"));
                 return;
             }
             "resource" => {

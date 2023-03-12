@@ -879,6 +879,23 @@ impl Parser {
             "for" => {}
             "loop" => {}
             "while" => {}
+            "keyed" => {
+                let key = collect(chars, '{');
+                let (val, iter) = key.split_once(" in ").unwrap();
+                let container = if let Some((container, _)) = iter.split_once('.') {
+                    container.trim().to_string()
+                } else {
+                    iter.trim().to_string()
+                };
+                if let Some((ty, n)) = self.local.get(&container) {
+                   self.rchildren.insert(val.trim().to_string(), (ty.clone(), *n, self.depth));
+                }
+                let mut c = custom_get_expr(chars, 0, 1);
+                c.pop();
+                let processed = self.process(&c);
+                view.push_str(&format!("for {val} in {iter} {{{processed}}}_c.push_str(\""));
+                return;
+            }
             "block" => {
                 let (name, ex) = collect_name(chars);
                 self.blocks.push(name.clone());

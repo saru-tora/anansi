@@ -42,7 +42,7 @@ use crate::web::{Result, route_path};
 #[cfg(not(feature = "minimal"))]
 use crate::router::get_capture;
 
-pub static MAX_CONNECTIONS: usize = 10_000_000;
+pub static MAX_CONNECTIONS: usize = 1_000_000;
 
 pub type Settings = Map<String, Value>;
 
@@ -67,6 +67,7 @@ macro_rules! main {
         async fn main() {
             use server_prelude::*;
 
+            anansi::server::init_logger();
             let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
             let site = Arc::new(Mutex::new(anansi::util::admin::site::BasicAdminSite::new()));
             if let Some(server) = anansi::server::Server::new(APP_STATICS, APP_ADMINS, None, app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, cmd::admin, site).await {
@@ -149,6 +150,10 @@ async fn get_pool<D: DbPool>(not_test: bool, settings: &Settings, migrations: fn
 
 pub type AdminInits<B> = &'static [fn(AdminRef<B>)];
 
+pub fn init_logger() {
+    env_logger::Builder::from_env(Env::default().default_filter_or("anansi_core")).init();
+}
+
 #[cfg(not(feature = "minimal"))]
 impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache + 'static, D: DbPool + 'static, S: Service<B> + 'static> Server<B, C, D, S> {
     pub async fn new(
@@ -165,8 +170,6 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         site: AdminRef<B>) -> Option<Self>
         where <<D as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow
     {
-        env_logger::Builder::from_env(Env::default().default_filter_or("anansi_core")).init();
-
         let args: Vec<String> = env::args().collect();
 
         let mut ip = None;
@@ -270,7 +273,6 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         let sem = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let timer = Arc::new(RwLock::new(DateTime::now().to_gmt()));
 
-        println!("Server running at http://{addr}/\nPress Ctrl+C to stop");
         if let Some(sender) = sender.take() {
             sender.send(()).unwrap();
         }
@@ -354,11 +356,10 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         handle_404: View<B>,
         internal_error: fn() -> Response,
         services: fn(&Settings) -> std::pin::Pin<Box<dyn std::future::Future<Output = S> + Send + '_>>,
-        migrations: fn() -> Vec<AppMigration<D>>) -> Option<Self>
+        migrations: fn() -> Vec<AppMigration<D>>,
+        last: bool) -> Option<Self>
         where <<D as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow
     {
-        env_logger::Builder::from_env(Env::default().default_filter_or("anansi_core")).init();
-
         let args: Vec<String> = env::args().collect();
 
         let mut ip = None;
@@ -452,7 +453,9 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         let sem = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let timer = Arc::new(RwLock::new(DateTime::now().to_gmt()));
 
-        println!("Server running at http://{addr}/\nPress Ctrl+C to stop");
+        if last {
+            println!("Server running at http://{addr}/\nPress Ctrl+C to stop");
+        }
         if let Some(sender) = sender.take() {
             sender.send(()).unwrap();
         }

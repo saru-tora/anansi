@@ -132,7 +132,7 @@ impl<Svc: Service<R>, R: BaseRequest> Service<R> for SecurityHeaders<Svc> {
 #[cfg(not(feature = "minimal"))]
 #[macro_export]
 macro_rules! setup {
-    () => {
+    ($($name:ident, $ty:path, $tr:path)*) => {
         #[derive(Debug, Clone)]
         pub struct HttpRequest {
             raw: anansi::web::RawRequest<Pool>,
@@ -147,6 +147,7 @@ macro_rules! setup {
             user: anansi::util::auth::records::User,
             session: anansi::util::sessions::records::Session,
             session_data: anansi::util::sessions::records::SessionData,
+            $($name: $ty,)*
         }
         #[cfg(not(test))]
         async fn get_session(raw: &mut anansi::web::RawRequest<Pool>) -> $crate::web::Result<anansi::util::sessions::records::Session> {
@@ -170,12 +171,13 @@ macro_rules! setup {
                 } else {
                     anansi::util::auth::records::User::find(anansi::records::BigInt::from_val(user_id)?).raw_get(raw.pool()).await?
                 };
-                Ok(AppMiddleware {user, session, session_data})
+                $(let $name = $ty::new(raw).await?;)*
+                Ok(AppMiddleware {user, session, session_data $(, $name)*})
             }
         }
         impl anansi::web::BaseMiddleware for AppMiddleware {}
         anansi::request_derive!();
-        pub trait Request: anansi::web::BaseRequest + anansi::util::sessions::middleware::Sessions + anansi::util::auth::middleware::Auth + anansi::util::admin::site::HasAdmin + anansi::web::CsrfDefense  + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetRecord {}
+        pub trait Request: anansi::web::BaseRequest + anansi::util::sessions::middleware::Sessions + anansi::util::auth::middleware::Auth + anansi::util::admin::site::HasAdmin + anansi::web::CsrfDefense  + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetRecord $(+ $tr)* {}
         impl Request for HttpRequest {}
         impl anansi::util::admin::site::HasAdmin for HttpRequest {
             fn admin(&self) -> anansi::util::admin::site::AdminRef<Self> {
@@ -226,7 +228,7 @@ macro_rules! setup {
 #[cfg(feature = "minimal")]
 #[macro_export]
 macro_rules! setup {
-    () => {
+    ($($name:ident, $ty:path, $tr:path)*) => {
         #[derive(Debug, Clone)]
         pub struct HttpRequest {
             raw: anansi::web::RawRequest<Pool>,
@@ -236,15 +238,18 @@ macro_rules! setup {
             mailer: Option<anansi::email::Mailer>,
         }
         #[derive(Debug, Clone)]
-        pub struct AppMiddleware {}
+        pub struct AppMiddleware {
+            $($name: $ty,)*
+        }
         impl AppMiddleware {
             pub async fn new(_raw: &mut anansi::web::RawRequest<Pool>) -> $crate::web::Result<Self> {
-                Ok(AppMiddleware {})
+                $(let $name = <$ty>::new(_raw).await?;)*
+                Ok(AppMiddleware {$($name)*})
             }
         }
         impl anansi::web::BaseMiddleware for AppMiddleware {}
         anansi::request_derive!();
-        pub trait Request: anansi::web::BaseRequest<SqlPool = Pool> + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetRecord {}
+        pub trait Request: anansi::web::BaseRequest<SqlPool = Pool> + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetRecord $(+ $tr)* {}
         impl Request for HttpRequest {}
     }
 }
