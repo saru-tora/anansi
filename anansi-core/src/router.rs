@@ -9,7 +9,25 @@ const RIGHT_BRACE: u8 = 125;
 
 pub type Routes<B> = Vec<(Vec<String>, View<B>)>;
 
-pub struct Router<B: BaseRequest + 'static, S: Service<B>> {
+pub struct Router<B: BaseRequest + 'static> {
+    pub routes: Vec<Route<B>>,
+}
+
+impl<B: BaseRequest> Router<B> {
+    pub fn new() -> Self {
+        Self {routes: vec![]}
+    }
+    pub fn route(mut self, path: &'static str, view: View<B>) -> Self {
+        self.routes.push(Route::Path((path, view)));
+        self
+    }
+    pub fn nest(mut self, prefix: &'static str, other: Self) -> Self {
+        self.routes.push(Route::Import((prefix, other.routes)));
+        self
+    }
+}
+
+pub struct RouteHandler<B: BaseRequest + 'static, S: Service<B>> {
     pub routes: Routes<B>,
     pub handle_404: View<B>,
     pub internal_error: fn() -> Response,
@@ -18,7 +36,7 @@ pub struct Router<B: BaseRequest + 'static, S: Service<B>> {
     files: HashMap<&'static str, &'static [u8]>,
 }
 
-impl<B: BaseRequest, S: Service<B>> Router<B, S> {
+impl<B: BaseRequest, S: Service<B>> RouteHandler<B, S> {
     pub fn new(routes: Vec<Route<B>>, handle_404: View<B>, internal_error: fn() -> Response, login_url: String, service: S, files: HashMap<&'static str, &'static [u8]>) -> Result<Self> {
         let mut router = Self {routes: vec![], handle_404, internal_error, login_url, service, files};
         let mut v = vec![];
@@ -31,7 +49,7 @@ impl<B: BaseRequest, S: Service<B>> Router<B, S> {
                     for rt in r {
                         match rt {
                             Route::Path((u, f)) => {
-                                v.push((format!("{}/{}", url, *u), *f));
+                                v.push((format!("{}/{}", url, u), f));
                             }
                             _ => unimplemented!(),
                         }

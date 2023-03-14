@@ -80,7 +80,8 @@ thread_local!{
 }
 
 pub mod prelude {
-    pub use anansi::{import, routes, path};
+    pub use anansi::web::BaseRequest;
+    pub use anansi::router::Router;
 }
 
 #[async_trait]
@@ -528,8 +529,8 @@ impl Parameters {
 
 #[derive(Clone)]
 pub enum Route<B: BaseRequest + 'static> {
-    Path ((&'static str, View<B>)),
-    Import((&'static str, &'static [Route<B>])),
+    Path((&'static str, View<B>)),
+    Import((&'static str, Vec<Route<B>>)),
 }
 
 pub fn route_path<B: BaseRequest>(s: &'static str, f: View<B>) -> Route<B> {

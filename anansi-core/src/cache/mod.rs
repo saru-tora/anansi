@@ -14,10 +14,10 @@ pub mod prelude {
 #[macro_export]
 macro_rules! app_cache {
     (local) => {
-        type AppCache = anansi::cache::local_cache::LocalCache;
+        pub type AppCache = anansi::cache::local_cache::LocalCache;
     };
     (redis) => {
-        type AppCache = anansi::cache::redis::RedisCache;
+        pub type AppCache = anansi::cache::redis::RedisCache;
     };
 }
 

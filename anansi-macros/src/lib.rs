@@ -48,9 +48,10 @@ pub fn min_main(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
         async fn serve(last: bool) {
             use server_prelude::*;
+            use crate::project::*;
 
             let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
-            if let Some(#server) = anansi::server::Server::new(APP_STATICS, None, app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, last).await {
+            if let Some(#server) = anansi::server::Server::<HttpRequest, AppCache, Pool, anansi::web::SecurityHeaders<anansi::web::ViewService>>::new(APP_STATICS, None, urls::routes, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, last).await {
                 #init
                 #server.run().await;
             }
@@ -76,11 +77,11 @@ pub fn min_main(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             for handle in handles{
                 handle.join().unwrap();
             }
+            anansi::server::info_shutdown();
         }
 
         mod server_prelude {
             pub use std::sync::{Arc, Mutex};
-            pub use crate::urls::app_url;
             pub use crate::http_errors::views::ErrorView;
             pub use crate::project::{app_services, HttpRequest};
             pub use anansi::web::Response;
@@ -2285,41 +2286,6 @@ pub fn schemas(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         pub const SCHEMAS: &[anansi::syntax::Schema] = &[
             #(#vars::schema),*
         ];
-    };
-    q.into()
-}
-
-#[proc_macro]
-pub fn routes(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let input = parse_macro_input!(input as SchemaArgs);
-    let vars = &input.vars;
-    let q = quote! {
-        pub const ROUTES: &[anansi::web::Route<crate::project::HttpRequest>] = &[#(#vars),*];
-        pub fn app_url(hm: &mut std::collections::HashMap<usize, Vec<String>>) {
-            use crate::project::HttpRequest;
-            let mut v = vec![];
-            for route in ROUTES {
-                match route {
-                    anansi::web::Route::Path((url, f)) => {
-                        v.push(((*url).to_string(), *f));
-                    },
-                    anansi::web::Route::Import((url, r)) => {
-                        for rt in *r {
-                            match rt {
-                                anansi::web::Route::Path((u, f)) => {
-                                    v.push((format!("{}/{}", url, *u), *f));
-                                },
-                                _ => unimplemented!(),
-                            }
-                        }
-                    }
-                }
-            }
-            for (url, f) in v {
-                let cap = anansi::router::get_capture(&url).unwrap();
-                hm.insert(f as usize, cap);
-            }
-        }
     };
     q.into()
 }

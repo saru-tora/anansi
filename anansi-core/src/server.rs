@@ -31,7 +31,7 @@ use crate::db::{DbPool, DbRow};
 use crate::cache::BaseCache;
 use crate::records::{VarChar, DateTime, DataType};
 use crate::web::{BASE_DIR, Static, Route, BaseRequest, HyperRequest, Response, Http404, WebError, WebErrorKind, View, Service, route_request};
-use crate::router::{Router, split_url};
+use crate::router::{RouteHandler, split_url};
 use crate::migrations::{migrate, sql_migrate, make_migrations, AppMigration};
 use crate::admin_site::AdminRef;
 use crate::email::Mailer;
@@ -57,6 +57,7 @@ macro_rules! main {
             pub use crate::project::Request;
             pub use anansi::{form, import, viewer, base_view, view, redirect, transact, form_error};
             pub use anansi::web::{Result, Response, BaseUser};
+            pub use anansi::router::Router;
             pub use anansi::forms::Form;
             pub use anansi::cache::BaseCache;
             pub use anansi::records::Record;
@@ -105,7 +106,7 @@ pub struct Server<B: BaseRequest + 'static, C: BaseCache, D: DbPool, S: Service<
     pub pool: D,
     pub cache: C,
     std_rng: Rng,
-    router: Arc<Router<B, S>>,
+    router: Arc<RouteHandler<B, S>>,
     sem: Arc<Semaphore>,
     timer: Timer,
     site: AdminRef<B>,
@@ -122,7 +123,7 @@ pub struct Server<B: BaseRequest + 'static, C: BaseCache, D: DbPool, S: Service<
     pub pool: D,
     pub cache: C,
     std_rng: Rng,
-    router: Arc<Router<B, S>>,
+    router: Arc<RouteHandler<B, S>>,
     sem: Arc<Semaphore>,
     timer: Timer,
     mailer: Option<Mailer>,
@@ -136,8 +137,13 @@ async fn get_pool<D: DbPool>(not_test: bool, settings: &Settings, migrations: fn
         match D::new(&settings).await {
             Ok(p) => p,
             Err(_) => {
+                println!("Trying to connect to the database again");
                 let mut p = D::new(&settings).await.expect("Database connection reattempt failed");
-                migrate(migrations(), &mut p).await;
+                if !cfg!(feature = "minimal") {
+                    info!("starting migration");
+                    migrate(migrations(), &mut p).await;
+                    info!("migration successful");
+                }
                 p
             }
         }
@@ -154,13 +160,16 @@ pub fn init_logger() {
     env_logger::Builder::from_env(Env::default().default_filter_or("anansi_core")).init();
 }
 
+pub fn info_shutdown() {
+    info!("Shutting down");
+}
+
 #[cfg(not(feature = "minimal"))]
 impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache + 'static, D: DbPool + 'static, S: Service<B> + 'static> Server<B, C, D, S> {
     pub async fn new(
         statics: &'static [&'static [Static]],
         admin_inits: AdminInits<B>,
         mut sender: Option<Sender<()>>,
-        url_mapper: fn(&mut HashMap<usize, Vec<String>>),
         routes: &'static [Route<B>],
         handle_404: View<B>,
         internal_error: fn() -> Response,
@@ -224,7 +233,6 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         let listener = reuse_listener(&addr);
 
         let mut url_map = HashMap::new();
-        url_mapper(&mut url_map);
         let mut files = HashMap::new();
         for stats in statics {
             for (name, file) in *stats {
@@ -232,6 +240,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
             }
         }
         let mut rv = routes.to_vec();
+        app_url(&mut url_map, &rv);
         for admin_init in admin_inits {
             admin_init(site.clone());
         }
@@ -241,7 +250,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         }
         let login_url = settings.get("login_url").expect("Could not get login url").as_str().expect("Expected string for login url").to_string();
 
-        let router = Arc::new(Router::new(rv, handle_404, internal_error, login_url, services(&settings).await, files).unwrap());
+        let router = Arc::new(RouteHandler::new(rv, handle_404, internal_error, login_url, services(&settings).await, files).unwrap());
         let urls = Arc::new(url_map);
         let c_settings = settings.get("caches").expect("Could not get cache settings").as_table().expect("Expected table for cache settings");
         let cache = C::new(&c_settings).await.expect("Could not start cache");
@@ -346,13 +355,37 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
     }
 }
 
+pub fn app_url<B: BaseRequest>(hm: &mut std::collections::HashMap<usize, Vec<String>>, routes: &Vec<Route<B>>) {
+    let mut v = vec![];
+    for route in routes {
+        match route {
+            anansi::web::Route::Path((url, f)) => {
+                v.push(((url).to_string(), *f));
+            },
+            anansi::web::Route::Import((url, r)) => {
+                for rt in r {
+                    match rt {
+                        anansi::web::Route::Path((u, f)) => {
+                            v.push((format!("{}/{}", url, u), *f));
+                        },
+                        _ => unimplemented!(),
+                    }
+                }
+            }
+        }
+    }
+    for (url, f) in v {
+        let cap = anansi::router::get_capture(&url).unwrap();
+        hm.insert(f as usize, cap);
+    }
+}
+
 #[cfg(feature = "minimal")]
 impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache + 'static, D: DbPool + 'static, S: Service<B> + 'static> Server<B, C, D, S> {
     pub async fn new(
         statics: &'static [&'static [Static]],
         mut sender: Option<Sender<()>>,
-        url_mapper: fn(&mut HashMap<usize, Vec<String>>),
-        routes: &'static [Route<B>],
+        routes: fn() -> anansi::router::Router<B>,
         handle_404: View<B>,
         internal_error: fn() -> Response,
         services: fn(&Settings) -> std::pin::Pin<Box<dyn std::future::Future<Output = S> + Send + '_>>,
@@ -411,17 +444,17 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         let listener = reuse_listener(&addr);
 
         let mut url_map = HashMap::new();
-        url_mapper(&mut url_map);
         let mut files = HashMap::new();
         for stats in statics {
             for (name, file) in *stats {
                 files.insert(*name, *file);
             }
         }
-        let rv = routes.to_vec();
+        let rv = routes().routes;
+        app_url(&mut url_map, &rv);
         let login_url = settings.get("login_url").expect("Could not get login url").as_str().expect("Expected string for login url").to_string();
 
-        let router = Arc::new(Router::new(rv, handle_404, internal_error, login_url, services(&settings).await, files).unwrap());
+        let router = Arc::new(RouteHandler::new(rv, handle_404, internal_error, login_url, services(&settings).await, files).unwrap());
         let urls = Arc::new(url_map);
         let c_settings = settings.get("caches").expect("Could not get cache settings").as_table().expect("Expected table for cache settings");
         let cache = C::new(&c_settings).await.expect("Could not start cache");
@@ -485,7 +518,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
 
         tokio::select! {
             _ = self.serve() => {}
-            _ = signal::ctrl_c() => info!("Shutting down"),
+            _ = signal::ctrl_c() => {}
         }
 
         let Server {notify_shutdown, shutdown_complete_tx, mut shutdown_complete_rx, ..} = self;
@@ -606,7 +639,7 @@ struct Svc<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbP
     pool: D,
     cache: C,
     std_rng: Rng, 
-    router: Arc<Router<B, S>>,
+    router: Arc<RouteHandler<B, S>>,
     timer: Timer,
     site: AdminRef<B>,
     mailer: Option<Mailer>,
@@ -733,7 +766,7 @@ struct Svc<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbP
     pool: D,
     cache: C,
     std_rng: Rng, 
-    router: Arc<Router<B, S>>,
+    router: Arc<RouteHandler<B, S>>,
     timer: Timer,
     mailer: Option<Mailer>,
 }

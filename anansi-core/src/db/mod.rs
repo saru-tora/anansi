@@ -38,10 +38,10 @@ macro_rules! sql_bool {
 #[macro_export]
 macro_rules! database {
     (sqlite) => {
-        type Pool = anansi::db::sqlite::SqliteDbPool;
+        pub type Pool = anansi::db::sqlite::SqliteDbPool;
     };
     (postgres) => {
-        type Pool = anansi::db::postgres::PgDbPool;
+        pub type Pool = anansi::db::postgres::PgDbPool;
     };
 }
 
