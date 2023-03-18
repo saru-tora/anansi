@@ -56,11 +56,12 @@ Views
 Mapping requests to views is simple.
 
 ```rust
-routes! {
-    path!("", TopicView::index),
-    path!("new", TopicView::new),
-    path!("load", TopicView::load),
-    path!("{topic_id}", TopicView::show),
+pub fn routes<R: Request>() -> Router<R> {
+    Router::new()
+        .route("", TopicView::index)
+        .route("new", TopicView::new)
+        .route("load", TopicView::load)
+        .route("{topic_id}", TopicView::show)
 }
 ```
 
