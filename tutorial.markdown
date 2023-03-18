@@ -225,9 +225,10 @@ To add this view to the routes, change `urls.rs` to the following:
 ```rust
 use crate::forum::{self, topic::views::TopicView};
 
-routes! {
-    path!("/", TopicView::index),
-    import!("/topic", forum),
+pub fn routes<R: Request>() -> Router<R> {
+    Router::new()
+        .route("", TopicView::index)
+        .nest("/topic", forum::urls::routes())
 }
 ```
 
@@ -388,8 +389,9 @@ Don't forget to add `load` to `forum/urls.rs`:
 ```rust
 use super::topic::views::TopicView;
 
-routes! {
-    path!("load", TopicView::load),
+pub fn routes<R: Request>() -> Router<R> {
+    Router::new()
+        .route("load", TopicView::load)
 }
 ```
 
@@ -656,9 +658,10 @@ Now edit `forum/urls.rs`:
 ```rust
 use super::topic::views::TopicView;
 
-routes! {
-    // e.g. /topic/ixNr1-tGUe9
-    path!("{topic_id}", TopicView::show),
+pub fn routes<R: Request>() -> Router<R> {
+    Router::new()
+    	// e.g. /topic/ixNr1-tGUe9
+        .route("{topic_id}", TopicView::show)
 }
 ```
 
@@ -784,10 +787,11 @@ Errors in fields will have the class `field-errors` instead.
 To include everything, update `urls.rs`:
 
 ```rust
-routes! {
-    path!("/", TopicView::index),
-    import!("/topic", forum),
-    path!("/login", TopicView::login),
+pub fn routes<R: Request>() -> Router<R> {
+    Router::new()
+        .route("/", TopicView::index)
+        .nest("/topic", forum::urls::routes())
+        .route("/login", TopicView::login)
 }
 ```
 
@@ -875,9 +879,10 @@ impl<R: Request> TopicView<R> {
 To bring it all together, update `forum/urls.rs`:
 
 ```rust
-routes! {
-    path!("new", TopicView::new),
-    path!("{topic_id}", TopicView::show),
+pub fn routes<R: Request>() -> Router<R> {
+    Router::new()
+        .route("new", TopicView::new)
+        .route("{topic_id}", TopicView::show)
 }
 ```
 
@@ -940,10 +945,11 @@ impl<R: Request> TopicView<R> {
 As always, update `forum/urls.rs`:
 
 ```rust
-routes! {
-    path!("new", TopicView::new),
-    path!("{topic_id}", TopicView::show),
-    path!("{topic_id}/edit", TopicView::edit),
+pub fn routes<R: Request>() -> Router<R> {
+    Router::new()
+        .route("new", TopicView::new)
+        .route("{topic_id}", TopicView::show)
+        .route("{topic_id}/edit", TopicView::edit)
 }
 ```
 
@@ -1043,11 +1049,12 @@ Again, you can add the link for it in `forum/topic/templates/show.rs.html`:
 And finally, update `forum/urls.rs`:
 
 ```rust
-routes! {
-    path!("new", TopicView::new),
-    path!("{topic_id}", TopicView::show),
-    path!("{topic_id}/edit", TopicView::edit),
-    path!("{topic_id}/destroy", TopicView::destroy),
+pub fn routes<R: Request>() -> Router<R> {
+    Router::new()
+        .route("new", TopicView::new)
+        .route("{topic_id}", TopicView::new)
+        .route("{topic_id}/edit", TopicView::edit)
+        .route("{topic_id}/destroy", TopicView::destroy)
 }
 ```
 
