@@ -64,6 +64,13 @@ pub trait DbRowVec: IntoIterator<Item = Self::Row> {
 }
 
 #[async_trait]
+pub trait AsDb: Send + Sync {
+    type SqlDb: DbPool;
+    fn as_db(&self) -> &Self::SqlDb;
+    fn as_db_mut(&mut self) -> &mut Self::SqlDb;
+}
+
+#[async_trait]
 pub trait DbPool: Clone + Send + Sync + DbType {
     type SqlRow: DbRow;
     type SqlRowVec: DbRowVec;
@@ -525,7 +532,7 @@ impl<M: Record> DeleteWhose<M>  {
         if !req.raw().valid_token() {
             return Err(WebErrorKind::BadToken.to_box());
         }
-        let val = B::SqlPool::to_stmt(self.stmt.val.push_val(Clause::Close));
+        let val = <B::SqlPool as AsDb>::SqlDb::to_stmt(self.stmt.val.push_val(Clause::Close));
        
         req.raw().pool().raw_execute(&val).await
     }
@@ -933,7 +940,7 @@ impl<M: Record> LimitCount<M> {
     pub fn from(val: Builder<M>) -> Self {
         Self {val}
     }
-    pub async fn query<B: BaseRequest>(self, req: &B) -> Result<Vec<i64>> where <<<B as BaseRequest>::SqlPool as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow {
+    pub async fn query<B: BaseRequest>(self, req: &B) -> Result<Vec<i64>> where <<<<B as BaseRequest>::SqlPool as AsDb>::SqlDb as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow {
         self.raw_query(req.raw().pool()).await
     }
     async fn raw_query<D: DbPool>(self, pool: &D) -> Result<Vec<i64>> where <D::SqlRowVec as IntoIterator>::Item: DbRow {

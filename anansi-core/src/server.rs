@@ -27,7 +27,7 @@ use hyper::service::Service as HyperService;
 use log::{error, info, warn};
 use env_logger::Env;
 
-use crate::db::{DbPool, DbRow};
+use crate::db::{DbPool, DbRow, AsDb};
 use crate::cache::BaseCache;
 use crate::records::{VarChar, DateTime, DataType};
 use crate::web::{BASE_DIR, Static, Route, BaseRequest, HyperRequest, Response, Http404, WebError, WebErrorKind, View, Service, route_request};
@@ -71,14 +71,14 @@ macro_rules! main {
             anansi::server::init_logger();
             let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
             let site = Arc::new(Mutex::new(anansi::util::admin::site::BasicAdminSite::new()));
-            if let Some(server) = anansi::server::Server::new(APP_STATICS, APP_ADMINS, None, app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, cmd::admin, site).await {
+            let app_data = crate::project::AppData::new().await;
+            if let Some(server) = anansi::server::Server::new(app_data, APP_STATICS, APP_ADMINS, None, urls::routes, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, cmd::admin, site).await {
                 server.run().await
             }
         }
 
         mod server_prelude {
             pub use std::sync::{Arc, Mutex};
-            pub use crate::urls::app_url;
             pub use crate::http_errors::views::ErrorView;
             pub use crate::project::{app_services, HttpRequest};
             pub use anansi::util::admin::site::AdminSite;
@@ -100,10 +100,10 @@ macro_rules! main {
 }
 
 #[cfg(not(feature = "minimal"))]
-pub struct Server<B: BaseRequest + 'static, C: BaseCache, D: DbPool, S: Service<B>> {
+pub struct Server<B: BaseRequest + 'static, C: BaseCache, D: AsDb, S: Service<B>> {
     listener: TcpListener,
     urls: Arc<HashMap<usize, Vec<String>>>,
-    pub pool: D,
+    pub app_data: Arc<D>,
     pub cache: C,
     std_rng: Rng,
     router: Arc<RouteHandler<B, S>>,
@@ -117,10 +117,10 @@ pub struct Server<B: BaseRequest + 'static, C: BaseCache, D: DbPool, S: Service<
 }
 
 #[cfg(feature = "minimal")]
-pub struct Server<B: BaseRequest + 'static, C: BaseCache, D: DbPool, S: Service<B>> {
+pub struct Server<B: BaseRequest + 'static, C: BaseCache, D: anansi::db::AsDb, S: Service<B>> {
     listener: TcpListener,
     urls: Arc<HashMap<usize, Vec<String>>>,
-    pub pool: D,
+    pub app_data: Arc<D>,
     pub cache: C,
     std_rng: Rng,
     router: Arc<RouteHandler<B, S>>,
@@ -132,24 +132,24 @@ pub struct Server<B: BaseRequest + 'static, C: BaseCache, D: DbPool, S: Service<
     shutdown_complete_rx: mpsc::Receiver<()>,
 }
 
-async fn get_pool<D: DbPool>(not_test: bool, settings: &Settings, migrations: fn() -> Vec<AppMigration<D>>) -> D {
+async fn get_pool<D: AsDb>(not_test: bool, settings: &Settings, migrations: fn() -> Vec<AppMigration<<D as AsDb>::SqlDb>>) -> <D as AsDb>::SqlDb {
     if not_test {
-        match D::new(&settings).await {
+        match <D as AsDb>::SqlDb::new(&settings).await {
             Ok(p) => p,
             Err(_) => {
                 println!("Trying to connect to the database again");
-                let mut p = D::new(&settings).await.expect("Database connection reattempt failed");
+                let mut p = <D as AsDb>::SqlDb::new(&settings).await.expect("Database connection reattempt failed");
                 if !cfg!(feature = "minimal") {
                     info!("starting migration");
-                    migrate(migrations(), &mut p).await;
+                    migrate::<D>(migrations(), &mut p).await;
                     info!("migration successful");
                 }
                 p
             }
         }
     } else {
-        let mut p = D::test().await.expect("Database connection attempt failed");
-        migrate(migrations(), &mut p).await;
+        let mut p = <D as AsDb>::SqlDb::test().await.expect("Database connection attempt failed");
+        migrate::<D>(migrations(), &mut p).await;
         p
     }
 }
@@ -165,19 +165,20 @@ pub fn info_shutdown() {
 }
 
 #[cfg(not(feature = "minimal"))]
-impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache + 'static, D: DbPool + 'static, S: Service<B> + 'static> Server<B, C, D, S> {
+impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache + 'static, D: AsDb + 'static, S: Service<B> + 'static> Server<B, C, D, S> {
     pub async fn new(
+        mut app_data: D,
         statics: &'static [&'static [Static]],
         admin_inits: AdminInits<B>,
         mut sender: Option<Sender<()>>,
-        routes: &'static [Route<B>],
+        routes: fn() -> anansi::router::Router<B>,
         handle_404: View<B>,
         internal_error: fn() -> Response,
         services: fn(&Settings) -> std::pin::Pin<Box<dyn std::future::Future<Output = S> + Send + '_>>,
-        migrations: fn() -> Vec<AppMigration<D>>,
-        admin: fn(D) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>,
+        migrations: fn() -> Vec<AppMigration<<D as AsDb>::SqlDb>>,
+        admin: fn(<D as AsDb>::SqlDb) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>,
         site: AdminRef<B>) -> Option<Self>
-        where <<D as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow
+        where <<<D as AsDb>::SqlDb as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow
     {
         let args: Vec<String> = env::args().collect();
 
@@ -189,14 +190,11 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         let s_settings = fs::read_to_string(&base).await.expect(&format!("Could not find {}", base.to_str().unwrap()));
         let settings: Settings = toml::from_str(&s_settings).expect("Could not parse settings.toml");
 
-        let not_test = sender.is_none();
-        let mut pool = get_pool(not_test, &settings, migrations).await;
-
         if args.len() > 1 {
             match args[1].as_str() {
                 "make-migrations" => {
                     if args.len() >= 2 {
-                        make_migrations(&args[2], &pool).await;
+                        make_migrations(&args[2], app_data.as_db()).await;
                     } else {
                         error!("expected app name");
                     }
@@ -204,18 +202,18 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                 }
                 "sql-migrate" => {
                     if args.len() >= 3 {
-                        sql_migrate(migrations(), &args[2], &args[3]).await;
+                        sql_migrate::<D>(migrations(), &args[2], &args[3]).await;
                     } else{
                         error!("expected app name");
                     }
                     return None;
                 }
                 "migrate" => {
-                    migrate(migrations(), &mut pool).await;
+                    migrate::<D>(migrations(), app_data.as_db_mut()).await;
                     return None;
                 }
                 "admin" => {
-                    admin(pool.clone()).await.expect("Could not create admin");
+                    admin(app_data.as_db().clone()).await.expect("Could not create admin");
                     return None;
                 }
                 _ => ip = Some(args[1].to_string()),
@@ -239,7 +237,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                 files.insert(*name, *file);
             }
         }
-        let mut rv = routes.to_vec();
+        let mut rv = routes().routes;
         app_url(&mut url_map, &rv);
         for admin_init in admin_inits {
             admin_init(site.clone());
@@ -289,7 +287,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         let (notify_shutdown, _) = broadcast::channel(1);
         let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
 
-        Some(Self {listener, urls, pool, cache, std_rng, router, sem, timer, site, mailer, notify_shutdown, shutdown_complete_tx, shutdown_complete_rx})
+        Some(Self {listener, urls, app_data: Arc::new(app_data), cache, std_rng, router, sem, timer, site, mailer, notify_shutdown, shutdown_complete_tx, shutdown_complete_rx})
     }
 
     pub async fn run(mut self) {
@@ -321,7 +319,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
     async fn serve(&mut self) {
         loop {
             let urls = self.urls.clone();
-            let pool = self.pool.clone();
+            let app_data = self.app_data.clone();
             let cache = self.cache.clone();
             let std_rng = self.std_rng.clone();
             let router = self.router.clone();
@@ -337,7 +335,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                 tokio::spawn(async move {
                     let _shutdown_complete = shutdown_complete;
                     let addr = stream.peer_addr().unwrap();
-                    let svc = Svc { addr, urls, pool, cache, std_rng, router, timer, site, mailer };
+                    let svc = Svc { addr, urls, app_data, cache, std_rng, router, timer, site, mailer };
 
                     let res = tokio::select! {
                         res = http1::Builder::new()
@@ -380,18 +378,31 @@ pub fn app_url<B: BaseRequest>(hm: &mut std::collections::HashMap<usize, Vec<Str
     }
 }
 
+pub async fn get_db<D: AsDb>(migrations: fn() -> Vec<AppMigration<<D as AsDb>::SqlDb>>) -> <D as AsDb>::SqlDb {
+    let mut base = PathBuf::new();
+    BASE_DIR.with(|b| base = b.clone());
+    base.push("settings.toml");
+    let s_settings = fs::read_to_string(&base).await.expect(&format!("Could not find {}", base.to_str().unwrap()));
+    let settings: Settings = toml::from_str(&s_settings).expect("Could not parse settings.toml");
+
+    let not_test = true;
+    get_pool::<D>(not_test, &settings, migrations).await
+
+}
+
 #[cfg(feature = "minimal")]
-impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache + 'static, D: DbPool + 'static, S: Service<B> + 'static> Server<B, C, D, S> {
+impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache + 'static, D: anansi::db::AsDb + 'static + Clone, S: Service<B> + 'static> Server<B, C, D, S> {
     pub async fn new(
+        mut app_data: D,
         statics: &'static [&'static [Static]],
         mut sender: Option<Sender<()>>,
         routes: fn() -> anansi::router::Router<B>,
         handle_404: View<B>,
         internal_error: fn() -> Response,
         services: fn(&Settings) -> std::pin::Pin<Box<dyn std::future::Future<Output = S> + Send + '_>>,
-        migrations: fn() -> Vec<AppMigration<D>>,
+        migrations: fn() -> Vec<AppMigration<<D as AsDb>::SqlDb>>,
         last: bool) -> Option<Self>
-        where <<D as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow
+        where <<<D as anansi::db::AsDb>::SqlDb as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow
     {
         let args: Vec<String> = env::args().collect();
 
@@ -403,14 +414,11 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         let s_settings = fs::read_to_string(&base).await.expect(&format!("Could not find {}", base.to_str().unwrap()));
         let settings: Settings = toml::from_str(&s_settings).expect("Could not parse settings.toml");
 
-        let not_test = sender.is_none();
-        let mut pool = get_pool(not_test, &settings, migrations).await;
-
         if args.len() > 1 {
             match args[1].as_str() {
                 "make-migrations" => {
                     if args.len() >= 2 {
-                        make_migrations(&args[2], &pool).await;
+                        make_migrations(&args[2], app_data.as_db()).await;
                     } else {
                         error!("expected app name");
                     }
@@ -418,14 +426,14 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                 }
                 "sql-migrate" => {
                     if args.len() >= 3 {
-                        sql_migrate(migrations(), &args[2], &args[3]).await;
+                        sql_migrate::<D>(migrations(), &args[2], &args[3]).await;
                     } else{
                         error!("expected app name");
                     }
                     return None;
                 }
                 "migrate" => {
-                    migrate(migrations(), &mut pool).await;
+                    migrate::<D>(migrations(), app_data.as_db_mut()).await;
                     return None;
                 }
                 _ => ip = Some(args[1].to_string()),
@@ -496,7 +504,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
         let (notify_shutdown, _) = broadcast::channel(1);
         let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
 
-        Some(Self {listener, urls, pool, cache, std_rng, router, sem, timer, mailer, notify_shutdown, shutdown_complete_tx, shutdown_complete_rx})
+        Some(Self {listener, urls, app_data: Arc::new(app_data), cache, std_rng, router, sem, timer, mailer, notify_shutdown, shutdown_complete_tx, shutdown_complete_rx})
     }
 
     pub async fn run(mut self) {
@@ -529,7 +537,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
     async fn serve(&mut self) {
         loop {
             let urls = self.urls.clone();
-            let pool = self.pool.clone();
+            let app_data = self.app_data.clone();
             let cache = self.cache.clone();
             let std_rng = self.std_rng.clone();
             let router = self.router.clone();
@@ -546,7 +554,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + fmt::Debug + Clone, C: BaseCache +
                     let _shutdown_complete = shutdown_complete;
                     stream.set_nodelay(true).unwrap();
                     let addr = stream.peer_addr().unwrap();
-                    let svc = Svc { addr, urls, pool, cache, std_rng, router, timer, mailer };
+                    let svc = Svc { addr, urls, app_data, cache, std_rng, router, timer, mailer };
                     let res = tokio::select! {
                         res = http1::Builder::new()
                             .serve_connection(stream, svc) => res,
@@ -633,10 +641,10 @@ pub async fn sleep(duration: std::time::Duration) {
 }
 
 #[cfg(not(feature = "minimal"))]
-struct Svc<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool, C: BaseCache, S: Service<B>> {
+struct Svc<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: AsDb, C: BaseCache, S: Service<B>> {
     addr: SocketAddr,
     urls: Arc<HashMap<usize, Vec<String>>>,
-    pool: D,
+    app_data: Arc<D>,
     cache: C,
     std_rng: Rng, 
     router: Arc<RouteHandler<B, S>>,
@@ -646,14 +654,14 @@ struct Svc<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbP
 }
 
 #[cfg(not(feature = "minimal"))]
-impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 'static, C: BaseCache + 'static, S: Service<B> + 'static> HyperService<Request<IncomingBody>> for Svc<B, D, C, S> {
+impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: AsDb + 'static, C: BaseCache + 'static, S: Service<B> + 'static> HyperService<Request<IncomingBody>> for Svc<B, D, C, S> {
     type Response = HyperResponse<Full<Bytes>>;
     type Error = hyper::Error;
     type Future = Pin<Box<dyn Future<Output = std::result::Result<Self::Response, Self::Error>> + Send>>;
 
     fn call(&mut self, request: Request<IncomingBody>) -> Self::Future {
         let urls = self.urls.clone();
-        let pool = self.pool.clone();
+        let app_data = self.app_data.clone();
         let cache = self.cache.clone();
         let std_rng = self.std_rng.clone();
         let site = self.site.clone();
@@ -683,7 +691,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                         }
                     }
                 } else {
-                    let result = B::new(HyperRequest {0: request}, urls, pool.clone(), cache.clone(), std_rng.clone(), site, mailer).await;
+                    let result = B::new(HyperRequest {0: request}, urls, app_data.clone(), cache.clone(), std_rng.clone(), site, mailer).await;
                     match result {
                         Ok(mut req) => {
                             match route_request(dirs, &mut req, &router.routes, &router.service).await {
@@ -717,7 +725,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                             if let Some(web_error) = error.downcast_ref::<WebError>() {
                                 match web_error.kind() {
                                     WebErrorKind::NoSession => {
-                                        match B::handle_no_session(Response::redirect(url.path()), pool, std_rng).await {
+                                        match B::handle_no_session(Response::redirect(url.path()), app_data, std_rng).await {
                                             Ok(r) => {
                                                 r
                                             }
@@ -760,10 +768,10 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
 }
 
 #[cfg(feature = "minimal")]
-struct Svc<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool, C: BaseCache, S: Service<B>> {
+struct Svc<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: AsDb, C: BaseCache, S: Service<B>> {
     addr: SocketAddr,
     urls: Arc<HashMap<usize, Vec<String>>>,
-    pool: D,
+    app_data: Arc<D>,
     cache: C,
     std_rng: Rng, 
     router: Arc<RouteHandler<B, S>>,
@@ -772,14 +780,14 @@ struct Svc<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbP
 }
 
 #[cfg(feature = "minimal")]
-impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 'static, C: BaseCache + 'static, S: Service<B> + 'static> HyperService<Request<IncomingBody>> for Svc<B, D, C, S> {
+impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: AsDb + 'static + Clone, C: BaseCache + 'static, S: Service<B> + 'static> HyperService<Request<IncomingBody>> for Svc<B, D, C, S> {
     type Response = HyperResponse<Full<Bytes>>;
     type Error = hyper::Error;
     type Future = Pin<Box<dyn Future<Output = std::result::Result<Self::Response, Self::Error>> + Send>>;
 
     fn call(&mut self, request: Request<IncomingBody>) -> Self::Future {
         let urls = self.urls.clone();
-        let pool = self.pool.clone();
+        let app_data = self.app_data.clone();
         let cache = self.cache.clone();
         let std_rng = self.std_rng.clone();
         let router = self.router.clone();
@@ -808,7 +816,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                         }
                     }
                 } else {
-                    let result = B::new(HyperRequest {0: request}, urls, pool.clone(), cache.clone(), std_rng.clone(), mailer).await;
+                    let result = B::new(HyperRequest {0: request}, urls, app_data.clone(), cache.clone(), std_rng.clone(), mailer).await;
                     match result {
                         Ok(mut req) => {
                             match route_request(dirs, &mut req, &router.routes, &router.service).await {
@@ -842,7 +850,7 @@ impl<B: BaseRequest<SqlPool = D, Cache = C> + 'static + fmt::Debug, D: DbPool + 
                             if let Some(web_error) = error.downcast_ref::<WebError>() {
                                 match web_error.kind() {
                                     WebErrorKind::NoSession => {
-                                        match B::handle_no_session(Response::redirect(url.path()), pool, std_rng).await {
+                                        match B::handle_no_session(Response::redirect(url.path()), app_data, std_rng).await {
                                             Ok(r) => {
                                                 r
                                             }

@@ -3,7 +3,7 @@ use serde_json::map::Map;
 
 use anansi::server::Rng;
 use anansi::web::{Result, BaseRequest, Reverse, RawRequest, View, Response, TokenRef, WebErrorKind};
-use anansi::db::DbPool;
+use anansi::db::{AsDb, DbPool};
 use anansi::records::{Record, VarChar, Text, DateTime, Relate, generate_id};
 use anansi::record;
 
@@ -84,7 +84,7 @@ impl Session  {
         session.raw_save(pool).await?;
         Ok(session)
     }
-    pub async fn from_raw<D: DbPool>(raw: &mut RawRequest<D>) -> Result<Self> {
+    pub async fn from_raw<D: AsDb>(raw: &mut RawRequest<D>) -> Result<Self> {
         let st = raw.cookies_mut().remove("st")?;
         let session = Self::whose(session::secret().eq(st)).raw_get(raw.pool()).await;
         let session = match session {

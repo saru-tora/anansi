@@ -50,8 +50,9 @@ pub fn min_main(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             use server_prelude::*;
             use crate::project::*;
 
+            let app_data = AppData::new().await;
             let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
-            if let Some(#server) = anansi::server::Server::<HttpRequest, AppCache, Pool, anansi::web::SecurityHeaders<anansi::web::ViewService>>::new(APP_STATICS, None, urls::routes, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, last).await {
+            if let Some(#server) = anansi::server::Server::<HttpRequest, AppCache, AppData, anansi::web::SecurityHeaders<anansi::web::ViewService>>::new(app_data, APP_STATICS, None, urls::routes, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, last).await {
                 #init
                 #server.run().await;
             }
@@ -77,7 +78,7 @@ pub fn min_main(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             for handle in handles{
                 handle.join().unwrap();
             }
-            anansi::server::info_shutdown();
+            println!("Shutting down");
         }
 
         mod server_prelude {
@@ -91,8 +92,10 @@ pub fn min_main(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         pub async fn test_server(sender: tokio::sync::oneshot::Sender<()>) {
             use server_prelude::*;
 
+            let pool = anansi::server::get_db::<Pool>(app_migrations).await?;
+            let app_data = AppData {pool};
             let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
-            anansi::server::Server::new(APP_STATICS, APP_ADMINS, Some(sender))
+            anansi::server::Server::new(app_data, APP_STATICS, APP_ADMINS, Some(sender))
                 .run(app_url, urls::ROUTES, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations)
                 .await;
         }

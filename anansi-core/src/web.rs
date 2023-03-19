@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::collections::{HashMap, hash_map::Iter};
-use crate::db::DbPool;
+use crate::db::AsDb;
 use std::string::FromUtf8Error;
 use std::error::Error;
 use std::result;
@@ -86,7 +86,7 @@ pub mod prelude {
 
 #[async_trait]
 pub trait Middleware {
-    async fn new<D: DbPool>(raw: &mut RawRequest<D>) -> Self;
+    async fn new<D: AsDb>(raw: &mut RawRequest<D>) -> Self;
 }
 
 #[async_trait]
@@ -135,34 +135,53 @@ impl<Svc: Service<R>, R: BaseRequest> Service<R> for SecurityHeaders<Svc> {
 macro_rules! setup {
     ($($name:ident, $ty:path, $tr:path)*) => {
         #[derive(Debug, Clone)]
+        pub struct AppData {
+            pool: Pool,
+        }
+        impl AppData {
+            pub async fn new() -> Self {
+                let pool = anansi::server::get_db::<AppData>(crate::app_migrations).await;
+                Self {pool}
+            }
+        }
+        impl anansi::db::AsDb for AppData {
+            type SqlDb = Pool;
+            fn as_db(&self) -> &Pool {
+                &self.pool
+            }
+            fn as_db_mut(&mut self) -> &mut Pool {
+                &mut self.pool
+            }
+        }
+        #[derive(Debug, Clone)]
         pub struct HttpRequest {
-            raw: anansi::web::RawRequest<Pool>,
+            raw: anansi::web::RawRequest<AppData>,
             mid: AppMiddleware,
             urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>,
             cache: AppCache,
             admin: anansi::util::admin::site::AdminRef<Self>,
             mailer: Option<anansi::email::Mailer>,
+            $($name: $ty,)*
         }
         #[derive(Debug, Clone)]
         pub struct AppMiddleware {
             user: anansi::util::auth::records::User,
             session: anansi::util::sessions::records::Session,
             session_data: anansi::util::sessions::records::SessionData,
-            $($name: $ty,)*
         }
         #[cfg(not(test))]
-        async fn get_session(raw: &mut anansi::web::RawRequest<Pool>) -> $crate::web::Result<anansi::util::sessions::records::Session> {
+        async fn get_session(raw: &mut anansi::web::RawRequest<AppData>) -> $crate::web::Result<anansi::util::sessions::records::Session> {
             match anansi::util::sessions::records::Session::from_raw(raw).await {
                 Ok(s) => Ok(s),
                 Err(_) => return Err(Box::new(anansi::web::WebError::from(anansi::web::WebErrorKind::NoSession))),
             }
         }
         #[cfg(test)]
-        async fn get_session(raw: &mut anansi::web::RawRequest<Pool>) -> $crate::web::Result<anansi::util::sessions::records::Session> {
+        async fn get_session(raw: &mut anansi::web::RawRequest<AppData>) -> $crate::web::Result<anansi::util::sessions::records::Session> {
             Ok(anansi::util::sessions::records::Session::test())
         }
         impl AppMiddleware {
-            pub async fn new(raw: &mut anansi::web::RawRequest<Pool>) -> $crate::web::Result<Self> {
+            pub async fn new(raw: &mut anansi::web::RawRequest<AppData>) -> $crate::web::Result<Self> {
                 use anansi::records::{Record, DataType};
                 let session = get_session(raw).await?;
                 let session_data = session.to_data()?;
@@ -172,12 +191,11 @@ macro_rules! setup {
                 } else {
                     anansi::util::auth::records::User::find(anansi::records::BigInt::from_val(user_id)?).raw_get(raw.pool()).await?
                 };
-                $(let $name = $ty::new(raw).await?;)*
-                Ok(AppMiddleware {user, session, session_data $(, $name)*})
+                Ok(AppMiddleware {user, session, session_data})
             }
         }
         impl anansi::web::BaseMiddleware for AppMiddleware {}
-        anansi::request_derive!();
+        anansi::request_derive!($($name, $ty,)*);
         pub trait Request: anansi::web::BaseRequest + anansi::util::sessions::middleware::Sessions + anansi::util::auth::middleware::Auth + anansi::util::admin::site::HasAdmin + anansi::web::CsrfDefense  + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetRecord $(+ $tr)* {}
         impl Request for HttpRequest {}
         impl anansi::util::admin::site::HasAdmin for HttpRequest {
@@ -232,25 +250,23 @@ macro_rules! setup {
     ($($name:ident, $ty:path, $tr:path)*) => {
         #[derive(Debug, Clone)]
         pub struct HttpRequest {
-            raw: anansi::web::RawRequest<Pool>,
+            raw: anansi::web::RawRequest<AppData>,
             mid: AppMiddleware,
             urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>,
             cache: AppCache,
             mailer: Option<anansi::email::Mailer>,
+            $($name: Option<$ty>,)*
         }
         #[derive(Debug, Clone)]
-        pub struct AppMiddleware {
-            $($name: $ty,)*
-        }
+        pub struct AppMiddleware {}
         impl AppMiddleware {
-            pub async fn new(_raw: &mut anansi::web::RawRequest<Pool>) -> $crate::web::Result<Self> {
-                $(let $name = <$ty>::new(_raw).await?;)*
-                Ok(AppMiddleware {$($name)*})
+            pub async fn new(_raw: &mut anansi::web::RawRequest<AppData>) -> $crate::web::Result<Self> {
+                Ok(AppMiddleware {})
             }
         }
         impl anansi::web::BaseMiddleware for AppMiddleware {}
-        anansi::request_derive!();
-        pub trait Request: anansi::web::BaseRequest<SqlPool = Pool> + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetRecord $(+ $tr)* {}
+        anansi::request_derive!($($name, $ty)*);
+        pub trait Request: anansi::web::BaseRequest<SqlPool = AppData> + anansi::web::Reverse + std::fmt::Debug + anansi::web::GetRecord $(+ $tr)* {}
         impl Request for HttpRequest {}
     }
 }
@@ -463,7 +479,7 @@ impl fmt::Display for WebErrorKind {
             Self::BadDecode => "could not percent decode string",
             Self::BadUri => "unrecognized uri",
             Self::BadForm => "could not create form map",
-            Self::BadName => "file name has bad characters",
+            Self::BadName => "file name has bad character(s)",
             Self::BadPath => "file path is not valid",
             Self::NoExtension => "file does not have extension",
             Self::BadExtension => "file does not have a valid extension",
@@ -671,14 +687,14 @@ impl Cookies {
 }
 
 #[derive(Debug, Clone)]
-pub struct RawRequest<D: DbPool> {
+pub struct RawRequest<D: AsDb> {
     pub method: Method,
     pub url: Uri,
     pub headers: HeaderMap<HeaderValue>,
     pub body: Option<Body>,
     pub cookies: Cookies,
     pub params: Parameters,
-    pool: D,
+    app_state: Arc<D>,
     std_rng: Rng,
     valid_token: bool,
 }
@@ -826,10 +842,10 @@ pub trait GetRecord: BaseRequest {
 pub trait BaseRequest: Send + Sync {
     type Mid: BaseMiddleware;
     type Usr: BaseUser;
-    type SqlPool: DbPool;
+    type SqlPool: AsDb;
     type Cache: BaseCache;
 
-    async fn new(request: HyperRequest, url: Arc<HashMap<usize, Vec<String>>>, pool: Self::SqlPool, cache: Self::Cache, rng: Rng, admin: AdminRef<Self>, mailer: Option<Mailer>) -> Result<Self> where Self: Sized;
+    async fn new(request: HyperRequest, url: Arc<HashMap<usize, Vec<String>>>, pool: Arc<Self::SqlPool>, cache: Self::Cache, rng: Rng, admin: AdminRef<Self>, mailer: Option<Mailer>) -> Result<Self> where Self: Sized;
     fn method(&self) -> &Method;
     fn url(&self) -> &str;
     fn query(&self) -> Option<&str>;
@@ -849,7 +865,7 @@ pub trait BaseRequest: Send + Sync {
     fn cache_mut(&mut self) -> &mut Self::Cache;
     fn email(&self) -> EmailBuilder;
     fn to_raw(self) -> RawRequest<Self::SqlPool>;
-    async fn handle_no_session(response: Response, pool: Self::SqlPool, std_rng: Rng) -> Result<Response> where Self: Sized;
+    async fn handle_no_session(response: Response, pool: Arc<Self::SqlPool>, std_rng: Rng) -> Result<Response> where Self: Sized;
 }
 
 #[cfg(feature = "minimal")]
@@ -857,10 +873,10 @@ pub trait BaseRequest: Send + Sync {
 pub trait BaseRequest: Send + Sync {
     type Mid: BaseMiddleware;
     type Usr: BaseUser;
-    type SqlPool: DbPool;
+    type SqlPool: AsDb;
     type Cache: BaseCache;
 
-    async fn new(request: HyperRequest, url: Arc<HashMap<usize, Vec<String>>>, pool: Self::SqlPool, cache: Self::Cache, rng: Rng, mailer: Option<Mailer>) -> Result<Self> where Self: Sized;
+    async fn new(request: HyperRequest, url: Arc<HashMap<usize, Vec<String>>>, pool: std::sync::Arc<Self::SqlPool>, cache: Self::Cache, rng: Rng, mailer: Option<Mailer>) -> Result<Self> where Self: Sized;
     fn method(&self) -> &Method;
     fn url(&self) -> &str;
     fn query(&self) -> Option<&str>;
@@ -879,7 +895,7 @@ pub trait BaseRequest: Send + Sync {
     fn cache_mut(&mut self) -> &mut Self::Cache;
     fn email(&self) -> EmailBuilder;
     fn to_raw(self) -> RawRequest<Self::SqlPool>;
-    async fn handle_no_session(response: Response, pool: Self::SqlPool, std_rng: Rng) -> Result<Response> where Self: Sized;
+    async fn handle_no_session(response: Response, pool: std::sync::Arc<Self::SqlPool>, std_rng: Rng) -> Result<Response> where Self: Sized;
 }
 
 fn parse_query_string(qs: &str) -> Option<Vec<(String, String)>> {
@@ -987,10 +1003,10 @@ macro_rules! request_derive {
         impl anansi::web::BaseRequest for HttpRequest {
             type Mid = AppMiddleware;
             type Usr = anansi::util::auth::records::User;
-            type SqlPool = Pool;
+            type SqlPool = AppData;
             type Cache = AppCache;
 
-            async fn new(request: $crate::web::HyperRequest, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: Self::SqlPool, cache: Self::Cache, std_rng: $crate::server::Rng, admin: $crate::admin_site::AdminRef<Self>, mailer: Option<anansi::email::Mailer>) -> $crate::web::Result<Self> where Self: Sized {
+            async fn new(request: $crate::web::HyperRequest, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: std::sync::Arc<Self::SqlPool>, cache: Self::Cache, std_rng: $crate::server::Rng, admin: $crate::admin_site::AdminRef<Self>, mailer: Option<anansi::email::Mailer>) -> $crate::web::Result<Self> where Self: Sized {
                 let mut raw = $crate::web::RawRequest::new(request, pool, std_rng).await?;
                 let mid = AppMiddleware::new(&mut raw).await?;
                 Ok(Self {raw, mid, urls, cache, admin, mailer})
@@ -1022,19 +1038,19 @@ macro_rules! request_derive {
             fn mid(&self) -> &Self::Mid {
                 &self.mid
             }
-            fn raw(&self) -> &anansi::web::RawRequest<Pool> {
+            fn raw(&self) -> &anansi::web::RawRequest<AppData> {
                 &self.raw
             }
-            fn raw_mut(&mut self) -> &mut anansi::web::RawRequest<Pool> {
+            fn raw_mut(&mut self) -> &mut anansi::web::RawRequest<AppData> {
                 &mut self.raw
             }
             fn to_form_map(&self) -> anansi::web::Result<anansi::web::FormMap> {
                 self.raw().to_form_map()
             }
-            fn from(raw: anansi::web::RawRequest<Pool>, mid: AppMiddleware, cache: Self::Cache, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, admin: $crate::admin_site::AdminRef<Self>, mailer: Option<anansi::email::Mailer>) -> Self {
+            fn from(raw: anansi::web::RawRequest<AppData>, mid: AppMiddleware, cache: Self::Cache, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, admin: $crate::admin_site::AdminRef<Self>, mailer: Option<anansi::email::Mailer>) -> Self {
                 Self{raw, mid, cache, urls, admin, mailer}
             }
-            fn to_raw(self) -> anansi::web::RawRequest<Pool> {
+            fn to_raw(self) -> anansi::web::RawRequest<AppData> {
                 self.raw
             }
             fn user(&self) -> &Self::Usr {
@@ -1052,8 +1068,9 @@ macro_rules! request_derive {
             fn email(&self) -> anansi::email::EmailBuilder {
                 anansi::email::Email::builder(&self.mailer)
             }
-            async fn handle_no_session(response: anansi::web::Response, pool: Self::SqlPool, std_rng: anansi::server::Rng) -> anansi::web::Result<anansi::web::Response> {
-                let session = anansi::util::sessions::records::Session::gen(&pool, &std_rng).await?;
+            async fn handle_no_session(response: anansi::web::Response, pool: std::sync::Arc<Self::SqlPool>, std_rng: anansi::server::Rng) -> anansi::web::Result<anansi::web::Response> {
+                use anansi::db::AsDb;
+                let session = anansi::util::sessions::records::Session::gen(pool.as_db(), &std_rng).await?;
                 Ok(response.set_persistent("st", &session.secret, &session.expires))
             }
         }
@@ -1063,7 +1080,7 @@ macro_rules! request_derive {
 #[cfg(feature = "minimal")]
 #[macro_export]
 macro_rules! request_derive {
-    () => {
+    ($($name:ident, $ty:path)*) => {
         impl anansi::web::Reverse for HttpRequest {
             fn reverse(&self, view: anansi::web::View<Self>, disps: &[&dyn std::fmt::Display]) -> String {
                 let mut disp = disps.iter();
@@ -1090,13 +1107,14 @@ macro_rules! request_derive {
         impl anansi::web::BaseRequest for HttpRequest {
             type Mid = AppMiddleware;
             type Usr = anansi::dummy::records::DummyUser;
-            type SqlPool = Pool;
+            type SqlPool = AppData;
             type Cache = AppCache;
 
-            async fn new(request: $crate::web::HyperRequest, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: Self::SqlPool, cache: Self::Cache, std_rng: $crate::server::Rng, mailer: Option<anansi::email::Mailer>) -> $crate::web::Result<Self> where Self: Sized {
+            async fn new(request: $crate::web::HyperRequest, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, pool: std::sync::Arc<Self::SqlPool>, cache: Self::Cache, std_rng: $crate::server::Rng, mailer: Option<anansi::email::Mailer>) -> $crate::web::Result<Self> where Self: Sized {
                 let mut raw = $crate::web::RawRequest::new(request, pool, std_rng).await?;
                 let mid = AppMiddleware::new(&mut raw).await?;
-                Ok(Self {raw, mid, urls, cache, mailer})
+                $(let $name = Some(<$ty>::new(&mut raw).await?);)*
+                Ok(Self {raw, mid, urls, cache, mailer $(, $name)*})
             }
             fn method(&self) -> &anansi::web::Method {
                 self.raw.method()
@@ -1125,19 +1143,19 @@ macro_rules! request_derive {
             fn mid(&self) -> &Self::Mid {
                 &self.mid
             }
-            fn raw(&self) -> &anansi::web::RawRequest<Pool> {
+            fn raw(&self) -> &anansi::web::RawRequest<AppData> {
                 &self.raw
             }
-            fn raw_mut(&mut self) -> &mut anansi::web::RawRequest<Pool> {
+            fn raw_mut(&mut self) -> &mut anansi::web::RawRequest<AppData> {
                 &mut self.raw
             }
             fn to_form_map(&self) -> anansi::web::Result<anansi::web::FormMap> {
                 self.raw().to_form_map()
             }
-            fn from(raw: anansi::web::RawRequest<Pool>, mid: AppMiddleware, cache: Self::Cache, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, mailer: Option<anansi::email::Mailer>) -> Self {
-                Self{raw, mid, cache, urls, mailer}
+            fn from(raw: anansi::web::RawRequest<AppData>, mid: AppMiddleware, cache: Self::Cache, urls: std::sync::Arc<std::collections::HashMap<usize, Vec<String>>>, mailer: Option<anansi::email::Mailer>) -> Self {
+                Self{raw, mid, cache, urls, mailer $(, $name: None)*}
             }
-            fn to_raw(self) -> anansi::web::RawRequest<Pool> {
+            fn to_raw(self) -> anansi::web::RawRequest<AppData> {
                 self.raw
             }
             fn user(&self) -> &Self::Usr {
@@ -1152,14 +1170,14 @@ macro_rules! request_derive {
             fn email(&self) -> anansi::email::EmailBuilder {
                 anansi::email::Email::builder(&self.mailer)
             }
-            async fn handle_no_session(response: anansi::web::Response, pool: Self::SqlPool, std_rng: anansi::server::Rng) -> anansi::web::Result<anansi::web::Response> {
+            async fn handle_no_session(response: anansi::web::Response, pool: std::sync::Arc<Self::SqlPool>, std_rng: anansi::server::Rng) -> anansi::web::Result<anansi::web::Response> {
                 unimplemented!();
             }
         }
     }
 }
 
-impl<D: DbPool> RawRequest<D> {
+impl<D: AsDb> RawRequest<D> {
     fn get_cookies(headers: &HeaderMap<HeaderValue>) -> Result<Cookies> {
         let mut cookies = HashMap::new();
         if let Some(buffer) = headers.get("Cookie") {
@@ -1201,7 +1219,7 @@ impl<D: DbPool> RawRequest<D> {
         }
         Err(WebErrorKind::BadForm.to_box())
     }
-    pub async fn new(request: HyperRequest, pool: D, std_rng: Rng) -> Result<Self> {
+    pub async fn new(request: HyperRequest, app_state: Arc<D>, std_rng: Rng) -> Result<Self> {
         let (parts, body) = request.0.into_parts();
         let body = body.collect().await?.to_bytes();
         let body = if !body.is_empty() {
@@ -1218,7 +1236,7 @@ impl<D: DbPool> RawRequest<D> {
             headers: parts.headers,
             cookies,
             params,
-            pool,
+            app_state,
             std_rng,
             valid_token: false,
         })
@@ -1229,11 +1247,11 @@ impl<D: DbPool> RawRequest<D> {
     pub fn cookies_mut(&mut self) -> &mut Cookies {
         &mut self.cookies
     }
-    pub fn pool(&self) -> &D {
-        &self.pool
+    pub fn app_state(&self) -> &D {
+        &self.app_state
     }
-    pub fn pool_mut(&mut self) -> &mut D {
-        &mut self.pool
+    pub fn pool(&self) -> &<D as AsDb>::SqlDb {
+        self.app_state.as_db()
     }
     pub fn rng(&self) -> &Rng {
         &self.std_rng

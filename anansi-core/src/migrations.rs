@@ -5,7 +5,7 @@ use syn::{Type, Field, Attribute, UseTree};
 use syn::Item::Struct;
 use syn::Fields::Named;
 use anansi::raw_transact;
-use crate::db::{DbPool, DbType, unescape, DbRow};
+use crate::db::{DbPool, DbType, unescape, DbRow, AsDb};
 use crate::records::RecordField;
 
 #[macro_export]
@@ -108,7 +108,7 @@ fn to_migration<D: DbPool>(v: &Vec<Box<dyn ToQuery<D>>>) -> String {
     s
 }
 
-pub async fn migrate<D: DbPool>(app_migrations: Vec<AppMigration<D>>, pool: &mut D) where <D::SqlRowVec as IntoIterator>::Item: DbRow {
+pub async fn migrate<D: AsDb>(app_migrations: Vec<AppMigration<<D as AsDb>::SqlDb>>, pool: &mut <D as AsDb>::SqlDb) where <<<D as AsDb>::SqlDb as DbPool>::SqlRowVec as IntoIterator>::Item: DbRow {
     for app_migration in app_migrations {
         let mut migrations = vec![];
         let am = app_migration;
@@ -135,14 +135,14 @@ pub async fn migrate<D: DbPool>(app_migrations: Vec<AppMigration<D>>, pool: &mut
                     Ok(())
                 }).unwrap();
                 
-                let i = format!("INSERT INTO anansi_migrations (app, name, applied) VALUES('{app}', '{n}', {})", D::now());
+                let i = format!("INSERT INTO anansi_migrations (app, name, applied) VALUES('{app}', '{n}', {})", <D as AsDb>::SqlDb::now());
                 pool.raw_execute(&i).await.unwrap();
             }
         }
     }
 }
 
-pub async fn sql_migrate<D: DbPool>(app_migrations: Vec<AppMigration<D>>, app_name: &str, migration_name: &str) {
+pub async fn sql_migrate<D: AsDb>(app_migrations: Vec<AppMigration<<D as AsDb>::SqlDb>>, app_name: &str, migration_name: &str) {
     for app_migration in app_migrations {
         let am = app_migration;
         if am.0 == app_name {

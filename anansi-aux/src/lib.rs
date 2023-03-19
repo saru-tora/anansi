@@ -524,7 +524,8 @@ impl Elem {
             if l == attributes.length() {
                 for attr in &self.attrs {
                     if let Some(attribute) = attributes.get_named_item(&attr.key) {
-                        if attribute.value() != attr.value {
+                        let val = attribute.value();
+                        if val != attr.value {
                             same = false;
                             break;
                         }
@@ -586,7 +587,9 @@ impl Elem {
                 } else {
                     node.remove_attribute(&attr.key).unwrap();
                 }
-                node.set_attribute(&attr.key, &attr.value).unwrap();
+                if !check_recall(node, attr) {
+                    node.set_attribute(&attr.key, &attr.value).unwrap();
+                }
             } else {
                 while let Some(attr) = attrs.next() {
                     node.set_attribute(&attr.key, &attr.value).unwrap();
@@ -628,6 +631,29 @@ impl Elem {
             parent.replace_child(&new, &old.node()).unwrap();
         });
     }
+}
+
+fn check_recall(node: &Element, attr: &Attribute) -> bool {
+    let mut b = false;
+    if attr.key.starts_with("on:") {
+        CALLBACKS.with(|c| {
+            let c = c.borrow();
+            let (v, ids) = attr.value.split_once('[').unwrap();
+            let (ids, _) = ids.rsplit_once(']').unwrap();
+            let cb = c.get(v).unwrap();
+            RID.with(|r| {
+                let mut r = r.borrow_mut();
+                let rs = r.to_string();
+                node.set_attribute("rid", &rs).unwrap();
+                RECALLS.with(|rc| {
+                    rc.borrow_mut().insert(rs, RecallData {call: cb.call, ids: ids.to_string()});
+                });
+                *r += 1;
+                b = true;
+            });
+        });
+    }
+    b
 }
 
 #[macro_export]
@@ -681,7 +707,7 @@ impl Keys {
                 }
                 return;
             };
-            let mut old = HashMap::new();
+            let mut old: HashMap<String, (&Elem, u32)> = HashMap::new();
 
             loop {
                 let k2 = &c2.attrs[0].value;
@@ -702,6 +728,9 @@ impl Keys {
                     } else {
                         while let Some(child) = children2.next() {
                             parent.remove_child(&child.node()).unwrap();
+                        }
+                        for (c, _) in old.values() {
+                            parent.remove_child(&c.node()).unwrap();
                         }
                         return;
                     }
@@ -743,7 +772,9 @@ impl Keys {
                         }
                     } else {
                         while let Some(child) = children2.next() {
-                            parent.remove_child(&child.node()).unwrap();
+                            if !old.contains_key(&child.attrs[0].value) {
+                                parent.remove_child(&child.node()).unwrap();
+                            }
                         }
                         return;
                     }
@@ -758,6 +789,7 @@ impl Keys {
                     while let Some(child) = children2.next() {
                         parent.remove_child(&child.node()).unwrap();
                     }
+                    
                 }
             }
         });

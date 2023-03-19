@@ -11,7 +11,7 @@ use crate::try_sql;
 use crate::server::Settings;
 use crate::web::{Result, WebErrorKind, BaseRequest};
 use crate::records::Record;
-use crate::db::{DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt};
+use crate::db::{DbRow, DbRowVec, DbPool, DbType, Builder, sql_stmt, AsDb};
 
 pub struct PgQuery<'q> {
     query: &'q str,
@@ -22,15 +22,15 @@ impl<'q> PgQuery<'q> {
     pub fn new(query: &'q str, params: &'q[&'q(dyn ToSql + Sync)]) -> Self {
         Self {query, params}
     }
-    pub async fn fetch_one<B: BaseRequest<SqlPool = PgDbPool>>(self, req: &B) -> Result<PgDbRow> {
+    pub async fn fetch_one<B: BaseRequest<SqlPool = D>, D: AsDb<SqlDb = PgDbPool>>(self, req: &B) -> Result<PgDbRow> {
         let statement = req.raw().pool().0.prepare(self.query).await?;
         Ok(PgDbRow {row: req.raw().pool().0.query_one(&statement, self.params).await?})
     }
-    pub async fn fetch_all<B: BaseRequest<SqlPool = PgDbPool>>(self, req: &B) -> Result<PgDbRowVec> {
+    pub async fn fetch_all<B: BaseRequest<SqlPool = D>, D: AsDb<SqlDb = PgDbPool>>(self, req: &B) -> Result<PgDbRowVec> {
         let statement = req.raw().pool().0.prepare(self.query).await?;
         Ok(PgDbRowVec {rows: req.raw().pool().0.query(&statement, self.params).await?})
     }
-    pub async fn execute<B: BaseRequest<SqlPool = PgDbPool>>(self, req: &B) -> Result<()> {
+    pub async fn execute<B: BaseRequest<SqlPool = D>, D: AsDb<SqlDb = PgDbPool>>(self, req: &B) -> Result<()> {
         let statement = req.raw().pool().0.prepare(self.query).await?;
         match req.raw().pool().0.execute(&statement, self.params).await {
             Ok(_) => Ok(()),
