@@ -392,7 +392,7 @@ fn app(args: &Vec<String>) {
     migrations.push("migrations");
     fs::create_dir(migrations).expect("Failed to create migrations directory");
     make(&name, "mod", format!("pub mod urls;\npub mod records;\npub mod migrations;\n\npub const APP_NAME: &'static str = \"{}\";", args[2]));
-    make(&name, "urls", "use anansi::web::prelude::*;\n\nroutes! {}".to_string());
+    make(&name, "urls", "use anansi::web::prelude::*;\nuse crate::prelude::Request;\n\npub fn routes<R: Request>() -> Router<R> {Router::new()}".to_string());
     let mut m = format!("migrations{}", main_separator!());
     m.push_str("mod");
     make(&name, &m, "use anansi::migrations::prelude::*;\n\nlocal_migrations! {}".to_string());
