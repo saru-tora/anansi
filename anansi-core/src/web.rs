@@ -102,7 +102,7 @@ pub struct ViewService;
 impl<R: BaseRequest> Service<R> for ViewService {
     type S = Self;
     async fn init(_service: Self, _settings: &Settings) -> Self {
-        unimplemented!();
+        Self {}
     }
     async fn call(&self, view: &View<R>, req: &mut R) -> Result<Response> {
         view(req).await
@@ -276,9 +276,9 @@ macro_rules! transact {
     ($req:ident, $b:expr) => {
         {
             use anansi::db::DbPool;
-            match $req.raw().pool().raw_execute("BEGIN;").await {
-                Ok(r) => match async {$b}.await {
-                    Ok(_) => match $req.raw().pool().raw_execute("COMMIT;").await {
+            match $req.raw().pool().begin().await {
+                Ok(n) => match async {$b}.await {
+                    Ok(r) => match $req.raw().pool().commit(n).await {
                         Ok(_) => Ok(r),
                         Err(e) => Err(e),
                     }
@@ -462,6 +462,8 @@ pub enum WebErrorKind {
     BadTotp,
     BadUsername,
     BadDateTime,
+    BadBegin,
+    BadCommit,
     NoQr,
 }
 
@@ -503,6 +505,8 @@ impl fmt::Display for WebErrorKind {
             Self::BadTotp => "could not verify totp",
             Self::BadUsername => "problem with username",
             Self::BadDateTime => "could not create datetime",
+            Self::BadBegin => "could not begin transaction",
+            Self::BadCommit => "could not commit transaction",
         };
         write!(f, "{}", s)
     }

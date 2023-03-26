@@ -52,7 +52,7 @@ pub fn min_main(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
             let app_data = AppData::new().await;
             let internal_error = || Response::internal_error(include_bytes!("http_errors/500.html").to_vec());
-            if let Some(#server) = anansi::server::Server::<HttpRequest, AppCache, AppData, anansi::web::SecurityHeaders<anansi::web::ViewService>>::new(app_data, APP_STATICS, None, urls::routes, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, last).await {
+            if let Some(#server) = anansi::server::Server::<HttpRequest, AppCache, AppData, anansi::web::ViewService>::new(app_data, APP_STATICS, None, urls::routes, ErrorView::not_found, internal_error, app_services::<HttpRequest>, app_migrations, last).await {
                 #init
                 #server.run().await;
             }
@@ -1342,8 +1342,8 @@ pub fn raw_middleware(input: proc_macro::TokenStream) -> proc_macro::TokenStream
     let input = parse_macro_input!(input as SchemaArgs);
     let _vars = input.vars;
 
-    let args = quote! {<anansi::web::SecurityHeaders<anansi::web::ViewService> as Service<B>>::init(vs, settings).await};
-    let retval = quote! {anansi::web::SecurityHeaders<anansi::web::ViewService>};
+    let args = quote! {<anansi::web::ViewService as Service<B>>::init(vs, settings).await};
+    let retval = quote! {anansi::web::ViewService};
 
     let q = quote! {
         pub fn app_services<B: anansi::web::BaseRequest>(settings: &anansi::server::Settings) -> std::pin::Pin<Box<dyn std::future::Future<Output = #retval> + Send + '_>> {
@@ -1359,9 +1359,9 @@ pub fn raw_middleware(input: proc_macro::TokenStream) -> proc_macro::TokenStream
 pub fn middleware(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as SchemaArgs);
 
-    let mut args = quote! {<anansi::web::SecurityHeaders<anansi::web::ViewService> as Service<B>>::init(vs, settings).await};
+    let mut args = quote! {<anansi::web::ViewService as Service<B>>::init(vs, settings).await};
     let retval = if input.vars.is_empty() {
-        quote! {anansi::web::SecurityHeaders<anansi::web::ViewService>}
+        quote! {anansi::web::ViewService}
     } else {
         let last = input.vars.last().unwrap();
         quote! {#last}
