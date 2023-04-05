@@ -814,6 +814,23 @@ pub fn html_escape(s: &str) -> String {
     escaped
 }
 
+pub fn html_escape2(view: &mut String, s: &str) {
+    for c in s.chars() {
+        let html = match c {
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '\'' => "&#x27;",
+            '"' => "&quot;",
+            '&' => "&amp;",
+            _ => {
+                view.push(c);
+                continue;
+            }
+        };
+        view.push_str(html);
+    }
+}
+
 fn find_byte(buffer: &[u8], n: usize, byte: u8) -> usize {
     let mut m = n;
     for b in &buffer[n..] {
